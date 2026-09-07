@@ -1,0 +1,1 @@
+const AdmZip = require("adm-zip"); const path = require("path"); const zip = new AdmZip(); zip.addLocalFolder("temp_offline_update"); zip.writeZip("update_offline_v3.zip"); console.log("ZIP created: update_offline_v3.zip");
