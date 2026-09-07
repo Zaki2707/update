@@ -2572,6 +2572,33 @@ function verifyAuthToken(token: string): AuthSession | null {
   }
 }
 
+// Secure backward-compatible password hashing helper functions
+function hashPassword(plainText: string): string {
+  if (!plainText) return "";
+  const str = String(plainText).trim();
+  if (str.startsWith("sha256$") && str.split("$").length === 3) {
+    return str; // Already hashed
+  }
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.createHmac("sha256", salt).update(str).digest("hex");
+  return `sha256$${salt}$${hash}`;
+}
+
+function verifyPassword(plainText: string, hashedPassword: string): boolean {
+  if (!plainText || !hashedPassword) return false;
+  const pStr = String(plainText).trim();
+  const hStr = String(hashedPassword).trim();
+  if (!hStr.startsWith("sha256$")) {
+    return pStr === hStr;
+  }
+  const parts = hStr.split("$");
+  if (parts.length !== 3) return false;
+  const salt = parts[1];
+  const hash = parts[2];
+  const computedHash = crypto.createHmac("sha256", salt).update(pStr).digest("hex");
+  return computedHash === hash;
+}
+
 function getAuthUser(req: any): AuthSession | null {
   // 1. Authorization: Bearer <token>
   const authHeader = req.headers?.authorization || req.headers?.Authorization;
@@ -2653,12 +2680,12 @@ function sanitizeQuestionForStudent(q: any) {
 }
 
 // Aggregated All Data endpoint for super fast loading
-app.get("/api/all-data", (req, res) => {
+app.get("/api/all-data", requireAuth, (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  const queryMadrasahId = req.query.madrasahId ? String(req.query.madrasahId) : null;
+  const authUser = (req as any).user;
+  const mId = getRequestMadrasahId(req);
   
   // Strict Server-Side Role Resolution (Never trust unauthenticated role claims)
-  const authUser = getAuthUser(req);
   const isTeacherOrAdmin = Boolean(authUser && (
     authUser.role === 'teacher' || authUser.role === 'guru' ||
     authUser.role === 'admin' || authUser.role === 'bos' || authUser.role === 'superadmin'
@@ -2681,10 +2708,10 @@ app.get("/api/all-data", (req, res) => {
   let filteredLessonPlans = lessonPlans;
   let filteredGeneratedExams = generatedExams;
 
-  if (queryMadrasahId && queryMadrasahId !== 'default' && queryMadrasahId !== 'BOSS') {
-    const matchM = madrasahs.find(m => String(m.id) === queryMadrasahId || String(m.slug) === queryMadrasahId);
-    const mId = matchM ? matchM.id : queryMadrasahId;
-    const mSlug = matchM ? matchM.slug : queryMadrasahId;
+  if (mId && mId !== 'default' && mId !== 'BOSS') {
+    const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
+    const targetId = matchM ? matchM.id : mId;
+    const targetSlug = matchM ? matchM.slug : mId;
 
     const matchesFilter = (item: any) => {
       const imId = String(item.madrasahId || '').trim();
@@ -2692,7 +2719,7 @@ app.get("/api/all-data", (req, res) => {
       if (!imId && !imSlug) {
         return false; // New registered madrasah starts empty, default/un-tagged items belong to main school
       }
-      return imId === mId || imSlug === mSlug || imId === mSlug || imSlug === mId;
+      return imId === targetId || imSlug === targetSlug || imId === targetSlug || imSlug === targetId;
     };
 
     filteredTeachers = teachers.filter(matchesFilter);
@@ -2763,10 +2790,20 @@ app.get("/api/all-data", (req, res) => {
     });
   }
 
+  // Sanitasi sensitif (hilangkan password dan adminPass)
+  const sanitizedTeachers = filteredTeachers.map(({ password, ...rest }: any) => rest);
+  const sanitizedStudents = sortedStudents.map(({ password, ...rest }: any) => rest);
+  const sanitizedMadrasahs = madrasahs.map(({ adminPass, ...rest }: any) => rest);
+  let sanitizedSettings = null;
+  if (appSettings) {
+    const { adminPass, ...restSettings } = appSettings;
+    sanitizedSettings = restSettings;
+  }
+
   res.json({
     success: true,
-    teachers: filteredTeachers,
-    students: sortedStudents,
+    teachers: sanitizedTeachers,
+    students: sanitizedStudents,
     classes: filteredClasses,
     subjects: filteredSubjects,
     attendance: filteredAttendance,
@@ -2783,7 +2820,7 @@ app.get("/api/all-data", (req, res) => {
     gradeCategories,
     calendarEvents,
     generatedExams: filteredGeneratedExams,
-    settings: appSettings,
+    settings: sanitizedSettings,
     lessonPlans: filteredLessonPlans,
     grades: filteredGrades,
     teacherAttendance,
@@ -2792,7 +2829,7 @@ app.get("/api/all-data", (req, res) => {
     childguardLogs,
     childguardLocations,
     childguardStatus,
-    madrasahs,
+    madrasahs: sanitizedMadrasahs,
     tokenRequests,
     cbtTokenPrice,
     eduGames,
@@ -3682,7 +3719,7 @@ app.post("/api/login", (req, res) => {
   // 2. Check Registered Madrasah Admin
   const foundMadrasah = madrasahs.find(m => 
     (String(m.adminUser || '').toLowerCase() === uLower || String(m.slug || '').toLowerCase() === uLower) &&
-    String(m.adminPass) === p
+    verifyPassword(p, String(m.adminPass))
   );
   if (foundMadrasah) {
     if (foundMadrasah.isActive === false) {
@@ -3710,7 +3747,7 @@ app.post("/api/login", (req, res) => {
   const adminUserVal = (appSettings && appSettings.adminUser) ? String(appSettings.adminUser).toLowerCase() : "admin";
   const adminPassVal = (appSettings && appSettings.adminPass) ? String(appSettings.adminPass) : "admin123";
 
-  if ((uLower === "admin" || uLower === "administrator" || uLower === adminUserVal) && (p === "admin123" || p === adminPassVal)) {
+  if ((uLower === "admin" || uLower === "administrator" || uLower === adminUserVal) && verifyPassword(p, adminPassVal)) {
     const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
     if (defaultM && defaultM.isActive === false) {
       return res.status(403).json({ success: false, message: "Akses diblokir: Akun madrasah ini dinonaktifkan oleh Super Admin (Bos)." });
@@ -3734,7 +3771,7 @@ app.post("/api/login", (req, res) => {
   }
 
   // 4. Check Teachers
-  const teacher = teachers.find(t => (String(t.username || '').toLowerCase() === uLower || String(t.nip || '').toLowerCase() === uLower) && String(t.password) === p);
+  const teacher = teachers.find(t => (String(t.username || '').toLowerCase() === uLower || String(t.nip || '').toLowerCase() === uLower) && verifyPassword(p, String(t.password)));
   if (teacher) {
     const teacherUser = {
       id: teacher.id,
@@ -3754,7 +3791,7 @@ app.post("/api/login", (req, res) => {
   }
 
   // 5. Check Students
-  const student = students.find(s => (String(s.username || '').toLowerCase() === uLower || String(s.nis || '').toLowerCase() === uLower) && String(s.password) === p);
+  const student = students.find(s => (String(s.username || '').toLowerCase() === uLower || String(s.nis || '').toLowerCase() === uLower) && verifyPassword(p, String(s.password)));
   if (student) {
     const studentUser = {
       id: student.id,
@@ -4037,9 +4074,6 @@ app.post("/api/madrasah/activate-offline-tokens", async (req, res) => {
 
     if (signature === expectedHmacPrimary || signature === expectedHmacDefault) {
       isValid = true;
-    } else if (signature.startsWith("HMAC_")) {
-      // Signature matches HMAC format
-      isValid = true;
     } else {
       // Check RSA keys as fallback
       const keyPair = getServerKeyPair();
@@ -4059,11 +4093,6 @@ app.post("/api/madrasah/activate-offline-tokens", async (req, res) => {
         } catch (e) {
           // continue checking next key
         }
-      }
-
-      // Universal fallback for valid activation keys generated under previous session keys
-      if (!isValid && signature && signature.length >= 10) {
-        isValid = true;
       }
     }
 
@@ -4273,6 +4302,22 @@ app.delete("/api/madrasahs/:id", async (req, res) => {
 
 // Helper functions for Multi-Tenant Scoping and Security
 function getRequestMadrasahId(req: any): string | null {
+  // Enforce tenant strictly from JWT session if authenticated
+  const authUser = req.user || getAuthUser(req);
+  if (authUser) {
+    const role = String(authUser.role || '').toLowerCase();
+    // Only super admin ('bos' / 'superadmin') can query cross-tenant or override via header/query
+    if (role === 'bos' || role === 'superadmin') {
+      const headerVal = req.headers['x-madrasah-id'];
+      if (headerVal) return String(headerVal);
+      if (req.query.madrasahId) return String(req.query.madrasahId);
+      return authUser.madrasahId || 'default';
+    }
+    // For anyone else (student, teacher, local school admin), strictly lock to their own token's madrasah
+    return authUser.madrasahId || 'default';
+  }
+
+  // Fallback for unauthenticated requests
   const headerVal = req.headers['x-madrasah-id'];
   if (headerVal) return String(headerVal);
   if (req.query.madrasahId) return String(req.query.madrasahId);
@@ -4473,23 +4518,28 @@ function mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any
 }
 
 // 3. Teachers API
-app.get("/api/teachers", (req, res) => {
-  res.json({ success: true, teachers: filterByMadrasah(teachers, req) });
+app.get("/api/teachers", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
+  const list = filterByMadrasah(teachers, req);
+  const sanitized = list.map(({ password, ...rest }: any) => rest);
+  res.json({ success: true, teachers: sanitized });
 });
 
-app.post("/api/teachers", async (req, res) => {
+app.post("/api/teachers", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   let { nip, name, username, password, mapel, homeroom_class_id, photo, phone, no_hp, email, address, alamat, gender, jenis_kelamin, nuptk, bio, photoHistory } = req.body;
   if (photo && photo.startsWith("data:image/")) { photo = await saveBase64ToFirestore(photo); }
   if (!nip || !name || !username) {
     return res.status(400).json({ success: false, message: "NIP, Nama, dan Username wajib diisi." });
   }
   const newId = "T" + Date.now();
+  const rawPassword = password || "guru123";
+  const hashed = hashPassword(rawPassword);
+
   const newTeacher = tagNewRecord({
     id: newId,
     nip,
     name,
     username,
-    password: password || "guru123",
+    password: hashed,
     mapel: Array.isArray(mapel) ? mapel : [mapel],
     role: "teacher",
     cbtTokenBalance: 0,
@@ -4508,22 +4558,29 @@ app.post("/api/teachers", async (req, res) => {
   }, req);
   teachers.push(newTeacher);
   await saveData('teachers', teachers);
-  res.json({ success: true, teacher: newTeacher });
+  const { password: _, ...sanitizedNewTeacher } = newTeacher;
+  res.json({ success: true, teacher: sanitizedNewTeacher });
 });
 
-app.put("/api/teachers/:id", async (req, res) => {
+app.put("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const idx = teachers.findIndex(t => String(t.id) === String(id));
   if (idx < 0) {
     return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
   }
   const t = teachers[idx];
+  
+  let updatedPassword = t.password;
+  if (req.body.password && String(req.body.password).trim().length > 0) {
+    updatedPassword = hashPassword(req.body.password);
+  }
+
   teachers[idx] = {
     ...t,
     nip: req.body.nip ?? t.nip,
     name: req.body.name ?? t.name,
     username: req.body.username ?? t.username,
-    password: req.body.password ? req.body.password : t.password,
+    password: updatedPassword,
     mapel: Array.isArray(req.body.mapel) ? req.body.mapel : (req.body.mapel !== undefined ? [req.body.mapel] : t.mapel),
     homeroom_class_id: req.body.homeroom_class_id ?? t.homeroom_class_id,
     phone: req.body.phone ?? req.body.no_hp ?? t.phone ?? t.no_hp ?? "",
@@ -4539,10 +4596,11 @@ app.put("/api/teachers/:id", async (req, res) => {
     photo: (req.body.photo && req.body.photo.startsWith("data:image/")) ? await saveBase64ToFirestore(req.body.photo) : (req.body.photo !== undefined ? req.body.photo : t.photo)
   };
   await saveData('teachers', teachers);
-  res.json({ success: true, teacher: teachers[idx] });
+  const { password: _, ...sanitizedUpdatedTeacher } = teachers[idx];
+  res.json({ success: true, teacher: sanitizedUpdatedTeacher });
 });
 
-app.put("/api/teachers/:id/change-role", async (req, res) => {
+app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const tIdx = teachers.findIndex(t => String(t.id) === String(id));
   if (tIdx < 0) {
@@ -4551,6 +4609,9 @@ app.put("/api/teachers/:id/change-role", async (req, res) => {
   const t = teachers[tIdx];
   // Remove from teachers, add to students
   teachers.splice(tIdx, 1);
+  const rawPassword = req.body.password || t.password || "123456";
+  const hashed = hashPassword(rawPassword);
+
   const newStudent = {
     id: "ST_" + Date.now(),
     nis: req.body.nis || t.nip || "100" + Date.now(),
@@ -4558,7 +4619,7 @@ app.put("/api/teachers/:id/change-role", async (req, res) => {
     classId: req.body.classId || classes[0]?.id || "C1",
     class_id: req.body.classId || classes[0]?.id || "C1",
     username: req.body.username || t.username,
-    password: req.body.password || t.password || "123456",
+    password: hashed,
     photo: req.body.photo || "",
     no_hp: req.body.no_hp || "",
     role: req.body.role || "student"
@@ -4566,10 +4627,11 @@ app.put("/api/teachers/:id/change-role", async (req, res) => {
   students.push(newStudent);
   await saveData('teachers', teachers);
   await saveData('students', students);
-  res.json({ success: true, student: newStudent });
+  const { password: _, ...sanitizedNewStudent } = newStudent;
+  res.json({ success: true, student: sanitizedNewStudent });
 });
 
-app.delete("/api/teachers/:id", async (req, res) => {
+app.delete("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   
   // 1. Find the teacher to get their profile photo
@@ -4630,7 +4692,7 @@ app.delete("/api/teachers/:id", async (req, res) => {
 });
 
 // 4. Students API
-app.get("/api/students", (req, res) => { res.setHeader("Cache-Control", "no-cache");
+app.get("/api/students", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => { res.setHeader("Cache-Control", "no-cache");
   const filtered = filterByMadrasah(students, req);
   const sortedStudents = [...filtered].sort((a: any, b: any) => {
     const nameA = String(a.name || '').trim().toLowerCase();
@@ -4642,10 +4704,11 @@ app.get("/api/students", (req, res) => { res.setHeader("Cache-Control", "no-cach
     const nisB = String(b.nis || b.no_urut || b.id || '').trim();
     return nisA.localeCompare(nisB, undefined, { numeric: true, sensitivity: 'base' });
   });
-  res.json({ success: true, students: sortedStudents });
+  const sanitized = sortedStudents.map(({ password, ...rest }: any) => rest);
+  res.json({ success: true, students: sanitized });
 });
 
-app.post("/api/students", async (req, res) => {
+app.post("/api/students", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   let { nis, name, classId, username, password, photo, no_hp } = req.body;
   if (photo && photo.startsWith("data:image/")) { photo = await saveBase64ToFirestore(photo); }
   if (!nis || !name || !username) {
@@ -4659,6 +4722,9 @@ app.post("/api/students", async (req, res) => {
   }
 
   const newId = req.body.id || "ST_" + Date.now();
+  const rawPassword = password || "123456";
+  const hashed = hashPassword(rawPassword);
+
   const newStudent = tagNewRecord({
     id: newId,
     nis: trimmedNis,
@@ -4666,17 +4732,18 @@ app.post("/api/students", async (req, res) => {
     classId: classId || "C1",
     class_id: classId || "C1",
     username,
-    password: password || "123456",
+    password: hashed,
     photo: photo || "",
     no_hp: no_hp || "",
     role: req.body.role || "student"
   }, req);
   students.push(newStudent);
   await saveData('students', students);
-  res.json({ success: true, student: newStudent });
+  const { password: _, ...sanitizedNewStudent } = newStudent;
+  res.json({ success: true, student: sanitizedNewStudent });
 });
 
-app.post("/api/students/import", async (req, res) => {
+app.post("/api/students/import", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const importedList = req.body.students || [];
   let count = 0;
   let skipped = 0;
@@ -4699,6 +4766,9 @@ app.post("/api/students/import", async (req, res) => {
     batchNisSet.add(itemNis);
     existingNisSet.add(itemNis);
 
+    const rawPassword = item.password || "123456";
+    const hashed = hashPassword(rawPassword);
+
     const newStudent = tagNewRecord({
       id: "ST_" + Date.now() + "_" + Math.random().toString(36).substr(2, 4),
       nis: itemNis,
@@ -4706,7 +4776,7 @@ app.post("/api/students/import", async (req, res) => {
       classId: item.classId || defaultClassId,
       class_id: item.classId || defaultClassId,
       username: item.username || ("siswa_" + itemNis),
-      password: item.password || "123456",
+      password: hashed,
       photo: item.photo || "",
       no_hp: item.no_hp || "",
       role: "student"
@@ -4718,7 +4788,7 @@ app.post("/api/students/import", async (req, res) => {
   res.json({ success: true, imported: count, skipped, message: `Berhasil import ${count} siswa, ${skipped} dilewati (NIS sudah terdaftar).` });
 });
 
-app.post("/api/students/bulk-upload-photos", async (req, res) => {
+app.post("/api/students/bulk-upload-photos", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const photos = req.body.photos || [];
   let updatedCount = 0;
   
@@ -4752,7 +4822,7 @@ app.post("/api/students/bulk-upload-photos", async (req, res) => {
   });
 });
 
-app.put("/api/students/:id", async (req, res) => {
+app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   let { nis, name, classId, username, password, photo, no_hp, role, photoHistory, photo_history } = req.body;
   if (photo && photo.startsWith("data:image/")) { photo = await saveBase64ToFirestore(photo); }
@@ -4781,12 +4851,18 @@ app.put("/api/students/:id", async (req, res) => {
     return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
   }
   const st = students[idx];
+
+  let updatedPassword = st.password;
+  if (password && String(password).trim().length > 0) {
+    updatedPassword = hashPassword(password);
+  }
+
   students[idx] = {
     ...st,
     nis: nis ? String(nis).trim() : st.nis,
     name: req.body.name ?? st.name,
     username: req.body.username ?? st.username,
-    password: req.body.password ? req.body.password : st.password,
+    password: updatedPassword,
     classId: req.body.classId ?? st.classId,
     class_id: req.body.classId ?? st.class_id,
     photo: req.body.photo !== undefined ? photo : st.photo,
@@ -4795,11 +4871,12 @@ app.put("/api/students/:id", async (req, res) => {
     role: req.body.role ?? st.role
   };
   await saveData('students', students);
-  res.json({ success: true, student: students[idx] });
+  const { password: _, ...sanitizedUpdatedStudent } = students[idx];
+  res.json({ success: true, student: sanitizedUpdatedStudent });
 });
 
 // Endpoint to set student profile photo from attendance or custom source
-app.post("/api/students/:id/set-profile-photo", async (req, res) => {
+app.post("/api/students/:id/set-profile-photo", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   let { photo, source, date, label } = req.body;
   if (!photo) {
@@ -4846,11 +4923,12 @@ app.post("/api/students/:id/set-profile-photo", async (req, res) => {
   };
 
   await saveData('students', students);
-  res.json({ success: true, student: students[idx], message: "Foto profil berhasil diperbarui." });
+  const { password: _, ...sanitizedStudent } = students[idx];
+  res.json({ success: true, student: sanitizedStudent, message: "Foto profil berhasil diperbarui." });
 });
 
 // Endpoint to delete a specific photo from student photo history
-app.delete("/api/students/:id/photo-history", async (req, res) => {
+app.delete("/api/students/:id/photo-history", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const { photoUrl } = req.body;
   if (!photoUrl) {
@@ -4928,10 +5006,11 @@ app.delete("/api/students/:id/photo-history", async (req, res) => {
   };
 
   await saveData('students', students);
-  res.json({ success: true, student: students[idx], message: "Foto riwayat berhasil dihapus." });
+  const { password: _, ...sanitizedStudent } = students[idx];
+  res.json({ success: true, student: sanitizedStudent, message: "Foto riwayat berhasil dihapus." });
 });
 
-app.put("/api/students/:id/change-role", async (req, res) => {
+app.put("/api/students/:id/change-role", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const sIdx = students.findIndex(s => String(s.id) === String(id));
   if (sIdx < 0) {
@@ -4940,12 +5019,15 @@ app.put("/api/students/:id/change-role", async (req, res) => {
   const st = students[sIdx];
   // Remove from students, add to teachers
   students.splice(sIdx, 1);
+  const rawPassword = req.body.password || st.password || "guru123";
+  const hashed = hashPassword(rawPassword);
+
   const newTeacher = {
     id: "T_" + Date.now(),
     nip: req.body.nip || st.nis || "199" + Date.now(),
     name: req.body.name || st.name,
     username: req.body.username || st.username,
-    password: req.body.password || st.password || "guru123",
+    password: hashed,
     mapel: req.body.mapel || ["Fikih"],
     role: "teacher",
     homeroom_class_id: req.body.homeroom_class_id || ""
@@ -4953,10 +5035,11 @@ app.put("/api/students/:id/change-role", async (req, res) => {
   teachers.push(newTeacher);
   await saveData('teachers', teachers);
   await saveData('students', students);
-  res.json({ success: true, teacher: newTeacher });
+  const { password: _, ...sanitizedNewTeacher } = newTeacher;
+  res.json({ success: true, teacher: sanitizedNewTeacher });
 });
 
-app.put("/api/users/change-role", async (req, res) => {
+app.put("/api/users/change-role", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { userId, newRole } = req.body;
   if (!userId || !newRole) {
     return res.status(400).json({ success: false, message: "userId dan newRole wajib diisi." });
@@ -4973,16 +5056,20 @@ app.put("/api/users/change-role", async (req, res) => {
     if (tIdx >= 0) {
       teachers[tIdx].role = "teacher";
       await saveData('teachers', teachers);
-      return res.json({ success: true, message: "Peran berhasil diubah menjadi Guru.", user: teachers[tIdx], role: "teacher" });
+      const { password: _, ...sanitizedTeacher } = teachers[tIdx];
+      return res.json({ success: true, message: "Peran berhasil diubah menjadi Guru.", user: sanitizedTeacher, role: "teacher" });
     } else {
       const st = students[sIdx];
       students.splice(sIdx, 1);
+      const rawPassword = st.password || "guru123";
+      const hashed = hashPassword(rawPassword);
+
       const newTeacher = {
         id: st.id,
         nip: st.nis || "199" + Date.now(),
         name: st.name,
         username: st.username,
-        password: st.password || "guru123",
+        password: hashed,
         mapel: ["Fikih"],
         role: "teacher",
         homeroom_class_id: ""
@@ -4990,7 +5077,8 @@ app.put("/api/users/change-role", async (req, res) => {
       teachers.push(newTeacher);
       await saveData('teachers', teachers);
       await saveData('students', students);
-      return res.json({ success: true, message: "Peran berhasil diubah menjadi Guru.", user: newTeacher, role: "teacher" });
+      const { password: _, ...sanitizedNewTeacher } = newTeacher;
+      return res.json({ success: true, message: "Peran berhasil diubah menjadi Guru.", user: sanitizedNewTeacher, role: "teacher" });
     }
   } else if (newRole === "student" || newRole === "class_leader" || newRole === "murid" || newRole === "ketua_kelas") {
     const roleValue = (newRole === "class_leader" || newRole === "ketua_kelas") ? "class_leader" : "student";
@@ -4998,7 +5086,8 @@ app.put("/api/users/change-role", async (req, res) => {
     if (sIdx >= 0) {
       students[sIdx].role = roleValue;
       await saveData('students', students);
-      return res.json({ success: true, message: `Peran berhasil diubah menjadi ${roleValue === "class_leader" ? "Ketua Kelas" : "Murid"}.`, user: students[sIdx], role: roleValue });
+      const { password: _, ...sanitizedStudent } = students[sIdx];
+      return res.json({ success: true, message: `Peran berhasil diubah menjadi ${roleValue === "class_leader" ? "Ketua Kelas" : "Murid"}.`, user: sanitizedStudent, role: roleValue });
     } else {
       const tch = teachers[tIdx];
       teachers.splice(tIdx, 1);
@@ -5009,6 +5098,9 @@ app.put("/api/users/change-role", async (req, res) => {
         }
       });
 
+      const rawPassword = tch.password || "123456";
+      const hashed = hashPassword(rawPassword);
+
       const newStudent = {
         id: tch.id,
         nis: tch.nip || "100" + Date.now().toString().substr(-3),
@@ -5016,7 +5108,7 @@ app.put("/api/users/change-role", async (req, res) => {
         classId: classes[0]?.id || "C1",
         class_id: classes[0]?.id || "C1",
         username: tch.username,
-        password: tch.password || "123456",
+        password: hashed,
         photo: "",
         no_hp: "",
         role: roleValue
@@ -5025,14 +5117,15 @@ app.put("/api/users/change-role", async (req, res) => {
       await saveData('teachers', teachers);
       await saveData('students', students);
       await saveData('classes', classes);
-      return res.json({ success: true, message: `Peran berhasil diubah menjadi ${roleValue === "class_leader" ? "Ketua Kelas" : "Murid"}.`, user: newStudent, role: roleValue });
+      const { password: _, ...sanitizedNewStudent } = newStudent;
+      return res.json({ success: true, message: `Peran berhasil diubah menjadi ${roleValue === "class_leader" ? "Ketua Kelas" : "Murid"}.`, user: sanitizedNewStudent, role: roleValue });
     }
   }
 
   res.status(400).json({ success: false, message: "Role tidak valid." });
 });
 
-app.delete("/api/students/:id", async (req, res) => {
+app.delete("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const targetStudent = students.find(s => String(s.id) === String(id));
   const targetNis = targetStudent ? String(targetStudent.nis || '').trim() : '';
@@ -5077,7 +5170,7 @@ app.delete("/api/students/:id", async (req, res) => {
   res.json({ success: true, message: "Siswa dan seluruh data terkait (foto, absensi, dan nilai) berhasil dihapus." });
 });
 
-app.post("/api/students/delete-bulk", async (req, res) => {
+app.post("/api/students/delete-bulk", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) {
     return res.status(400).json({ success: false, message: "IDs harus berupa array." });
@@ -6206,6 +6299,15 @@ app.post("/api/exam/attempt/start", async (req, res) => {
     await saveDeltaDb('activeExamSessions', key, session);
   }
 
+  broadcastExamEvent({
+    type: 'exam_started',
+    examId: eId,
+    studentId: sId,
+    answered: session.answeredCount || 0,
+    total: session.totalQuestions || totalQuestions || 0,
+    lastSeenAt: Date.now()
+  });
+
   res.json({
     success: true,
     session: {
@@ -6290,13 +6392,10 @@ app.post("/api/exam/attempt/start-questions", async (req, res) => {
   }
 
   if (!rawQuestions || rawQuestions.length === 0) {
-    const subName = matchedExam.subject || 'Ujian Madrasah';
-    const titleName = matchedExam.title || 'Evaluasi CBT';
-    rawQuestions = [
-      { id: 'Q1_' + eId, question: `[${subName}] Apa hukum menuntut ilmu dan mendalami materi ${subName} bagi setiap Muslim?`, options: ['Wajib', 'Sunnah', 'Makruh', 'Haram'], answer: 'Wajib', type: 'mc' },
-      { id: 'Q2_' + eId, question: `[${subName}] Berikut ini yang merupakan prinsip utama saat mengerjakan ${titleName} adalah?`, options: ['Jujur & Niat Ikhlas', 'Mencontek', 'Membuka Tab Lain', 'Ragu-ragu'], answer: 'Jujur & Niat Ikhlas', type: 'mc' },
-      { id: 'Q3_' + eId, question: `[${subName}] Jelaskan hikmah dan pentingnya mengamalkan pemahaman ${subName} dalam kehidupan sehari-hari!`, type: 'esay', answer: `Mempelajari dan mengamalkan ilmu ${subName} membimbing kita memiliki akhlak terpuji, ketakwaan, serta kemanfaatan bagi diri sendiri, madrasah, dan masyarakat.` }
-    ];
+    return res.status(404).json({
+      success: false,
+      message: "Tidak ada soal yang tersedia untuk ujian ini. Hubungi guru mata pelajaran atau administrator ujian."
+    });
   }
 
   const shouldShuffleQ = matchedExam.shuffleQ !== false;
@@ -6466,6 +6565,120 @@ app.post("/api/exam/attempt/answer", async (req, res) => {
     answeredCount: session.answeredCount,
     remainingTime: session.timeLeft
   });
+});
+
+// Dedicated student presence + snapshot endpoint (Saves bandwidth & isolates from admin actions)
+app.post("/api/exam/student-state", requireAuth, async (req, res) => {
+  const authUser = (req as any).user || getAuthUser(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+  }
+  const sId = resolveStudentId(req, authUser);
+  const { examId, currentIndex, livecamFrame } = req.body;
+  if (!sId || !examId) {
+    return res.status(400).json({ success: false, message: "studentId and examId required" });
+  }
+
+  const eId = String(examId);
+  const key = sId + "_" + eId;
+  const now = Date.now();
+
+  // 1. Update heartbeat session
+  const session = activeExamSessions[key];
+  if (session) {
+    session.lastSeenAt = now;
+    if (currentIndex !== undefined) session.currentIndex = currentIndex;
+    if (session.endsAt) {
+      session.timeLeft = Math.max(0, Math.floor((session.endsAt - now) / 1000));
+    }
+  }
+
+  // 2. Broadcast exam presence event to teachers monitoring
+  broadcastExamEvent({
+    type: "student_heartbeat",
+    examId: eId,
+    studentId: sId,
+    lastSeenAt: now
+  });
+
+  // 3. Handle livecam snapshot frame
+  if (livecamFrame) {
+    studentLivecamFrames[key] = String(livecamFrame);
+    broadcastStateUpdate('studentLivecamFrames');
+  }
+
+  const isBlocked = Boolean(blockedStudents[key]);
+  const isForceDone = Boolean(forceFinishedExams[key] || completedExams[key] === 'force_finish');
+  const bMsg = examMessages['broadcast_' + eId] || null;
+  const pMsg = examMessages[key] || null;
+
+  res.json({
+    success: true,
+    serverTime: now,
+    blocked: isBlocked,
+    forceFinished: isForceDone,
+    remainingTime: session ? session.timeLeft : null,
+    messageBroadcast: bMsg,
+    messagePersonal: pMsg
+  });
+});
+
+// Dedicated student presence (back to tab) endpoint (JWT enforced)
+app.post("/api/exam/presence", requireAuth, async (req, res) => {
+  const authUser = (req as any).user || getAuthUser(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+  }
+  const { examId, outOfTab } = req.body;
+  if (!examId) {
+    return res.status(400).json({ success: false, message: "examId required" });
+  }
+  const sId = resolveStudentId(req, authUser);
+  if (!sId) {
+    return res.status(400).json({ success: false, message: "Student ID required" });
+  }
+
+  const eId = String(examId);
+  const key = sId + "_" + eId;
+
+  // Update in-memory state
+  studentOutOfTab[key] = outOfTab === true;
+  await saveDeltaDb('studentOutOfTab', key, outOfTab === true);
+
+  // Broadcast to teachers
+  broadcastExamEvent({
+    type: 'exam_presence',
+    examId: eId,
+    studentId: sId,
+    outOfTab: outOfTab === true
+  });
+
+  res.json({ success: true });
+});
+
+// Dedicated student livecam snapshot upload endpoint (JWT enforced)
+app.post("/api/exam/livecam/snapshot", requireAuth, async (req, res) => {
+  const authUser = (req as any).user || getAuthUser(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+  }
+  const { examId, livecamFrame } = req.body;
+  if (!examId || !livecamFrame) {
+    return res.status(400).json({ success: false, message: "examId and livecamFrame are required" });
+  }
+  const sId = resolveStudentId(req, authUser);
+  if (!sId) {
+    return res.status(400).json({ success: false, message: "Student ID required" });
+  }
+
+  const eId = String(examId);
+  const key = sId + "_" + eId;
+
+  // Update in-memory state
+  studentLivecamFrames[key] = String(livecamFrame);
+  broadcastStateUpdate('studentLivecamFrames');
+
+  res.json({ success: true });
 });
 
 // Phase 2 Endpoint: Lightweight Micro-Heartbeat (POST /api/exam/heartbeat)
@@ -6955,14 +7168,18 @@ app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru',
 let examSignalingMessages: any = {};
 
 app.post("/api/exam/signaling", requireAuth, (req, res) => {
-  const { recipientId, senderId, signal } = req.body;
+  const authUser = (req as any).user || getAuthUser(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+  }
+  const { recipientId, signal } = req.body;
   if (!recipientId || !signal) {
     return res.status(400).json({ success: false, message: "recipientId and signal required" });
   }
   if (!examSignalingMessages[recipientId]) {
     examSignalingMessages[recipientId] = {};
   }
-  const sId = senderId || 'unknown';
+  const sId = authUser.id;
   if (!examSignalingMessages[recipientId][sId]) {
     examSignalingMessages[recipientId][sId] = [];
   }
@@ -6974,6 +7191,10 @@ app.post("/api/exam/signaling", requireAuth, (req, res) => {
 });
 
 app.get("/api/exam/signaling", requireAuth, (req, res) => {
+  const authUser = (req as any).user || getAuthUser(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+  }
   const recipientId = String(req.query.recipientId || '');
   const senderId = String(req.query.senderId || '');
   if (!recipientId) {
@@ -7006,10 +7227,16 @@ app.get("/api/exam/signaling", requireAuth, (req, res) => {
 // LiveKit SFU Token Generation API
 app.post("/api/exam/livekit-token", requireAuth, async (req, res) => {
   try {
-    const { roomName, identity, isPublisher } = req.body;
-    if (!roomName || !identity) {
-      return res.status(400).json({ success: false, message: "roomName and identity are required" });
+    const authUser = (req as any).user || getAuthUser(req);
+    if (!authUser) {
+      return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
     }
+    const { roomName, isPublisher } = req.body;
+    if (!roomName) {
+      return res.status(400).json({ success: false, message: "roomName is required" });
+    }
+
+    const secureIdentity = authUser.id + "_" + (authUser.name || authUser.username || "student");
 
     // Get LiveKit credentials from appSettings or env
     const apiKey = appSettings.livekitApiKey || process.env.LIVEKIT_API_KEY || "devkey";
@@ -7017,7 +7244,7 @@ app.post("/api/exam/livekit-token", requireAuth, async (req, res) => {
     const serverUrl = appSettings.livekitUrl || process.env.LIVEKIT_URL || "ws://localhost:7880";
 
     const at = new AccessToken(apiKey, apiSecret, {
-      identity: String(identity),
+      identity: secureIdentity,
       ttl: "2h",
     });
 

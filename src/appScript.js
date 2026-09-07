@@ -690,7 +690,7 @@ function initRealtimeSync() {
                         console.log('Real-time update received for key:', payload.key);
                         syncKeyFromServer(payload.key);
                     }
-                } else if (payload && (payload.type === 'exam_progress' || payload.type === 'student_heartbeat' || payload.type === 'exam_violation' || payload.type === 'exam_finish')) {
+                } else if (payload && (payload.type === 'exam_progress' || payload.type === 'student_heartbeat' || payload.type === 'exam_violation' || payload.type === 'exam_finish' || payload.type === 'exam_started' || payload.type === 'exam_presence')) {
                     if (typeof window.__onExamMonitoringEvent === 'function') {
                         window.__onExamMonitoringEvent(payload);
                     }

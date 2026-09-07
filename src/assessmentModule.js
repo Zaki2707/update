@@ -2171,6 +2171,14 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
             window.renderLkpdEvaluationSection(evalContainer, appState.activeEvaluationLkpdId || null);
         }
     }
+
+    if (currentTab === 'monitoring' && appState.activeMonitoringExamId) {
+        setTimeout(() => {
+            if (typeof window.refreshMonitoringState === 'function') {
+                window.refreshMonitoringState(appState.activeMonitoringExamId).catch(err => console.warn("Auto-monitoring state sync failed:", err));
+            }
+        }, 50);
+    }
 }
 
 let tempExamClasses = [];
@@ -3772,7 +3780,11 @@ async function startStudentExam(examId) {
                 renderActiveExamScreen();
             }
         }).catch(() => {
-            syncExamStateToServer({ tabSwitches: { [key]: count }, outOfTab: { [key]: true } });
+            fetch('/api/exam/presence', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ examId: activeExamSession.exam.id, outOfTab: true })
+            }).catch(() => {});
         });
 
         const autoBlock = parseInt(activeExamSession.exam.autoBlock) || 0;
@@ -3821,7 +3833,11 @@ async function startStudentExam(examId) {
                 const key = currentStudent.id + '_' + activeExamSession.exam.id;
                 appState.studentOutOfTab[key] = false;
                 safeSetStorage('madrasah_student_out_of_tab', appState.studentOutOfTab);
-                syncExamStateToServer({ outOfTab: { [key]: false } });
+                fetch('/api/exam/presence', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ examId: activeExamSession.exam.id, outOfTab: false })
+                }).catch(() => {});
                 showToast('Anda telah kembali ke tab ujian. Tetap fokus!', 'success');
             }
         });
@@ -4087,7 +4103,14 @@ window.sendStudentSingleSnapshot = function() {
                 const key = st.id + '_' + activeExamSession.exam.id;
                 if (!appState.runtimeLivecamFrames) appState.runtimeLivecamFrames = {};
                 appState.runtimeLivecamFrames[key] = frameData;
-                syncExamStateToServer({ livecamFrame: { key, frame: frameData } });
+                fetch('/api/exam/livecam/snapshot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        examId: activeExamSession.exam.id,
+                        livecamFrame: frameData
+                    })
+                }).catch(() => {});
                 console.log("Attendance snapshot sent successfully");
             } catch (e) {}
         }
@@ -8101,7 +8124,7 @@ window.initSignalingWebSocket = function(clientId, onSignalReceived) {
                 const data = JSON.parse(event.data);
                 if (data.type === 'signal') {
                     onSignalReceived(data.senderId, data.signal);
-                } else if (data.type === 'exam_progress' || data.type === 'student_heartbeat' || data.type === 'exam_violation' || data.type === 'exam_finish') {
+                } else if (data.type === 'exam_progress' || data.type === 'student_heartbeat' || data.type === 'exam_violation' || data.type === 'exam_finish' || data.type === 'exam_started' || data.type === 'exam_presence') {
                     if (typeof window.__onExamMonitoringEvent === 'function') {
                         window.__onExamMonitoringEvent(data);
                     }
@@ -10032,7 +10055,34 @@ window.updateStudentMonitoringCard = function(event) {
     const cardEl = document.getElementById(`monitor-card-${stId}`);
     if (!cardEl) return;
 
-    if (event.type === 'exam_progress') {
+    if (event.type === 'exam_started') {
+        const total = Number(event.total || 0);
+        const progressContainer = document.getElementById(`monitor-progress-${stId}`);
+        if (progressContainer) {
+            progressContainer.innerHTML = `
+                <div class="w-full">
+                    <div class="w-full bg-slate-950/80 border border-white/10 h-1.5 rounded-full overflow-hidden">
+                        <div class="bg-emerald-400 h-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="text-[9px] text-slate-300 mt-1 flex justify-between font-mono">
+                        <span>0%</span>
+                        <span>Terjawab: 0/${total}</span>
+                    </div>
+                </div>
+            `;
+        }
+        const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+        if (statusBadge) {
+            statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-500 text-slate-900 font-bold animate-pulse border border-emerald-300';
+            statusBadge.innerHTML = '<i class="fa-solid fa-circle-dot"></i>';
+            statusBadge.title = 'Aktif Mengerjakan';
+        }
+        const hbDot = document.getElementById(`monitor-hb-${stId}`);
+        if (hbDot) {
+            hbDot.classList.remove('opacity-30');
+            hbDot.classList.add('opacity-100');
+        }
+    } else if (event.type === 'exam_progress') {
         const answered = Number(event.answered || 0);
         const total = Number(event.total || 1);
         const pct = Math.min(100, Math.round((answered / total) * 100));
@@ -10066,6 +10116,44 @@ window.updateStudentMonitoringCard = function(event) {
                 if (hbDot) hbDot.classList.remove('scale-125');
             }, 300);
         }
+        const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+        if (statusBadge) {
+            const isFinished = statusBadge.classList.contains('bg-emerald-800') || statusBadge.innerHTML.includes('fa-check') || statusBadge.innerHTML.includes('fa-flag-checkered');
+            const isBlocked = statusBadge.classList.contains('bg-rose-600') || statusBadge.innerHTML.includes('fa-ban') || cardEl.classList.contains('border-rose-500');
+            if (!isFinished && !isBlocked) {
+                statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-500 text-slate-900 font-bold animate-pulse border border-emerald-300';
+                statusBadge.innerHTML = '<i class="fa-solid fa-circle-dot"></i>';
+                statusBadge.title = 'Aktif Mengerjakan';
+            }
+        }
+    } else if (event.type === 'exam_presence') {
+        if (event.outOfTab === false) {
+            if (!cardEl.classList.contains('border-rose-500')) {
+                cardEl.classList.remove('border-amber-500', 'ring-2', 'ring-amber-500/30');
+                cardEl.classList.add('border-slate-800');
+            }
+            const tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+            if (tabBadge) {
+                tabBadge.className = 'w-7 h-7 rounded-full bg-slate-950/80 text-amber-300 flex items-center justify-center text-xs shadow backdrop-blur-md border border-amber-500/40';
+            }
+        } else if (event.outOfTab === true) {
+            if (!cardEl.classList.contains('border-rose-500')) {
+                cardEl.classList.remove('border-slate-800');
+                cardEl.classList.add('border-amber-500', 'ring-2', 'ring-amber-500/30');
+            }
+            const cornerBadges = document.getElementById(`monitor-corner-${stId}`);
+            if (cornerBadges) {
+                let tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+                if (!tabBadge) {
+                    tabBadge = document.createElement('span');
+                    tabBadge.id = `monitor-tab-badge-${stId}`;
+                    cornerBadges.insertBefore(tabBadge, cornerBadges.firstChild);
+                }
+                tabBadge.className = 'w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs shadow-lg animate-pulse backdrop-blur-md border border-rose-400';
+                tabBadge.title = 'Keluar Tab';
+                tabBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+            }
+        }
     } else if (event.type === 'exam_violation') {
         const tabSwitches = Number(event.tabSwitches || 1);
         const cornerBadges = document.getElementById(`monitor-corner-${stId}`);
@@ -10081,11 +10169,17 @@ window.updateStudentMonitoringCard = function(event) {
             tabBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
         }
         if (event.autoBlocked) {
-            cardEl.classList.remove('border-slate-800');
+            cardEl.classList.remove('border-slate-800', 'border-amber-500', 'ring-amber-500/30');
             cardEl.classList.add('border-rose-500', 'ring-2', 'ring-rose-500/30');
             const filler = document.getElementById(`monitor-blocked-filler-${stId}`);
             if (filler) {
                 filler.innerHTML = '<span class="px-2.5 py-1 bg-rose-600 text-white text-[10px] font-bold rounded-full shadow-lg border border-rose-400">Diblokir</span>';
+            }
+            const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+            if (statusBadge) {
+                statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-rose-600 text-white border border-rose-400';
+                statusBadge.innerHTML = '<i class="fa-solid fa-ban"></i>';
+                statusBadge.title = 'Diblokir';
             }
         }
     } else if (event.type === 'exam_finish') {
