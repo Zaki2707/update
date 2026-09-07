@@ -2576,7 +2576,7 @@ function verifyAuthToken(token: string): AuthSession | null {
 function hashPassword(plainText: string): string {
   if (!plainText) return "";
   const str = String(plainText).trim();
-  if (str.startsWith("scrypt$") && str.split("$").length === 7) {
+  if (str.startsWith("scrypt$") && str.split("$").length === 6) {
     return str; // Already hashed
   }
   if (str.startsWith("sha256$") && str.split("$").length === 3) {
@@ -2595,14 +2595,27 @@ function verifyPassword(plainText: string, hashedPassword: string): boolean {
   
   if (hStr.startsWith("scrypt$")) {
     const parts = hStr.split("$");
-    if (parts.length !== 7) return false;
+    if (parts.length !== 6) return false;
+
     const N = parseInt(parts[1], 10);
     const r = parseInt(parts[2], 10);
     const p = parseInt(parts[3], 10);
     const salt = parts[4];
-    const hash = parts[5];
-    const derivedKey = crypto.scryptSync(pStr, salt, 64, { N, r, p });
-    return derivedKey.toString("hex") === hash;
+    const expectedHash = parts[5];
+
+    const derivedKey = crypto.scryptSync(
+      pStr,
+      salt,
+      64,
+      { N, r, p }
+    );
+
+    const actualHash = derivedKey.toString("hex");
+
+    return crypto.timingSafeEqual(
+      Buffer.from(actualHash, "hex"),
+      Buffer.from(expectedHash, "hex")
+    );
   }
   
   if (hStr.startsWith("sha256$")) {
@@ -2812,12 +2825,6 @@ app.get("/api/all-data", requireAuth, (req, res) => {
   const sanitizedTeachers = filteredTeachers.map(({ password, ...rest }: any) => rest);
   const sanitizedStudents = sortedStudents.map((st: any) => {
     const { password, passwordRaw, ...rest } = st;
-    if (isTeacherOrAdmin) {
-      // If teacher/admin, allow printing the student password (retrieve plain-text or fallback to raw if not a hash)
-      const plainPassword = passwordRaw || (password && !password.startsWith("scrypt$") && !password.startsWith("sha256$") ? password : "Sandi Terenkripsi");
-      return { ...rest, password: plainPassword };
-    }
-    // If student, remove password fields completely
     return rest;
   });
   const sanitizedMadrasahs = madrasahs.map(({ adminPass, ...rest }: any) => rest);
@@ -3851,18 +3858,40 @@ app.get("/api/auth/me", (req, res) => {
   res.json({ success: true, user: authUser });
 });
 
+function sanitizeMadrasahPublic(m: any) {
+  if (!m) return null;
+  return {
+    id: m.id,
+    name: m.name,
+    slug: m.slug,
+    level: m.level,
+    phone: m.phone,
+    isActive: m.isActive
+  };
+}
+
 // Multi-Tenant & Bos Token Endpoints
-app.get("/api/madrasahs", requireAuth, (req, res) => {
-  res.json({ success: true, madrasahs: madrasahs || [] });
+app.get("/api/madrasahs", requireAuth, (req: any, res) => {
+  const authUser = req.user;
+  const isBos = authUser && (authUser.role === 'bos' || authUser.role === 'superadmin');
+  if (isBos) {
+    return res.json({ success: true, madrasahs: madrasahs || [] });
+  }
+  res.json({ success: true, madrasahs: (madrasahs || []).map(sanitizeMadrasahPublic) });
 });
 
-app.get("/api/madrasah-by-slug/:slug", (req, res) => {
+app.get("/api/madrasah-by-slug/:slug", (req: any, res) => {
   const { slug } = req.params;
   const m = madrasahs.find(item => String(item.slug).toLowerCase() === String(slug).toLowerCase() || String(item.id) === String(slug));
   if (!m) {
     return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
   }
-  res.json({ success: true, madrasah: m });
+  const authUser = req.user;
+  const isBos = authUser && (authUser.role === 'bos' || authUser.role === 'superadmin');
+  if (isBos) {
+    return res.json({ success: true, madrasah: m });
+  }
+  res.json({ success: true, madrasah: sanitizeMadrasahPublic(m) });
 });
 
 app.post("/api/register-madrasah", async (req, res) => {
@@ -3912,7 +3941,7 @@ app.get("/api/payment-settings", (req, res) => {
   res.json({ success: true, paymentAccounts: appSettings.paymentAccounts || [] });
 });
 
-app.post("/api/payment-settings", async (req, res) => {
+app.post("/api/payment-settings", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { paymentAccounts } = req.body;
   if (Array.isArray(paymentAccounts)) {
     appSettings.paymentAccounts = paymentAccounts;
@@ -3922,7 +3951,7 @@ app.post("/api/payment-settings", async (req, res) => {
   return res.status(400).json({ success: false, message: "Data rekening tidak valid." });
 });
 
-app.post("/api/cbt-token-price", async (req, res) => {
+app.post("/api/cbt-token-price", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { price } = req.body;
   const newPrice = parseInt(price, 10);
   if (isNaN(newPrice) || newPrice < 0) {
@@ -4195,10 +4224,11 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
   }
 });
 
-app.post("/api/deduct-cbt-token", async (req, res) => {
-  const { madrasahId, teacherId } = req.body;
+app.post("/api/deduct-cbt-token", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  const authUser = req.user;
 
-  if (teacherId) {
+  if (authUser.role === 'teacher' || authUser.role === 'guru') {
+    const teacherId = authUser.id;
     let tch = teachers.find(t => String(t.id) === String(teacherId) || String(t.username) === String(teacherId) || String(t.nip) === String(teacherId));
     if (!tch) {
       return res.status(404).json({ success: false, message: "Data guru tidak ditemukan." });
@@ -4217,30 +4247,31 @@ app.post("/api/deduct-cbt-token", async (req, res) => {
       isTeacher: true,
       message: "1 Token Ujian Guru berhasil digunakan."
     });
-  }
-
-  let targetM = madrasahs.find(m => String(m.id) === String(madrasahId) || String(m.slug) === String(madrasahId));
-  if (!targetM && madrasahs.length > 0) {
-    targetM = madrasahs[0];
-  }
-  if (!targetM) {
-    return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
-  }
-  if ((targetM.cbtTokenBalance || 0) <= 0) {
-    return res.status(400).json({
-      success: false,
-      message: `Saldo Token Ujian madrasah habis (0 Token). Harga token: Rp ${cbtTokenPrice.toLocaleString('id-ID')}/token.`
+  } else {
+    const madrasahId = getRequestMadrasahId(req) || authUser.madrasahId;
+    let targetM = madrasahs.find(m => String(m.id) === String(madrasahId) || String(m.slug) === String(madrasahId));
+    if (!targetM && madrasahs.length > 0) {
+      targetM = madrasahs[0];
+    }
+    if (!targetM) {
+      return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+    }
+    if ((targetM.cbtTokenBalance || 0) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Saldo Token Ujian madrasah habis (0 Token). Harga token: Rp ${cbtTokenPrice.toLocaleString('id-ID')}/token.`
+      });
+    }
+    targetM.cbtTokenBalance -= 1;
+    // Re-sign balance to prevent false-positive tamper detection on next startup
+    targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
+    await saveData('madrasahs', madrasahs);
+    return res.json({
+      success: true,
+      remainingTokens: targetM.cbtTokenBalance,
+      message: "1 Token Ujian berhasil digunakan."
     });
   }
-  targetM.cbtTokenBalance -= 1;
-  // Re-sign balance to prevent false-positive tamper detection on next startup
-  targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
-  await saveData('madrasahs', madrasahs);
-  return res.json({
-    success: true,
-    remainingTokens: targetM.cbtTokenBalance,
-    message: "1 Token Ujian berhasil digunakan."
-  });
 });
 
 app.put("/api/teachers/:id/tokens", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
@@ -4756,7 +4787,7 @@ app.get("/api/students", requireAuth, requireRole(['teacher', 'guru', 'admin', '
     const nisB = String(b.nis || b.no_urut || b.id || '').trim();
     return nisA.localeCompare(nisB, undefined, { numeric: true, sensitivity: 'base' });
   });
-  const sanitized = sortedStudents.map(({ password, ...rest }: any) => rest);
+  const sanitized = sortedStudents.map(({ password, passwordRaw, ...rest }: any) => rest);
   res.json({ success: true, students: sanitized });
 });
 
@@ -4785,15 +4816,21 @@ app.post("/api/students", requireAuth, requireRole(['teacher', 'guru', 'admin', 
     class_id: classId || "C1",
     username,
     password: hashed,
-    passwordRaw: rawPassword,
     photo: photo || "",
     no_hp: no_hp || "",
     role: req.body.role || "student"
   }, req);
   students.push(newStudent);
   await saveData('students', students);
-  const { password: _, ...sanitizedNewStudent } = newStudent;
-  res.json({ success: true, student: sanitizedNewStudent });
+  
+  const credentials = [{
+    studentId: newId,
+    username,
+    temporaryPassword: rawPassword
+  }];
+
+  const { password: _, passwordRaw: __, ...sanitizedNewStudent } = newStudent;
+  res.json({ success: true, student: sanitizedNewStudent, credentials });
 });
 
 app.post("/api/students/import", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
@@ -4805,6 +4842,8 @@ app.post("/api/students/import", requireAuth, requireRole(['teacher', 'guru', 'a
   const batchNisSet = new Set();
   const tenantClasses = filterByMadrasah(classes, req);
   const defaultClassId = tenantClasses[0]?.id || "C1";
+
+  const credentials: any[] = [];
 
   for (const item of importedList) {
     const itemNis = String(item.nis || '').trim();
@@ -4821,25 +4860,32 @@ app.post("/api/students/import", requireAuth, requireRole(['teacher', 'guru', 'a
 
     const rawPassword = item.password || "123456";
     const hashed = hashPassword(rawPassword);
+    const newId = "ST_" + Date.now() + "_" + Math.random().toString(36).substr(2, 4);
 
     const newStudent = tagNewRecord({
-      id: "ST_" + Date.now() + "_" + Math.random().toString(36).substr(2, 4),
+      id: newId,
       nis: itemNis,
       name: String(item.name),
       classId: item.classId || defaultClassId,
       class_id: item.classId || defaultClassId,
       username: item.username || ("siswa_" + itemNis),
       password: hashed,
-      passwordRaw: rawPassword,
       photo: item.photo || "",
       no_hp: item.no_hp || "",
       role: "student"
     }, req);
     students.push(newStudent);
+
+    credentials.push({
+      studentId: newId,
+      username: item.username || ("siswa_" + itemNis),
+      temporaryPassword: rawPassword
+    });
+
     count++;
   }
   await saveData('students', students);
-  res.json({ success: true, imported: count, skipped, message: `Berhasil import ${count} siswa, ${skipped} dilewati (NIS sudah terdaftar).` });
+  res.json({ success: true, imported: count, skipped, credentials, message: `Berhasil import ${count} siswa, ${skipped} dilewati (NIS sudah terdaftar).` });
 });
 
 app.post("/api/students/bulk-upload-photos", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
@@ -4907,19 +4953,22 @@ app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
   const st = students[idx];
 
   let updatedPassword = st.password;
-  let updatedPasswordRaw = st.passwordRaw || (st.password && !st.password.startsWith("scrypt$") && !st.password.startsWith("sha256$") ? st.password : "123456");
+  const credentials: any[] = [];
   if (password && String(password).trim().length > 0) {
     updatedPassword = hashPassword(password);
-    updatedPasswordRaw = String(password).trim();
+    credentials.push({
+      studentId: String(id),
+      username: req.body.username ?? st.username,
+      temporaryPassword: String(password).trim()
+    });
   }
 
-  students[idx] = {
+  const updatedStudent = {
     ...st,
     nis: nis ? String(nis).trim() : st.nis,
     name: req.body.name ?? st.name,
     username: req.body.username ?? st.username,
     password: updatedPassword,
-    passwordRaw: updatedPasswordRaw,
     classId: req.body.classId ?? st.classId,
     class_id: req.body.classId ?? st.class_id,
     photo: req.body.photo !== undefined ? photo : st.photo,
@@ -4927,9 +4976,11 @@ app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     no_hp: req.body.no_hp !== undefined ? req.body.no_hp : st.no_hp,
     role: req.body.role ?? st.role
   };
+  delete (updatedStudent as any).passwordRaw;
+  students[idx] = updatedStudent;
   await saveData('students', students);
-  const { password: _, ...sanitizedUpdatedStudent } = students[idx];
-  res.json({ success: true, student: sanitizedUpdatedStudent });
+  const { password: _, passwordRaw: __, ...sanitizedUpdatedStudent } = students[idx];
+  res.json({ success: true, student: sanitizedUpdatedStudent, credentials });
 });
 
 // Endpoint to set student profile photo from attendance or custom source

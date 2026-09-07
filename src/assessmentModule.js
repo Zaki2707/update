@@ -5688,13 +5688,29 @@ function getKartuPesertaHtml(st, className, roomName, isPrintMode) {
                   <td style="text-align: center; font-weight: bold; vertical-align: top;">:</td>
                   <td style="font-weight: 900; font-family: monospace; font-size: 8.5pt; vertical-align: top; word-break: break-all;">${st.username}</td>
                </tr>
-               ${window.kartuPesertaConfig.showPassword !== false ? `
-               <tr>
-                  <td style="white-space: nowrap; font-weight: bold; vertical-align: top;">Password</td>
-                  <td style="text-align: center; font-weight: bold; vertical-align: top;">:</td>
-                  <td style="font-weight: 900; font-family: monospace; font-size: 8.5pt; vertical-align: top; word-break: break-all;">${st.password}</td>
-               </tr>
-               ` : ''}
+               ${(() => {
+                  if (window.kartuPesertaConfig.showPassword === false) return '';
+                  let displayPassword = st.password || '';
+                  try {
+                      const storedCreds = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
+                      if (Array.isArray(storedCreds)) {
+                          const match = storedCreds.find(c => String(c.studentId) === String(st.id));
+                          if (match && match.temporaryPassword) {
+                              displayPassword = match.temporaryPassword;
+                          }
+                      }
+                  } catch(e) {}
+                  if (displayPassword && (displayPassword.startsWith('scrypt$') || displayPassword.startsWith('sha256$'))) {
+                      displayPassword = "Sandi Terenkripsi";
+                  }
+                  return `
+                  <tr>
+                     <td style="white-space: nowrap; font-weight: bold; vertical-align: top;">Password</td>
+                     <td style="text-align: center; font-weight: bold; vertical-align: top;">:</td>
+                     <td style="font-weight: 900; font-family: monospace; font-size: 8.5pt; vertical-align: top; word-break: break-all;">${displayPassword}</td>
+                  </tr>
+                  `;
+               })()}
                <tr>
                   <td style="white-space: nowrap; font-weight: bold; vertical-align: top;">Ruang</td>
                   <td style="text-align: center; font-weight: bold; vertical-align: top;">:</td>
@@ -8224,6 +8240,45 @@ async function monitorAndAdaptBandwidth(pc) {
     }
 }
 
+window.applyMonitoringSnapshot = function(item) {
+  if (!item || !item.studentId) return;
+  const stId = String(item.studentId);
+
+  // progress
+  window.updateStudentMonitoringCard({
+    type: item.status === 'completed' ||
+          item.status === 'force_finished' ||
+          item.forceFinished === true || item.forceFinished === 'true'
+            ? 'exam_finish'
+            : item.status === 'in_progress'
+              ? 'exam_started'
+              : 'monitor_snapshot',
+
+    studentId: stId,
+    answered: item.answeredCount !== undefined ? item.answeredCount : (item.answered || 0),
+    total: item.totalQuestions !== undefined ? item.totalQuestions : (item.total || 0)
+  });
+
+  // violation history
+  if ((item.tabSwitches || 0) > 0) {
+    window.updateStudentMonitoringCard({
+      type: 'exam_violation',
+      studentId: stId,
+      tabSwitches: item.tabSwitches,
+      autoBlocked: item.blocked
+    });
+  }
+
+  // current tab state
+  if (item.outOfTab !== undefined) {
+    window.updateStudentMonitoringCard({
+      type: 'exam_presence',
+      studentId: stId,
+      outOfTab: item.outOfTab === true || item.outOfTab === 'true'
+    });
+  }
+};
+
 // Manual pull & sync for monitoring state
 window.refreshMonitoringState = async function(examId, buttonEl) {
     let originalHtml = "";
@@ -8240,17 +8295,7 @@ window.refreshMonitoringState = async function(examId, buttonEl) {
             const students = Array.isArray(data.students) ? data.students : (Array.isArray(data) ? data : []);
             if (students.length > 0 && typeof window.updateStudentMonitoringCard === 'function') {
                 students.forEach(item => {
-                    window.updateStudentMonitoringCard({
-                        type: (item.status === 'completed' || item.status === 'force_finished') ? 'exam_finish' : 'exam_progress',
-                        studentId: item.studentId,
-                        examId: examId,
-                        answered: item.answeredCount !== undefined ? item.answeredCount : item.answered,
-                        total: item.totalQuestions !== undefined ? item.totalQuestions : item.total,
-                        tabSwitches: item.tabSwitches,
-                        autoBlocked: item.blocked,
-                        outOfTab: item.outOfTab,
-                        lastSeenAt: item.lastSeenAt
-                    });
+                    window.applyMonitoringSnapshot(item);
                 });
             }
             if (typeof showToast !== 'undefined') {
@@ -10108,6 +10153,31 @@ window.updateStudentMonitoringCard = function(event) {
             statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-500 text-slate-900 font-bold animate-pulse border border-emerald-300';
             statusBadge.innerHTML = '<i class="fa-solid fa-circle-dot"></i>';
             statusBadge.title = 'Aktif Mengerjakan';
+        }
+    } else if (event.type === 'monitor_snapshot') {
+        const answered = Number(event.answered || 0);
+        const total = Number(event.total || 0);
+        const pct = total > 0 ? Math.min(100, Math.round((answered / total) * 100)) : 0;
+
+        const progressContainer = document.getElementById(`monitor-progress-${stId}`);
+        if (progressContainer) {
+            progressContainer.innerHTML = `
+                <div class="w-full">
+                    <div class="w-full bg-slate-950/80 border border-white/10 h-1.5 rounded-full overflow-hidden">
+                        <div class="bg-emerald-400 h-full transition-all duration-300" style="width: ${pct}%"></div>
+                    </div>
+                    <div class="text-[9px] text-slate-300 mt-1 flex justify-between font-mono">
+                        <span>${pct}%</span>
+                        <span>Terjawab: ${answered}/${total}</span>
+                    </div>
+                </div>
+            `;
+        }
+        const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+        if (statusBadge) {
+            statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-slate-800 text-slate-400 border border-slate-700';
+            statusBadge.innerHTML = '<i class="fa-solid fa-hourglass-start"></i>';
+            statusBadge.title = 'Belum Mulai';
         }
     } else if (event.type === 'student_heartbeat') {
         const hbDot = document.getElementById(`monitor-hb-${stId}`);

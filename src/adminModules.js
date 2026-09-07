@@ -1496,6 +1496,18 @@ async function saveStudent(e, id) {
         const data = await response.json();
         if (!response.ok || !data.success) throw new Error(data.message || 'Gagal menyimpan siswa.');
 
+        if (data.credentials && data.credentials.length > 0) {
+            try {
+                const existing = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
+                const map = new Map();
+                existing.forEach(c => { if (c.studentId) map.set(String(c.studentId), c); });
+                data.credentials.forEach(c => { if (c.studentId) map.set(String(c.studentId), c); });
+                sessionStorage.setItem('cbt_print_credentials', JSON.stringify(Array.from(map.values())));
+            } catch (err_cred) {
+                console.warn("Gagal menyimpan credentials ke sessionStorage:", err_cred);
+            }
+        }
+
         if (!appState.students) appState.students = [];
         const savedStudent = data.student;
         const idx = appState.students.findIndex(s => String(s.id) === String(savedStudent.id));
@@ -1786,6 +1798,19 @@ async function importStudentsExcel(e) {
             body: JSON.stringify({ students: rows })
         });
         const result = await response.json();
+
+        if (result.success && result.credentials && result.credentials.length > 0) {
+            try {
+                const existing = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
+                const map = new Map();
+                existing.forEach(c => { if (c.studentId) map.set(String(c.studentId), c); });
+                result.credentials.forEach(c => { if (c.studentId) map.set(String(c.studentId), c); });
+                sessionStorage.setItem('cbt_print_credentials', JSON.stringify(Array.from(map.values())));
+            } catch (err_cred) {
+                console.warn("Gagal menyimpan credentials ke sessionStorage:", err_cred);
+            }
+        }
+
         await loadStudentsFromServer();
         showToast(`${result.imported || rows.length} siswa berhasil diimport!`, 'success');
         renderStudentModule(document.getElementById('view-container'));
