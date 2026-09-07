@@ -2511,7 +2511,13 @@ app.get("/api/check-connection", async (req, res) => {
 });
 
 // Server-Side Authentication & Session Engine (JWT/HMAC)
-const JWT_SECRET = process.env.JWT_SECRET || "MADRASAH_JWT_SECURE_KEY_2026_CBT_CORE";
+const JWT_SECRET = process.env.JWT_SECRET || "";
+if (!JWT_SECRET) {
+  console.error("======================================================================================");
+  console.error("⚠️  CRITICAL WARNING: JWT_SECRET is not set in the environment variables!");
+  console.error("⚠️  Any requests requiring authentication will fail until JWT_SECRET is configured.");
+  console.error("======================================================================================");
+}
 
 interface AuthSession {
   id: string;
@@ -2524,6 +2530,9 @@ interface AuthSession {
 }
 
 function createAuthToken(user: any): string {
+  if (!JWT_SECRET) {
+    throw new Error("JWT_SECRET is required but not configured in the environment variables.");
+  }
   const header = { alg: "HS256", typ: "JWT" };
   const role = String(user.role || (user.nip ? 'teacher' : (user.nis ? 'student' : 'admin'))).toLowerCase();
   const payload: AuthSession = {
@@ -2542,6 +2551,10 @@ function createAuthToken(user: any): string {
 }
 
 function verifyAuthToken(token: string): AuthSession | null {
+  if (!JWT_SECRET) {
+    console.error("verifyAuthToken failed: JWT_SECRET is not configured in the environment.");
+    return null;
+  }
   if (!token || typeof token !== "string") return null;
   const parts = token.trim().split(".");
   if (parts.length !== 3) return null;
@@ -2578,57 +2591,33 @@ function getAuthUser(req: any): AuthSession | null {
     const verified = verifyAuthToken(req.query.token.trim());
     if (verified) return verified;
   }
-  // 4. Fallback verification against server DB by X-User-Id
-  const xUserId = req.headers ? (req.headers['x-user-id'] || req.headers['X-User-Id']) : null;
-  if (xUserId && typeof xUserId === 'string') {
-    const uId = xUserId.trim();
-    const allStudents = getMemoryKeyValue('students') || students || [];
-    const matchedStudent = allStudents.find((s: any) => String(s.id) === uId);
-    if (matchedStudent) {
-      return {
-        id: String(matchedStudent.id),
-        role: (matchedStudent.role === 'class_leader' || matchedStudent.role === 'ketua_kelas') ? 'class_leader' : 'student',
-        username: matchedStudent.username || matchedStudent.nis || '',
-        name: matchedStudent.name || '',
-        classId: matchedStudent.classId || '',
-        madrasahId: matchedStudent.madrasahId || 'default',
-        exp: Math.floor(Date.now() / 1000) + 86400
-      };
-    }
-    const allTeachers = getMemoryKeyValue('teachers') || teachers || [];
-    const matchedTeacher = allTeachers.find((t: any) => String(t.id) === uId);
-    if (matchedTeacher) {
-      return {
-        id: String(matchedTeacher.id),
-        role: 'teacher',
-        username: matchedTeacher.username || matchedTeacher.nip || '',
-        name: matchedTeacher.name || '',
-        madrasahId: matchedTeacher.madrasahId || 'default',
-        exp: Math.floor(Date.now() / 1000) + 86400
-      };
-    }
-    if (uId === 'ADMIN' || uId.startsWith('ADMIN_')) {
-      return {
-        id: uId,
-        role: 'admin',
-        username: 'admin',
-        name: 'Administrator',
-        madrasahId: 'default',
-        exp: Math.floor(Date.now() / 1000) + 86400
-      };
-    }
-    if (uId === 'BOSS') {
-      return {
-        id: 'BOSS',
-        role: 'bos',
-        username: 'bos',
-        name: 'Super Admin',
-        madrasahId: 'default',
-        exp: Math.floor(Date.now() / 1000) + 86400
-      };
-    }
-  }
   return null;
+}
+
+function requireAuth(req: any, res: any, next: any) {
+  const authUser = getAuthUser(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+  }
+  req.user = authUser;
+  next();
+}
+
+function requireRole(allowedRoles: string[]) {
+  return (req: any, res: any, next: any) => {
+    if (!req.user) {
+      const authUser = getAuthUser(req);
+      if (!authUser) {
+        return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+      }
+      req.user = authUser;
+    }
+    const role = String(req.user.role || '').toLowerCase();
+    if (!allowedRoles.map(r => r.toLowerCase()).includes(role)) {
+      return res.status(403).json({ success: false, message: `Akses ditolak: Role Anda (${role}) tidak diizinkan.` });
+    }
+    next();
+  };
 }
 
 function resolveStudentId(req: any, authUser: AuthSession | null): string | null {
@@ -3796,54 +3785,6 @@ app.get("/api/auth/me", (req, res) => {
     return res.status(401).json({ success: false, message: "Belum login atau token kedaluwarsa" });
   }
   res.json({ success: true, user: authUser });
-});
-
-app.post("/api/auth/token", (req, res) => {
-  const { id } = req.body;
-  if (!id) return res.status(400).json({ success: false, message: "ID user wajib diisi." });
-  const uId = String(id).trim();
-
-  const allStudents = getMemoryKeyValue('students') || students || [];
-  const matchedStudent = allStudents.find((s: any) => String(s.id) === uId || String(s.nis) === uId || String(s.username) === uId);
-  if (matchedStudent) {
-    const user = {
-      id: matchedStudent.id,
-      name: matchedStudent.name,
-      username: matchedStudent.username || matchedStudent.nis,
-      nis: matchedStudent.nis,
-      classId: matchedStudent.classId,
-      role: matchedStudent.role || "student"
-    };
-    const token = createAuthToken(user);
-    return res.json({ success: true, token, user: { ...user, token } });
-  }
-
-  const allTeachers = getMemoryKeyValue('teachers') || teachers || [];
-  const matchedTeacher = allTeachers.find((t: any) => String(t.id) === uId || String(t.nip) === uId || String(t.username) === uId);
-  if (matchedTeacher) {
-    const user = {
-      id: matchedTeacher.id,
-      name: matchedTeacher.name,
-      username: matchedTeacher.username || matchedTeacher.nip,
-      role: "teacher"
-    };
-    const token = createAuthToken(user);
-    return res.json({ success: true, token, user: { ...user, token } });
-  }
-
-  if (uId === 'ADMIN' || uId.startsWith('ADMIN_')) {
-    const user = { id: uId, name: 'Administrator', username: 'admin', role: 'admin' };
-    const token = createAuthToken(user);
-    return res.json({ success: true, token, user: { ...user, token } });
-  }
-
-  if (uId === 'BOSS') {
-    const user = { id: 'BOSS', name: 'Super Admin', username: 'bos', role: 'bos' };
-    const token = createAuthToken(user);
-    return res.json({ success: true, token, user: { ...user, token } });
-  }
-
-  return res.status(404).json({ success: false, message: "User tidak ditemukan" });
 });
 
 // Multi-Tenant & Bos Token Endpoints
@@ -6061,15 +6002,7 @@ app.delete("/api/questions/:id", async (req, res) => {
 });
 
 // Exam Monitoring State API (Locked strictly to teachers, proctors, and admins)
-app.get("/api/exam-monitoring-state", (req, res) => {
-  const authUser = getAuthUser(req);
-  const isTeacherOrAdmin = Boolean(authUser && (
-    authUser.role === 'teacher' || authUser.role === 'guru' ||
-    authUser.role === 'admin' || authUser.role === 'bos' || authUser.role === 'superadmin'
-  ));
-  if (!isTeacherOrAdmin) {
-    return res.status(403).json({ success: false, message: "Akses ditolak: Hanya pengawas, guru, atau admin yang dapat mengakses monitoring ujian." });
-  }
+app.get("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
   res.json({
     success: true,
     activeExamSessions,
@@ -6663,7 +6596,7 @@ app.post("/api/exam/violation", async (req, res) => {
 });
 
 // Phase 5 Endpoint: Anti-Cheat Violation Audit Feed (GET /api/exams/:examId/violations)
-app.get("/api/exams/:examId/violations", (req, res) => {
+app.get("/api/exams/:examId/violations", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
   const { examId } = req.params;
   const list = examViolationLogs[String(examId)] || [];
   res.json({
@@ -6772,23 +6705,23 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
 });
 
 // Phase 1 Endpoint: Summarized Teacher Monitoring (GET /api/exams/:examId/monitor)
-app.get("/api/exams/:examId/monitor", (req, res) => {
+app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
   const { examId } = req.params;
   const eId = String(examId);
-
+ 
   const studentList = getMemoryKeyValue('students') || students || [];
   const activeExam = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
-
+ 
   // Filter students by assigned classes if defined on the exam
   let targetStudents = studentList;
   if (activeExam && activeExam.classes && activeExam.classes.length > 0 && !activeExam.classes.includes('ALL')) {
     targetStudents = studentList.filter((s: any) => activeExam.classes.includes(String(s.classId || s.className || s.class)));
   }
-
+ 
   const summary = targetStudents.map((st: any) => {
     const sId = String(st.id);
     const key = sId + "_" + eId;
-
+ 
     const session = activeExamSessions[key] || null;
     const isCompleted = Boolean(completedExams[key]);
     const isForceDone = Boolean(forceFinishedExams[key] || completedExams[key] === 'force_finish');
@@ -6796,13 +6729,16 @@ app.get("/api/exams/:examId/monitor", (req, res) => {
     const isOutOfTab = Boolean(studentOutOfTab[key]);
     const tabSwitches = studentTabSwitches[key] || 0;
     const grade = studentExamGrades[key] || null;
-
+ 
     let status = 'not_started';
     if (isBlocked) status = 'blocked';
     else if (isForceDone) status = 'force_finished';
     else if (isCompleted) status = 'completed';
     else if (session) status = 'in_progress';
-
+ 
+    // Calculate online status based on lastSeenAt (considered online if updated within last 30 seconds)
+    const isOnline = Boolean(session && (Date.now() - (session.lastSeenAt || 0) < 30000));
+ 
     return {
       studentId: sId,
       name: st.name || '',
@@ -6811,7 +6747,7 @@ app.get("/api/exams/:examId/monitor", (req, res) => {
       roomId: st.roomId || '',
       photo: st.photo || st.facePhoto || st.avatar || null,
       status: status,
-      online: Boolean(session),
+      online: isOnline,
       answeredCount: session ? (session.answeredCount || (session.answers ? Object.keys(session.answers).length : 0)) : 0,
       totalQuestions: session ? (session.totalQuestions || 0) : 0,
       progressPct: (session && session.totalQuestions > 0) ? Math.round(((session.answeredCount || 0) / session.totalQuestions) * 100) : (isCompleted ? 100 : 0),
@@ -6853,7 +6789,7 @@ async function saveDeltaDb(deltaType: string, itemKey: string, value: any) {
   }
 }
 
-app.post("/api/exam-monitoring-state", async (req, res) => {
+app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { sessionKey, sessionData, activeExamSessionsBatch, completed, answers, studentQuestions, tabSwitches, outOfTab, blocked, livecamFrame, gradesObj, messages, forceFinished } = req.body;
   const promises: Promise<any>[] = [];
 
@@ -6969,7 +6905,7 @@ app.post("/api/exam-monitoring-state", async (req, res) => {
 });
 
 // Reset Individual Student Exam Progress API
-app.post("/api/reset-student-exam", async (req, res) => {
+app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { studentId, examId } = req.body;
   if (!studentId || !examId) {
     return res.status(400).json({ success: false, message: "studentId and examId required" });
@@ -7018,7 +6954,7 @@ app.post("/api/reset-student-exam", async (req, res) => {
 // WebRTC Signaling API for Livecam Exam Monitoring (P2P zero-storage streaming)
 let examSignalingMessages: any = {};
 
-app.post("/api/exam/signaling", (req, res) => {
+app.post("/api/exam/signaling", requireAuth, (req, res) => {
   const { recipientId, senderId, signal } = req.body;
   if (!recipientId || !signal) {
     return res.status(400).json({ success: false, message: "recipientId and signal required" });
@@ -7037,7 +6973,7 @@ app.post("/api/exam/signaling", (req, res) => {
   res.json({ success: true });
 });
 
-app.get("/api/exam/signaling", (req, res) => {
+app.get("/api/exam/signaling", requireAuth, (req, res) => {
   const recipientId = String(req.query.recipientId || '');
   const senderId = String(req.query.senderId || '');
   if (!recipientId) {
@@ -7068,7 +7004,7 @@ app.get("/api/exam/signaling", (req, res) => {
 });
 
 // LiveKit SFU Token Generation API
-app.post("/api/exam/livekit-token", async (req, res) => {
+app.post("/api/exam/livekit-token", requireAuth, async (req, res) => {
   try {
     const { roomName, identity, isPublisher } = req.body;
     if (!roomName || !identity) {
