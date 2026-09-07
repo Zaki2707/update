@@ -2572,31 +2572,49 @@ function verifyAuthToken(token: string): AuthSession | null {
   }
 }
 
-// Secure backward-compatible password hashing helper functions
+// Secure backward-compatible password hashing helper functions with memory-hard scrypt KDF
 function hashPassword(plainText: string): string {
   if (!plainText) return "";
   const str = String(plainText).trim();
-  if (str.startsWith("sha256$") && str.split("$").length === 3) {
+  if (str.startsWith("scrypt$") && str.split("$").length === 7) {
     return str; // Already hashed
   }
+  if (str.startsWith("sha256$") && str.split("$").length === 3) {
+    return str; // Legacy hash
+  }
   const salt = crypto.randomBytes(16).toString("hex");
-  const hash = crypto.createHmac("sha256", salt).update(str).digest("hex");
-  return `sha256$${salt}$${hash}`;
+  const derivedKey = crypto.scryptSync(str, salt, 64, { N: 16384, r: 8, p: 1 });
+  const hash = derivedKey.toString("hex");
+  return `scrypt$16384$8$1$${salt}$${hash}`;
 }
 
 function verifyPassword(plainText: string, hashedPassword: string): boolean {
   if (!plainText || !hashedPassword) return false;
   const pStr = String(plainText).trim();
   const hStr = String(hashedPassword).trim();
-  if (!hStr.startsWith("sha256$")) {
-    return pStr === hStr;
+  
+  if (hStr.startsWith("scrypt$")) {
+    const parts = hStr.split("$");
+    if (parts.length !== 7) return false;
+    const N = parseInt(parts[1], 10);
+    const r = parseInt(parts[2], 10);
+    const p = parseInt(parts[3], 10);
+    const salt = parts[4];
+    const hash = parts[5];
+    const derivedKey = crypto.scryptSync(pStr, salt, 64, { N, r, p });
+    return derivedKey.toString("hex") === hash;
   }
-  const parts = hStr.split("$");
-  if (parts.length !== 3) return false;
-  const salt = parts[1];
-  const hash = parts[2];
-  const computedHash = crypto.createHmac("sha256", salt).update(pStr).digest("hex");
-  return computedHash === hash;
+  
+  if (hStr.startsWith("sha256$")) {
+    const parts = hStr.split("$");
+    if (parts.length !== 3) return false;
+    const salt = parts[1];
+    const hash = parts[2];
+    const computedHash = crypto.createHmac("sha256", salt).update(pStr).digest("hex");
+    return computedHash === hash;
+  }
+  
+  return pStr === hStr;
 }
 
 function getAuthUser(req: any): AuthSession | null {
@@ -2792,7 +2810,16 @@ app.get("/api/all-data", requireAuth, (req, res) => {
 
   // Sanitasi sensitif (hilangkan password dan adminPass)
   const sanitizedTeachers = filteredTeachers.map(({ password, ...rest }: any) => rest);
-  const sanitizedStudents = sortedStudents.map(({ password, ...rest }: any) => rest);
+  const sanitizedStudents = sortedStudents.map((st: any) => {
+    const { password, passwordRaw, ...rest } = st;
+    if (isTeacherOrAdmin) {
+      // If teacher/admin, allow printing the student password (retrieve plain-text or fallback to raw if not a hash)
+      const plainPassword = passwordRaw || (password && !password.startsWith("scrypt$") && !password.startsWith("sha256$") ? password : "Sandi Terenkripsi");
+      return { ...rest, password: plainPassword };
+    }
+    // If student, remove password fields completely
+    return rest;
+  });
   const sanitizedMadrasahs = madrasahs.map(({ adminPass, ...rest }: any) => rest);
   let sanitizedSettings = null;
   if (appSettings) {
@@ -3825,7 +3852,7 @@ app.get("/api/auth/me", (req, res) => {
 });
 
 // Multi-Tenant & Bos Token Endpoints
-app.get("/api/madrasahs", (req, res) => {
+app.get("/api/madrasahs", requireAuth, (req, res) => {
   res.json({ success: true, madrasahs: madrasahs || [] });
 });
 
@@ -3911,26 +3938,39 @@ app.post("/api/cbt-token-price", async (req, res) => {
   });
 });
 
-app.get("/api/token-requests", (req, res) => {
+app.get("/api/token-requests", requireAuth, (req: any, res) => {
+  const authUser = req.user;
+  const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
   const { madrasahId } = req.query;
   let filtered = tokenRequests || [];
-  if (madrasahId) {
+  if (!isBos) {
+    const userMId = getRequestMadrasahId(req);
+    filtered = filtered.filter(tr => String(tr.madrasahId) === String(userMId));
+  } else if (madrasahId) {
     filtered = filtered.filter(tr => String(tr.madrasahId) === String(madrasahId));
   }
   res.json({ success: true, tokenRequests: filtered, cbtTokenPrice });
 });
 
-app.post("/api/token-requests", async (req, res) => {
+app.post("/api/token-requests", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  const authUser = req.user;
+  const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
+  const userMId = getRequestMadrasahId(req);
   const { madrasahId, quantity, proofNote, proofFile } = req.body;
+  const targetMadrasahId = isBos ? (madrasahId || userMId) : userMId;
+
   const qty = parseInt(quantity, 10);
-  if (!madrasahId || isNaN(qty) || qty <= 0) {
+  if (!targetMadrasahId || isNaN(qty) || qty <= 0) {
     return res.status(400).json({ success: false, message: "Jumlah token harus lebih dari 0." });
   }
-  const m = madrasahs.find(item => String(item.id) === String(madrasahId) || String(item.slug) === String(madrasahId)) || madrasahs[0];
+  const m = madrasahs.find(item => String(item.id) === String(targetMadrasahId) || String(item.slug) === String(targetMadrasahId));
+  if (!m) {
+    return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+  }
   const newReq = {
     id: 'TRQ_' + Date.now(),
-    madrasahId: m ? m.id : madrasahId,
-    madrasahName: m ? m.name : 'Madrasah',
+    madrasahId: m.id,
+    madrasahName: m.name,
     quantity: qty,
     pricePerToken: cbtTokenPrice,
     totalPrice: qty * cbtTokenPrice,
@@ -3948,7 +3988,7 @@ app.post("/api/token-requests", async (req, res) => {
   });
 });
 
-app.post("/api/token-requests/:id/approve", async (req, res) => {
+app.post("/api/token-requests/:id/approve", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   if (isOfflineMode) {
     return res.status(403).json({ success: false, message: "Persetujuan top-up tidak diizinkan dalam mode offline." });
   }
@@ -3979,7 +4019,7 @@ app.post("/api/token-requests/:id/approve", async (req, res) => {
   });
 });
 
-app.post("/api/token-requests/:id/reject", async (req, res) => {
+app.post("/api/token-requests/:id/reject", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const reqItem = tokenRequests.find(tr => String(tr.id) === String(id));
   if (!reqItem) {
@@ -3995,7 +4035,7 @@ app.post("/api/token-requests/:id/reject", async (req, res) => {
   });
 });
 
-app.post("/api/madrasahs/:id/update-tokens", async (req, res) => {
+app.post("/api/madrasahs/:id/update-tokens", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   if (isOfflineMode) {
     return res.status(403).json({ success: false, message: "Pembaruan saldo token langsung dinonaktifkan dalam mode offline demi mencegah kecurangan." });
   }
@@ -4022,7 +4062,7 @@ app.post("/api/madrasahs/:id/update-tokens", async (req, res) => {
 });
 
 // --- CRYPTOGRAPHIC OFFLINE ACTIVATION SYSTEM ---
-app.post("/api/boss/generate-activation-key", async (req, res) => {
+app.post("/api/boss/generate-activation-key", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { quantity } = req.body;
   const qty = parseInt(quantity, 10);
   if (isNaN(qty) || qty <= 0) {
@@ -4044,7 +4084,7 @@ app.post("/api/boss/generate-activation-key", async (req, res) => {
   }
 });
 
-app.post("/api/madrasah/activate-offline-tokens", async (req, res) => {
+app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { activationKey, teacherId } = req.body;
   if (!activationKey) {
     return res.status(400).json({ success: false, message: "Kode aktivasi tidak boleh kosong." });
@@ -4203,13 +4243,25 @@ app.post("/api/deduct-cbt-token", async (req, res) => {
   });
 });
 
-app.put("/api/teachers/:id/tokens", async (req, res) => {
+app.put("/api/teachers/:id/tokens", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
   const { id } = req.params;
   const { cbtTokenBalance, deltaTokens } = req.body;
   const idx = teachers.findIndex(t => String(t.id) === String(id));
   if (idx < 0) {
     return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
   }
+
+  // Tenant-scoping: Madrasah admins can only update tokens of teachers in their own school
+  const authUser = req.user;
+  const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
+  if (!isBos) {
+    const userMId = getRequestMadrasahId(req);
+    const teacherMId = teachers[idx].madrasahId || 'default';
+    if (String(userMId) !== String(teacherMId)) {
+      return res.status(403).json({ success: false, message: "Akses ditolak: Anda tidak memiliki akses ke guru madrasah ini." });
+    }
+  }
+
   if (cbtTokenBalance !== undefined) {
     teachers[idx].cbtTokenBalance = Math.max(0, parseInt(cbtTokenBalance, 10) || 0);
   } else if (deltaTokens !== undefined) {
@@ -4223,7 +4275,7 @@ app.put("/api/teachers/:id/tokens", async (req, res) => {
   });
 });
 
-app.post("/api/madrasahs/:id/toggle-status", async (req, res) => {
+app.post("/api/madrasahs/:id/toggle-status", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
   if (!targetM) {
@@ -4239,7 +4291,7 @@ app.post("/api/madrasahs/:id/toggle-status", async (req, res) => {
   });
 });
 
-app.post("/api/madrasahs/:id/update", async (req, res) => {
+app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const { name, level, adminName, adminUser, adminPass, phone, cbtTokenBalance, isActive } = req.body;
   const targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
@@ -4270,7 +4322,7 @@ app.post("/api/madrasahs/:id/update", async (req, res) => {
   });
 });
 
-app.delete("/api/madrasahs/:id", async (req, res) => {
+app.delete("/api/madrasahs/:id", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const index = madrasahs.findIndex(m => String(m.id) === String(id) || String(m.slug) === String(id));
   if (index === -1) {
@@ -4733,6 +4785,7 @@ app.post("/api/students", requireAuth, requireRole(['teacher', 'guru', 'admin', 
     class_id: classId || "C1",
     username,
     password: hashed,
+    passwordRaw: rawPassword,
     photo: photo || "",
     no_hp: no_hp || "",
     role: req.body.role || "student"
@@ -4777,6 +4830,7 @@ app.post("/api/students/import", requireAuth, requireRole(['teacher', 'guru', 'a
       class_id: item.classId || defaultClassId,
       username: item.username || ("siswa_" + itemNis),
       password: hashed,
+      passwordRaw: rawPassword,
       photo: item.photo || "",
       no_hp: item.no_hp || "",
       role: "student"
@@ -4853,8 +4907,10 @@ app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
   const st = students[idx];
 
   let updatedPassword = st.password;
+  let updatedPasswordRaw = st.passwordRaw || (st.password && !st.password.startsWith("scrypt$") && !st.password.startsWith("sha256$") ? st.password : "123456");
   if (password && String(password).trim().length > 0) {
     updatedPassword = hashPassword(password);
+    updatedPasswordRaw = String(password).trim();
   }
 
   students[idx] = {
@@ -4863,6 +4919,7 @@ app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     name: req.body.name ?? st.name,
     username: req.body.username ?? st.username,
     password: updatedPassword,
+    passwordRaw: updatedPasswordRaw,
     classId: req.body.classId ?? st.classId,
     class_id: req.body.classId ?? st.class_id,
     photo: req.body.photo !== undefined ? photo : st.photo,
@@ -5220,11 +5277,11 @@ app.post("/api/students/delete-bulk", requireAuth, requireRole(['teacher', 'guru
 });
 
 // 5. Classes API
-app.get("/api/classes", (req, res) => {
+app.get("/api/classes", requireAuth, (req, res) => {
   res.json({ success: true, classes: filterByMadrasah(classes, req) });
 });
 
-app.post("/api/classes", async (req, res) => {
+app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { name, grade, code, homeroomTeacherId } = req.body;
   let targetId = req.body.id;
   if (targetId) {
@@ -5269,7 +5326,7 @@ app.post("/api/classes", async (req, res) => {
   res.json({ success: true, class: newClass });
 });
 
-app.delete("/api/classes/:id", async (req, res) => {
+app.delete("/api/classes/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   classes = classes.filter(c => String(c.id) !== String(id));
   await saveData('classes', classes);
@@ -6095,21 +6152,75 @@ app.delete("/api/questions/:id", async (req, res) => {
 });
 
 // Exam Monitoring State API (Locked strictly to teachers, proctors, and admins)
-app.get("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
+app.get("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  const authUser = req.user;
+  const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
+  const userMadrasahId = getRequestMadrasahId(req);
+
+  if (isBos) {
+    return res.json({
+      success: true,
+      activeExamSessions,
+      completedExams,
+      forceFinishedExams,
+      studentExamAnswers,
+      studentExamQuestions,
+      studentTabSwitches,
+      studentOutOfTab,
+      blockedStudents,
+      studentLivecamFrames,
+      studentExamGrades,
+      examMessages,
+      exams: getMemoryKeyValue('exams') || exams
+    });
+  }
+
+  // Tenant-scoping: filter all maps by student belonging to the user's madrasah, and filter exams
+  const studentList = getMemoryKeyValue('students') || students || [];
+  const tenantStudentIds = new Set(
+    studentList
+      .filter((s: any) => String(s.madrasahId || 'default').trim() === String(userMadrasahId).trim())
+      .map((s: any) => String(s.id))
+  );
+
+  const tenantExams = (getMemoryKeyValue('exams') || exams || []).filter((e: any) => 
+    String(e.madrasahId || 'default').trim() === String(userMadrasahId).trim()
+  );
+  const tenantExamIds = new Set(tenantExams.map((e: any) => String(e.id)));
+
+  const filterMap = (mapObj: any) => {
+    const filtered: any = {};
+    if (!mapObj) return filtered;
+    for (const key of Object.keys(mapObj)) {
+      // Keys are usually formatted as studentId_examId or similar
+      const parts = key.split('_');
+      if (parts.length >= 2) {
+        const studentId = parts[0];
+        const examId = parts[1];
+        if (tenantStudentIds.has(studentId) && tenantExamIds.has(examId)) {
+          filtered[key] = mapObj[key];
+        }
+      } else if (tenantStudentIds.has(key)) {
+        filtered[key] = mapObj[key];
+      }
+    }
+    return filtered;
+  };
+
   res.json({
     success: true,
-    activeExamSessions,
-    completedExams,
-    forceFinishedExams,
-    studentExamAnswers,
-    studentExamQuestions,
-    studentTabSwitches,
-    studentOutOfTab,
-    blockedStudents,
-    studentLivecamFrames,
-    studentExamGrades,
-    examMessages,
-    exams: getMemoryKeyValue('exams') || exams
+    activeExamSessions: filterMap(activeExamSessions),
+    completedExams: filterMap(completedExams),
+    forceFinishedExams: filterMap(forceFinishedExams),
+    studentExamAnswers: filterMap(studentExamAnswers),
+    studentExamQuestions: filterMap(studentExamQuestions),
+    studentTabSwitches: filterMap(studentTabSwitches),
+    studentOutOfTab: filterMap(studentOutOfTab),
+    blockedStudents: filterMap(blockedStudents),
+    studentLivecamFrames: filterMap(studentLivecamFrames),
+    studentExamGrades: filterMap(studentExamGrades),
+    examMessages: filterMap(examMessages),
+    exams: tenantExams
   });
 });
 
@@ -6918,17 +7029,34 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
 });
 
 // Phase 1 Endpoint: Summarized Teacher Monitoring (GET /api/exams/:examId/monitor)
-app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
+app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   const { examId } = req.params;
   const eId = String(examId);
- 
-  const studentList = getMemoryKeyValue('students') || students || [];
+
+  const authUser = req.user;
+  const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
+  const userMadrasahId = getRequestMadrasahId(req);
+
   const activeExam = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
+
+  if (!isBos && activeExam) {
+    const examMId = String(activeExam.madrasahId || 'default').trim();
+    if (examMId !== String(userMadrasahId).trim()) {
+      return res.status(403).json({ success: false, message: "Akses ditolak: Anda tidak memiliki wewenang memantau ujian dari madrasah lain." });
+    }
+  }
+ 
+  let studentList = getMemoryKeyValue('students') || students || [];
+  if (!isBos) {
+    studentList = studentList.filter((s: any) => String(s.madrasahId || 'default').trim() === String(userMadrasahId).trim());
+  }
+
+  const activeExamInMem = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
  
   // Filter students by assigned classes if defined on the exam
   let targetStudents = studentList;
-  if (activeExam && activeExam.classes && activeExam.classes.length > 0 && !activeExam.classes.includes('ALL')) {
-    targetStudents = studentList.filter((s: any) => activeExam.classes.includes(String(s.classId || s.className || s.class)));
+  if (activeExamInMem && activeExamInMem.classes && activeExamInMem.classes.length > 0 && !activeExamInMem.classes.includes('ALL')) {
+    targetStudents = studentList.filter((s: any) => activeExamInMem.classes.includes(String(s.classId || s.className || s.class)));
   }
  
   const summary = targetStudents.map((st: any) => {
@@ -7002,9 +7130,52 @@ async function saveDeltaDb(deltaType: string, itemKey: string, value: any) {
   }
 }
 
-app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   const { sessionKey, sessionData, activeExamSessionsBatch, completed, answers, studentQuestions, tabSwitches, outOfTab, blocked, livecamFrame, gradesObj, messages, forceFinished } = req.body;
   const promises: Promise<any>[] = [];
+
+  const authUser = req.user;
+  const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
+  const userMadrasahId = getRequestMadrasahId(req);
+
+  if (!isBos) {
+    const studentList = getMemoryKeyValue('students') || students || [];
+    const tenantStudentIds = new Set(
+      studentList
+        .filter((s: any) => String(s.madrasahId || 'default').trim() === String(userMadrasahId).trim())
+        .map((s: any) => String(s.id))
+    );
+
+    const validateKey = (key: string) => {
+      if (!key) return true;
+      const parts = key.split('_');
+      if (parts.length >= 1) {
+        const studentId = parts[0];
+        return tenantStudentIds.has(studentId);
+      }
+      return false;
+    };
+
+    const testKeys = [
+      sessionKey,
+      ...(activeExamSessionsBatch ? Object.keys(activeExamSessionsBatch) : []),
+      ...(completed ? Object.keys(completed) : []),
+      ...(answers ? Object.keys(answers) : []),
+      ...(studentQuestions ? Object.keys(studentQuestions) : []),
+      ...(tabSwitches ? Object.keys(tabSwitches) : []),
+      ...(outOfTab ? Object.keys(outOfTab) : []),
+      ...(blocked ? Object.keys(blocked) : []),
+      ...(gradesObj ? Object.keys(gradesObj) : []),
+      ...(messages ? Object.keys(messages) : []),
+      ...(forceFinished ? Object.keys(forceFinished) : [])
+    ].filter(Boolean);
+
+    for (const tk of testKeys) {
+      if (!validateKey(tk)) {
+        return res.status(403).json({ success: false, message: "Akses ditolak: Anda tidak memiliki wewenang mengubah state siswa madrasah lain." });
+      }
+    }
+  }
 
   if (sessionKey) {
     if (sessionData === null || sessionData === undefined) {
@@ -7262,28 +7433,39 @@ app.post("/api/exam/livekit-token", requireAuth, async (req, res) => {
   }
 });
 
-// 10. Grades API
-app.get("/api/chats", async (req, res) => {
+// 10. Chats API
+app.get("/api/chats", requireAuth, async (req: any, res) => {
+  const userMId = getRequestMadrasahId(req);
+  let chatList = chats;
   if (pool) {
     try {
       const dbRes = await pool.query("SELECT value FROM app_store WHERE key = 'chats'");
       if (dbRes.rows.length > 0) {
         let val = dbRes.rows[0].value;
         if (typeof val === 'string') { try { val = JSON.parse(val); } catch(e){} }
-        return res.json({ success: true, data: val });
+        if (Array.isArray(val)) {
+          chatList = val;
+        }
       }
     } catch(e) {}
   }
-  res.json({ success: true, data: chats });
+  const filtered = chatList.filter((c: any) => String(c.madrasahId || 'default').trim() === String(userMId).trim());
+  res.json({ success: true, data: filtered });
 });
 
-app.post("/api/chats", async (req, res) => {
+app.post("/api/chats", requireAuth, async (req: any, res) => {
   try {
-    const newChat = { ...req.body, id: req.body.id || Date.now().toString(), timestamp: req.body.timestamp || Date.now() };
+    const userMId = getRequestMadrasahId(req);
+    const newChat = { 
+      ...req.body, 
+      id: req.body.id || Date.now().toString(), 
+      timestamp: req.body.timestamp || Date.now(),
+      madrasahId: userMId
+    };
     await updateStoreKeyWithLock('chats', (currentVal) => {
-      const chatList = Array.isArray(currentVal) ? currentVal : [];
-      chatList.push(newChat);
-      return chatList;
+      const list = Array.isArray(currentVal) ? currentVal : [];
+      list.push(newChat);
+      return list;
     });
     res.json({ success: true, data: newChat });
   } catch (err: any) {
@@ -7291,11 +7473,11 @@ app.post("/api/chats", async (req, res) => {
   }
 });
 
-app.delete("/api/chats/:id", async (req, res) => {
+app.delete("/api/chats/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     await updateStoreKeyWithLock('chats', (currentVal) => {
-      const chatList = Array.isArray(currentVal) ? currentVal : [];
-      return chatList.filter((c: any) => String(c.id) !== String(req.params.id));
+      const list = Array.isArray(currentVal) ? currentVal : [];
+      return list.filter((c: any) => String(c.id) !== String(req.params.id));
     });
     res.json({ success: true });
   } catch (err: any) {
@@ -7374,11 +7556,11 @@ app.post("/api/chats/broadcast-apk", async (req, res) => {
   }
 });
 
-app.get("/api/grades", (req, res) => {
+app.get("/api/grades", requireAuth, (req, res) => {
   res.json({ success: true, grades: filterByMadrasah(grades, req) });
 });
 
-app.post("/api/grades", async (req, res) => {
+app.post("/api/grades", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const items = Array.isArray(req.body) ? req.body : [req.body];
   const processed = [];
 

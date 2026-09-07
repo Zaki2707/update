@@ -10056,17 +10056,19 @@ window.updateStudentMonitoringCard = function(event) {
     if (!cardEl) return;
 
     if (event.type === 'exam_started') {
+        const answered = Number(event.answered || 0);
         const total = Number(event.total || 0);
+        const pct = total > 0 ? Math.min(100, Math.round((answered / total) * 100)) : 0;
         const progressContainer = document.getElementById(`monitor-progress-${stId}`);
         if (progressContainer) {
             progressContainer.innerHTML = `
                 <div class="w-full">
                     <div class="w-full bg-slate-950/80 border border-white/10 h-1.5 rounded-full overflow-hidden">
-                        <div class="bg-emerald-400 h-full transition-all duration-300" style="width: 0%"></div>
+                        <div class="bg-emerald-400 h-full transition-all duration-300" style="width: ${pct}%"></div>
                     </div>
                     <div class="text-[9px] text-slate-300 mt-1 flex justify-between font-mono">
-                        <span>0%</span>
-                        <span>Terjawab: 0/${total}</span>
+                        <span>${pct}%</span>
+                        <span>Terjawab: ${answered}/${total}</span>
                     </div>
                 </div>
             `;
@@ -10204,6 +10206,58 @@ window.updateStudentMonitoringCard = function(event) {
         if (actions) {
             const ffBtn = actions.querySelector('button[title*="Force Finish"]');
             if (ffBtn) ffBtn.remove();
+        }
+    }
+
+    // Restore and enforce blocked / tab switches / out of tab states dynamically
+    if (event.type !== 'exam_finish') {
+        if (event.autoBlocked || event.blocked) {
+            cardEl.classList.remove('border-slate-800', 'border-amber-500', 'ring-amber-500/30');
+            cardEl.classList.add('border-rose-500', 'ring-2', 'ring-rose-500/30');
+            const filler = document.getElementById(`monitor-blocked-filler-${stId}`);
+            if (filler) {
+                filler.innerHTML = '<span class="px-2.5 py-1 bg-rose-600 text-white text-[10px] font-bold rounded-full shadow-lg border border-rose-400">Diblokir</span>';
+            }
+            const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+            if (statusBadge) {
+                statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-rose-600 text-white border border-rose-400';
+                statusBadge.innerHTML = '<i class="fa-solid fa-ban"></i>';
+                statusBadge.title = 'Diblokir';
+            }
+        } else {
+            const tabSwitches = Number(event.tabSwitches || 0);
+            const isOutOfTab = event.outOfTab === true || event.outOfTab === 'true';
+            if (isOutOfTab) {
+                if (!cardEl.classList.contains('border-rose-500')) {
+                    cardEl.classList.remove('border-slate-800');
+                    cardEl.classList.add('border-amber-500', 'ring-2', 'ring-amber-500/30');
+                }
+                const cornerBadges = document.getElementById(`monitor-corner-${stId}`);
+                if (cornerBadges) {
+                    let tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+                    if (!tabBadge) {
+                        tabBadge = document.createElement('span');
+                        tabBadge.id = `monitor-tab-badge-${stId}`;
+                        cornerBadges.insertBefore(tabBadge, cornerBadges.firstChild);
+                    }
+                    tabBadge.className = 'w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs shadow-lg animate-pulse backdrop-blur-md border border-rose-400';
+                    tabBadge.title = `Keluar Tab (${tabSwitches}x)`;
+                    tabBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+                }
+            } else if (tabSwitches > 0) {
+                const cornerBadges = document.getElementById(`monitor-corner-${stId}`);
+                if (cornerBadges) {
+                    let tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+                    if (!tabBadge) {
+                        tabBadge = document.createElement('span');
+                        tabBadge.id = `monitor-tab-badge-${stId}`;
+                        cornerBadges.insertBefore(tabBadge, cornerBadges.firstChild);
+                    }
+                    tabBadge.className = 'w-7 h-7 rounded-full bg-slate-950/80 text-amber-300 flex items-center justify-center text-xs shadow backdrop-blur-md border border-amber-500/40';
+                    tabBadge.title = `Total Keluar Tab: ${tabSwitches}x`;
+                    tabBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+                }
+            }
         }
     }
 };
