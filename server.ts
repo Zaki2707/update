@@ -4248,16 +4248,48 @@ app.post("/api/boss/generate-activation-key", requireAuth, requireRole(['bos', '
     return res.status(400).json({ success: false, message: "Jumlah token yang valid diperlukan." });
   }
   try {
+    // Activation codes are asymmetric: only BOSS owns the private key, while offline madrasah installs
+    // verify with the matching public key. TOKEN_LOCK_SECRET remains local and only seals local balances.
+    if (!process.env.LICENSE_PRIVATE_KEY) {
+      return res.status(503).json({
+        success: false,
+        code: 'ACTIVATION_SIGNING_KEY_NOT_CONFIGURED',
+        message: 'Private key aktivasi BOSS belum dikonfigurasi. Isi LICENSE_PRIVATE_KEY dan LICENSE_PUBLIC_KEY pada environment server BOSS.'
+      });
+    }
+
+    const privateKey = formatPrivateKeyPem(process.env.LICENSE_PRIVATE_KEY);
+    const publicKey = formatPublicKeyPem(process.env.LICENSE_PUBLIC_KEY || LICENSE_PUBLIC_KEY);
+
+    // Refuse to issue codes if the configured public/private keys are not a real pair.
+    const probe = `MADRASAH_ACTIVATION_KEYPAIR_CHECK:${Date.now()}`;
+    const probeSigner = crypto.createSign('SHA256');
+    probeSigner.update(probe);
+    probeSigner.end();
+    const probeSignature = probeSigner.sign(privateKey, 'base64');
+    const probeVerifier = crypto.createVerify('SHA256');
+    probeVerifier.update(probe);
+    probeVerifier.end();
+    if (!probeVerifier.verify(publicKey, probeSignature, 'base64')) {
+      return res.status(503).json({
+        success: false,
+        code: 'ACTIVATION_KEYPAIR_MISMATCH',
+        message: 'LICENSE_PRIVATE_KEY dan LICENSE_PUBLIC_KEY pada server BOSS bukan pasangan yang sama.'
+      });
+    }
+
     const timestamp = Date.now();
-    const nonce = crypto.randomBytes(4).toString('hex').toUpperCase();
-    const dataToSign = `UNIVERSAL_${nonce}:${qty}:${timestamp}`;
+    const nonce = crypto.randomBytes(8).toString('hex').toUpperCase();
+    const activationId = `UNIVERSAL_RSA2_${nonce}`;
+    const dataToSign = `${activationId}:${qty}:${timestamp}`;
 
-    // Always use deterministic HMAC signature so activation keys are universally valid anywhere
-    const secret = TOKEN_LOCK_SECRET || LEGACY_TOKEN_LOCK_SECRET;
-    const signature = "HMAC_" + crypto.createHmac('sha256', secret).update(dataToSign).digest('hex');
+    const signer = crypto.createSign('SHA256');
+    signer.update(dataToSign);
+    signer.end();
+    const signature = signer.sign(privateKey, 'base64');
 
-    const activationKey = Buffer.from(`UNIVERSAL_${nonce}:${qty}:${timestamp}:${signature}`).toString('base64');
-    return res.json({ success: true, activationKey });
+    const activationKey = Buffer.from(`${dataToSign}:${signature}`).toString('base64');
+    return res.json({ success: true, activationKey, signatureVersion: 'RSA2' });
   } catch (err: any) {
     console.error("Failed to generate activation key:", err);
     return res.status(500).json({ success: false, message: "Gagal menghasilkan kunci: " + err.message });
@@ -4297,12 +4329,24 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
       isValid = true;
     } else {
       // Check RSA keys as fallback
-      const keyPair = getServerKeyPair();
       const keysToTry: string[] = [];
-      if (keyPair?.publicKey) keysToTry.push(keyPair.publicKey);
-      if (LICENSE_PUBLIC_KEY) keysToTry.push(LICENSE_PUBLIC_KEY);
 
-      for (const pubKey of keysToTry) {
+      // Offline verification must never depend on this installation's TOKEN_LOCK_SECRET or an ephemeral keypair.
+      // LICENSE_PUBLIC_KEY is safe to distribute to every offline madrasah installation.
+      if (process.env.LICENSE_PUBLIC_KEY) {
+        try { keysToTry.push(formatPublicKeyPem(process.env.LICENSE_PUBLIC_KEY)); } catch (_) {}
+      }
+      if (LICENSE_PUBLIC_KEY) keysToTry.push(formatPublicKeyPem(LICENSE_PUBLIC_KEY));
+
+      // If this same process is also the configured BOSS signer, its configured pair may be used too.
+      if (process.env.LICENSE_PRIVATE_KEY) {
+        const keyPair = getServerKeyPair();
+        if (keyPair?.publicKey) keysToTry.push(keyPair.publicKey);
+      }
+
+      const uniqueKeysToTry = Array.from(new Set(keysToTry.filter(Boolean)));
+
+      for (const pubKey of uniqueKeysToTry) {
         try {
           const verify = crypto.createVerify('SHA256');
           verify.write(dataToVerify);
