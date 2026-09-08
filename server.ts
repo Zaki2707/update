@@ -2659,11 +2659,23 @@ async function refreshInmemoryState(force = false) {
             return true;
           });
         }
-        if (dbData['attendance'] !== undefined) attendance = dbData['attendance'];
+        if (dbData['attendance'] !== undefined) {
+          const archives: any[] = [];
+          Object.keys(dbData).forEach(k => {
+            if (k.startsWith('attendance_archive_') && Array.isArray(dbData[k])) archives.push(...dbData[k]);
+          });
+          attendance = mergeArrays(dbData['attendance'] || [], archives, 'attendance');
+        }
         if (dbData['questionBankGroups'] !== undefined) questionBankGroups = dbData['questionBankGroups'];
         if (dbData['questions'] !== undefined) questions = dbData['questions'];
         if (dbData['grades'] !== undefined) grades = dbData['grades'];
-        if (dbData['chats'] !== undefined) chats = dbData['chats'];
+        if (dbData['chats'] !== undefined) {
+          const archives: any[] = [];
+          Object.keys(dbData).forEach(k => {
+            if (k.startsWith('chats_archive_') && Array.isArray(dbData[k])) archives.push(...dbData[k]);
+          });
+          chats = mergeArrays(dbData['chats'] || [], archives, 'chats');
+        }
         if (dbData['lkpdList'] !== undefined) lkpdList = dbData['lkpdList'];
         if (dbData['exams'] !== undefined) exams = dbData['exams'];
         if (dbData['rooms'] !== undefined) rooms = dbData['rooms'];
@@ -2685,11 +2697,18 @@ async function refreshInmemoryState(force = false) {
         if (dbData['blockedStudents'] !== undefined) blockedStudents = dbData['blockedStudents'];
         if (dbData['settings'] !== undefined) appSettings = dbData['settings'];
         if (dbData['lessonPlans'] !== undefined) lessonPlans = dbData['lessonPlans'];
-        if (dbData['teacherAttendance'] !== undefined) teacherAttendance = dbData['teacherAttendance'];
+        if (dbData['teacherAttendance'] !== undefined) {
+          const archives: any[] = [];
+          Object.keys(dbData).forEach(k => {
+            if (k.startsWith('teacherAttendance_archive_') && Array.isArray(dbData[k])) archives.push(...dbData[k]);
+          });
+          teacherAttendance = mergeArrays(dbData['teacherAttendance'] || [], archives, 'teacherAttendance');
+        }
         if (dbData['childguardRules'] !== undefined) childguardRules = dbData['childguardRules'];
         if (dbData['childguardLogs'] !== undefined) childguardLogs = dbData['childguardLogs'];
         if (dbData['childguardLocations'] !== undefined) childguardLocations = dbData['childguardLocations'];
         if (dbData['childguardStatus'] !== undefined) childguardStatus = dbData['childguardStatus'];
+        applyExtendedDbState(dbData);
 
         lastDbFetchTime = Date.now();
         try {
