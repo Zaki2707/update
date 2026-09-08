@@ -667,6 +667,10 @@ function renderSettingModule(container) {
                             <i class="fa-solid fa-images"></i>
                             <span>Sinkronkan Foto Cloudinary</span>
                         </button>
+                        <button type="button" id="repair-cloudinary-missing-btn" onclick="repairMissingCloudinaryPhotos()" class="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow transition flex items-center gap-2 cursor-pointer" title="Cek aset Cloudinary yang benar-benar ada dan upload foto lokal yang masih belum tersimpan di Cloudinary">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                            <span>Periksa & Upload Foto Hilang</span>
+                        </button>
                     </div>
                 </div>
                 <div id="db-connection-test-result">
@@ -3776,6 +3780,64 @@ async function forceSyncCloudinaryPhotos() {
     }
 }
 window.forceSyncCloudinaryPhotos = forceSyncCloudinaryPhotos;
+
+
+async function repairMissingCloudinaryPhotos() {
+    const statusResultEl = document.getElementById('db-connection-test-result');
+    const button = document.getElementById('repair-cloudinary-missing-btn');
+    if (button) button.disabled = true;
+
+    if (statusResultEl) {
+        statusResultEl.innerHTML = `<div class="p-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-2xl text-xs flex flex-col gap-2 animate-pulse">
+            <div class="font-bold flex items-center gap-2">
+                <i class="fa-solid fa-spinner fa-spin text-sm"></i>
+                <span>Memeriksa aset Cloudinary & mencari foto yang belum ter-backup...</span>
+            </div>
+            <p class="text-slate-600 text-[11px]">Foto yang sudah benar-benar ada di Cloudinary akan dilewati. Foto yang belum ada akan di-upload dari penyimpanan lokal bila sumber filenya masih tersedia.</p>
+        </div>`;
+    }
+
+    try {
+        const res = await fetch('/api/cloudinary/repair-missing', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error(data.message || 'Gagal memeriksa foto Cloudinary.');
+        }
+
+        const result = data.result || {};
+        const missingWarning = Number(result.missingSource || 0) > 0
+            ? `<p class="text-[11px] text-amber-700 font-semibold mt-2">⚠ ${result.missingSource} foto tidak ada di Cloudinary dan sumber file lokalnya juga tidak tersedia, sehingga tidak dapat di-upload ulang.</p>`
+            : `<p class="text-[11px] text-emerald-700 font-semibold mt-2">✓ Semua foto yang dapat diperiksa memiliki backup Cloudinary atau berhasil di-upload.</p>`;
+
+        if (statusResultEl) {
+            statusResultEl.innerHTML = `<div class="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl text-xs space-y-2">
+                <div class="font-bold flex items-center gap-2"><i class="fa-solid fa-circle-check text-emerald-600"></i><span>Pemeriksaan & Backup Foto Selesai</span></div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-slate-600">
+                    <div class="bg-white/70 border rounded-xl p-2">Diperiksa: <strong>${result.checked || 0}</strong></div>
+                    <div class="bg-white/70 border rounded-xl p-2">Sudah ada: <strong>${result.alreadyExists || 0}</strong></div>
+                    <div class="bg-white/70 border rounded-xl p-2">Di-upload: <strong>${result.uploaded || 0}</strong></div>
+                    <div class="bg-white/70 border rounded-xl p-2">Gagal: <strong>${result.failed || 0}</strong></div>
+                </div>
+                ${missingWarning}
+            </div>`;
+        }
+
+        if (window.showToast) {
+            window.showToast(`Cloudinary diperiksa: ${result.uploaded || 0} foto baru di-upload.`, 'success');
+        }
+    } catch (err) {
+        if (statusResultEl) {
+            statusResultEl.innerHTML = `<div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs">
+                <div class="font-bold mb-1"><i class="fa-solid fa-circle-xmark mr-1"></i>Pemeriksaan Cloudinary Gagal</div>
+                <p class="text-slate-700">${err?.message || String(err)}</p>
+            </div>`;
+        }
+        if (window.showToast) window.showToast(err?.message || 'Pemeriksaan Cloudinary gagal.', 'error');
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+window.repairMissingCloudinaryPhotos = repairMissingCloudinaryPhotos;
 
 function toggleAllBackupCheckboxes() {
     const container = document.getElementById('backup-checkbox-container');

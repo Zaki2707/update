@@ -558,6 +558,142 @@ async function syncAllPhotosToCloudinary(): Promise<{ totalCloudinary: number; s
   };
 }
 
+
+function normalizeCloudinaryPhotoId(photoId: string): string {
+  return String(photoId || '')
+    .replace(/^madrasah_photos\//, '')
+    .replace(/[^a-zA-Z0-9_\-]/g, '_');
+}
+
+async function repairMissingCloudinaryPhotos(): Promise<{
+  checked: number;
+  alreadyExists: number;
+  uploaded: number;
+  missingSource: number;
+  failed: number;
+  mapped: number;
+}> {
+  if (!process.env.CLOUDINARY_CLOUD_NAME) {
+    throw new Error('Cloudinary belum dikonfigurasi.');
+  }
+
+  // Cloudinary API is the source of truth here. Do not trust cached photoCloudinaryMap,
+  // because an old mapping can survive even when the actual remote asset was deleted.
+  const cloudByCleanId = new Map<string, { url: string; fullId: string }>();
+  let nextCursor: string | null = null;
+  do {
+    const response: any = await cloudinary.api.resources({
+      type: 'upload',
+      resource_type: 'image',
+      prefix: 'madrasah_photos',
+      max_results: 500,
+      next_cursor: nextCursor || undefined
+    });
+
+    const resources = Array.isArray(response?.resources) ? response.resources : [];
+    for (const item of resources) {
+      if (!item?.public_id || !(item.secure_url || item.url)) continue;
+      const url = item.secure_url || item.url;
+      const fullId = String(item.public_id);
+      const cleanId = fullId.replace(/^madrasah_photos\//, '');
+      cloudByCleanId.set(cleanId, { url, fullId });
+    }
+    nextCursor = response?.next_cursor || null;
+  } while (nextCursor);
+
+  const candidates = new Set<string>();
+  const addPhotoId = (value: any) => {
+    if (typeof value !== 'string') return;
+    let photoId = value.trim();
+    if (!photoId || photoId.startsWith('http') || photoId.startsWith('data:image/')) return;
+    if (photoId.startsWith('/api/photos/')) {
+      photoId = photoId.replace('/api/photos/', '').split('?')[0].trim();
+    }
+    if (photoId) candidates.add(photoId);
+  };
+
+  (students || []).forEach(student => addPhotoId(student?.photo));
+  (teachers || []).forEach(teacher => addPhotoId(teacher?.photo));
+
+  // Include local photo files even if a stale database reference no longer points to them.
+  try {
+    if (fs.existsSync(uploadsDir)) {
+      for (const name of fs.readdirSync(uploadsDir)) {
+        if (!name || name.startsWith('.')) continue;
+        const filePath = path.join(uploadsDir, name);
+        try {
+          if (fs.statSync(filePath).isFile()) candidates.add(name);
+        } catch (_) {}
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Cloudinary Repair] Could not scan uploads directory:', err?.message || err);
+  }
+
+  let alreadyExists = 0;
+  let uploaded = 0;
+  let missingSource = 0;
+  let failed = 0;
+
+  for (const photoId of candidates) {
+    const normalizedId = normalizeCloudinaryPhotoId(photoId);
+    const remote = cloudByCleanId.get(normalizedId) || cloudByCleanId.get(photoId);
+
+    if (remote) {
+      // Refresh all equivalent mapping keys from the real Cloudinary asset.
+      photoCloudinaryMap[photoId] = remote.url;
+      photoCloudinaryMap[normalizedId] = remote.url;
+      photoCloudinaryMap[remote.fullId] = remote.url;
+      alreadyExists++;
+      continue;
+    }
+
+    // The cache says nothing reliable here: remove stale aliases before attempting a real upload.
+    delete photoCloudinaryMap[photoId];
+    delete photoCloudinaryMap[normalizedId];
+    delete photoCloudinaryMap[`madrasah_photos/${normalizedId}`];
+
+    const localFile = path.join(uploadsDir, photoId);
+    let hasLocalFile = false;
+    try {
+      hasLocalFile = fs.existsSync(localFile) && fs.statSync(localFile).isFile();
+    } catch (_) {}
+
+    if (!hasLocalFile) {
+      missingSource++;
+      console.warn(`[Cloudinary Repair] Remote asset missing and no local source available for ${photoId}.`);
+      continue;
+    }
+
+    try {
+      const cloudUrl = await uploadToCloudinary(localFile, photoId);
+      if (cloudUrl) {
+        photoCloudinaryMap[photoId] = cloudUrl;
+        photoCloudinaryMap[normalizedId] = cloudUrl;
+        photoCloudinaryMap[`madrasah_photos/${normalizedId}`] = cloudUrl;
+        uploaded++;
+      } else {
+        failed++;
+      }
+    } catch (err: any) {
+      failed++;
+      console.warn(`[Cloudinary Repair] Upload failed for ${photoId}:`, err?.message || err);
+    }
+  }
+
+  await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
+
+  console.log(`[Cloudinary Repair] Checked ${candidates.size}; exists ${alreadyExists}; uploaded ${uploaded}; missing source ${missingSource}; failed ${failed}.`);
+  return {
+    checked: candidates.size,
+    alreadyExists,
+    uploaded,
+    missingSource,
+    failed,
+    mapped: Object.keys(photoCloudinaryMap).length
+  };
+}
+
 async function saveBase64ToFirestore(base64Str: string): Promise<string> {
   if (!base64Str || !base64Str.startsWith("data:image/")) return base64Str;
   
@@ -3542,6 +3678,25 @@ app.post("/api/cloudinary/sync", async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || String(err) });
+  }
+});
+
+
+// 1b.2 Cloudinary integrity audit: verify actual remote assets and upload only missing photos.
+app.post("/api/cloudinary/repair-missing", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
+  try {
+    const result = await repairMissingCloudinaryPhotos();
+    return res.json({
+      success: true,
+      message: `Pemeriksaan selesai. ${result.uploaded} foto yang belum ada berhasil di-upload ke Cloudinary.`,
+      result
+    });
+  } catch (err: any) {
+    console.error('[Cloudinary Repair Endpoint] Failed:', err?.message || err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'Gagal memeriksa dan memperbaiki foto Cloudinary.'
+    });
   }
 });
 
