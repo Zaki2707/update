@@ -43,7 +43,7 @@ const isOfflineMode = storageMode === 'offline';
 const isOnlineMode = storageMode === 'online';
 
 console.log(`[Runtime] ${isTrustedCloudRunRuntime ? 'TRUSTED_CLOUD_RUN' : 'LOCAL'} runtime; storage=${storageMode.toUpperCase()}${requestedAppMode ? ' (APP_MODE)' : ' (auto)'}.`);
-console.log("Firebase Firestore has been completely disconnected per user instructions to avoid daily free-tier read limits. Application is fully using local storage and Cloudinary backup.");
+console.log(`[Storage] ${isOnlineMode ? 'Cloud SQL + Cloudinary are authoritative' : 'PostgreSQL/local_store.json + uploads are authoritative; Cloudinary is optional backup'}.`);
 
 // Cloudinary initialization
 if (process.env.CLOUDINARY_CLOUD_NAME) {
@@ -2201,7 +2201,7 @@ app.get("/api/photos/:id", async (req, res) => {
 });
 
 // In-Memory Data Store initialized directly from local_store.json baseline
-const bootStore = readLocalStore();
+const bootStore = isOnlineMode ? {} : readLocalStore();
 photoCloudinaryMap = bootStore['photoCloudinaryMap'] || {};
 
 let schoolLocationSettings = bootStore['schoolLocationSettings'] || {
@@ -2399,10 +2399,15 @@ function applyExtendedDbState(dbData: Record<string, any>) {
 async function hydrate() {
   // First load local store as fallback baseline
   let store: any = {};
-  try {
-    store = readLocalStore();
-  } catch (e) {
-    console.error("Failed to parse local_store.json during hydration. Falling back to clean memory state:", e);
+  if (isOfflineMode) {
+    try {
+      store = readLocalStore();
+    } catch (e) {
+      console.error("Failed to parse local_store.json during offline hydration. Falling back to clean memory state:", e);
+      localStoreCache = {};
+    }
+  } else {
+    // ONLINE never seeds runtime state from ephemeral Cloud Run disk. Cloud SQL is authoritative.
     localStoreCache = {};
   }
 
@@ -2502,7 +2507,7 @@ async function hydrate() {
     const dbData = parseDbRows(res.rows);
     console.log("Hydrate fetched rows count from Cloud SQL:", res.rows.length, "Teachers count:", Array.isArray(dbData['teachers']) ? dbData['teachers'].length : 'none', "Students count:", Array.isArray(dbData['students']) ? dbData['students'].length : 'none');
 
-    if (res.rows.length === 0 && Object.keys(store).length > 0) {
+    if (isOfflineMode && res.rows.length === 0 && Object.keys(store).length > 0) {
       console.log("Database is empty. Migrating from local_store.json...");
       try {
         const queries = Object.entries(store).map(([k, v]) => {
@@ -2615,7 +2620,9 @@ async function hydrate() {
       console.error("Failed to reconstruct local JSON store cache from PostgreSQL:", writeErr.message);
     }
   } catch (err) {
-    console.error("PostgreSQL hydration warning / timeout (falling back to local JSON store):", err);
+    console.error(isOnlineMode
+      ? "PostgreSQL hydration failed in ONLINE mode; local JSON fallback is disabled:"
+      : "PostgreSQL hydration warning / timeout (falling back to local JSON store):", err);
   }
 }
 
