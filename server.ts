@@ -131,29 +131,56 @@ function getServerKeyPair(): { privateKey: string; publicKey: string } | null {
   return cachedKeyPair;
 }
 
-const LEGACY_TOKEN_LOCK_SECRET = "***REMOVED***";
-const TOKEN_LOCK_SECRET = process.env.TOKEN_LOCK_SECRET;
+const RUNTIME_SECRETS_DIR = path.join(process.cwd(), '.madrasah-secrets');
 
-if (!TOKEN_LOCK_SECRET) {
-  console.warn("WARNING: TOKEN_LOCK_SECRET environment variable is not set! Using legacy fallback (INSECURE).");
+function readConfiguredSecret(envName: string): string | null {
+  const value = String(process.env[envName] || '').trim();
+  return value || null;
 }
+
+function resolveRuntimeSecret(envName: string, fileName: string): string {
+  const configured = readConfiguredSecret(envName);
+  if (configured) return configured;
+  // Cloud/online deployments must never silently fall back to a public or generated secret.
+  if (isOnlineMode || isTrustedCloudRunRuntime) {
+    throw new Error(`${envName} wajib dikonfigurasi pada environment untuk mode online.`);
+  }
+  fs.mkdirSync(RUNTIME_SECRETS_DIR, { recursive: true, mode: 0o700 });
+  const secretPath = path.join(RUNTIME_SECRETS_DIR, fileName);
+  if (fs.existsSync(secretPath)) {
+    const stored = fs.readFileSync(secretPath, 'utf8').trim();
+    if (!stored) throw new Error(`Secret lokal ${envName} kosong: ${secretPath}`);
+    return stored;
+  }
+  const generated = crypto.randomBytes(48).toString('base64url');
+  try {
+    fs.writeFileSync(secretPath, generated, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    return generated;
+  } catch (err: any) {
+    if (err?.code === 'EEXIST') {
+      const stored = fs.readFileSync(secretPath, 'utf8').trim();
+      if (stored) return stored;
+    }
+    throw err;
+  }
+}
+
+const TOKEN_LOCK_SECRET = resolveRuntimeSecret('TOKEN_LOCK_SECRET', 'token-lock.secret');
+const TOKEN_LOCK_LEGACY_SECRET = readConfiguredSecret('TOKEN_LOCK_LEGACY_SECRET');
+// Compatibility alias for the explicitly enabled legacy-HMAC migration path only.
+// It never contains a hardcoded/shared value: legacy ENV when supplied, otherwise the active private secret.
+const LEGACY_TOKEN_LOCK_SECRET = TOKEN_LOCK_LEGACY_SECRET || TOKEN_LOCK_SECRET;
 
 function calculateTokenSignature(madrasahId: string, balance: number, useLegacy: boolean = false): string {
-  const secret = (useLegacy || !TOKEN_LOCK_SECRET) ? LEGACY_TOKEN_LOCK_SECRET : TOKEN_LOCK_SECRET;
-  return crypto.createHmac('sha256', secret)
-               .update(`${madrasahId}:${balance}`)
-               .digest('hex');
+  const secret = useLegacy ? TOKEN_LOCK_LEGACY_SECRET : TOKEN_LOCK_SECRET;
+  if (!secret) return '';
+  return crypto.createHmac('sha256', secret).update(`${madrasahId}:${balance}`).digest('hex');
 }
 
-const LEGACY_ENCRYPTION_SECRET = "***REMOVED***";
-const LOCAL_STORE_SECRET = process.env.LOCAL_STORE_SECRET;
-
-if (!LOCAL_STORE_SECRET) {
-  console.warn("WARNING: LOCAL_STORE_SECRET environment variable is not set! Using legacy fallback (INSECURE).");
-}
-
-const ENCRYPTION_KEY = crypto.createHash('sha256').update(LOCAL_STORE_SECRET || LEGACY_ENCRYPTION_SECRET).digest();
-const LEGACY_ENCRYPTION_KEY = crypto.createHash('sha256').update(LEGACY_ENCRYPTION_SECRET).digest();
+const LOCAL_STORE_SECRET = resolveRuntimeSecret('LOCAL_STORE_SECRET', 'local-store.secret');
+const LOCAL_STORE_LEGACY_SECRET = readConfiguredSecret('LOCAL_STORE_LEGACY_SECRET');
+const ENCRYPTION_KEY = crypto.createHash('sha256').update(LOCAL_STORE_SECRET).digest();
+const LOCAL_STORE_LEGACY_KEY = LOCAL_STORE_LEGACY_SECRET ? crypto.createHash('sha256').update(LOCAL_STORE_LEGACY_SECRET).digest() : null;
 
 function encryptLocalStore(text: string): string {
   const iv = crypto.randomBytes(16);
@@ -163,37 +190,57 @@ function encryptLocalStore(text: string): string {
   return iv.toString('hex') + ':' + encrypted;
 }
 
+function decryptLocalStoreWithKey(encryptedText: string, key: Buffer): string {
+  const parts = encryptedText.trim().split(':');
+  if (parts.length !== 2) throw new Error('Invalid encryption format (no IV separator found)');
+  const decipher = crypto.createDecipheriv('aes-256-cbc', key, Buffer.from(parts[0], 'hex'));
+  let decrypted = decipher.update(parts[1], 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
 function decryptLocalStore(encryptedText: string): string {
+  const trimmed = encryptedText.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return encryptedText;
   try {
-    const trimmed = encryptedText.trim();
-    // Backward compatibility: If the text is plain JSON (starts with { or [), return it directly without decrypting
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-      return encryptedText;
+    return decryptLocalStoreWithKey(encryptedText, ENCRYPTION_KEY);
+  } catch {
+    if (!LOCAL_STORE_LEGACY_KEY) {
+      throw new Error('local_store menggunakan kunci lama. Konfigurasikan LOCAL_STORE_LEGACY_SECRET hanya untuk migrasi satu kali.');
     }
-    const parts = trimmed.split(':');
-    if (parts.length !== 2) {
-      throw new Error('Invalid encryption format (no IV separator found)');
-    }
-    const iv = Buffer.from(parts[0], 'hex');
-    const encryptedTextData = parts[1];
-    
-    try {
-      const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-      let decrypted = decipher.update(encryptedTextData, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
-      return decrypted;
-    } catch (e) {
-      // Fallback to legacy key
-      const legacyDecipher = crypto.createDecipheriv('aes-256-cbc', LEGACY_ENCRYPTION_KEY, iv);
-      let legacyDecrypted = legacyDecipher.update(encryptedTextData, 'hex', 'utf8');
-      legacyDecrypted += legacyDecipher.final('utf8');
-      return legacyDecrypted;
-    }
-  } catch (err: any) {
-    console.error("Gagal melakukan dekripsi local_store.json:", err.message);
-    throw err;
+    return decryptLocalStoreWithKey(encryptedText, LOCAL_STORE_LEGACY_KEY);
   }
 }
+
+function migrateLocalStoreEncryptionAtStartup() {
+  if (!isOfflineMode) return;
+  for (const fileName of ['local_store.json', 'local_store.json.backup']) {
+    const filePath = path.join(process.cwd(), fileName);
+    if (!fs.existsSync(filePath)) continue;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const trimmed = raw.trim();
+    let plaintext: string | null = null;
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      plaintext = raw;
+    } else {
+      try {
+        decryptLocalStoreWithKey(raw, ENCRYPTION_KEY);
+        continue;
+      } catch {
+        if (!LOCAL_STORE_LEGACY_KEY) continue;
+        try { plaintext = decryptLocalStoreWithKey(raw, LOCAL_STORE_LEGACY_KEY); } catch { continue; }
+      }
+    }
+    if (plaintext !== null) {
+      const tempPath = `${filePath}.migrating-${process.pid}`;
+      fs.writeFileSync(tempPath, encryptLocalStore(plaintext), { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(tempPath, filePath);
+      console.log(`[Security] ${fileName} berhasil dienkripsi ulang dengan secret aktif.`);
+    }
+  }
+}
+
+migrateLocalStoreEncryptionAtStartup();
 
 function verifyAndLockMadrasahTokens() {
   if (!Array.isArray(madrasahs)) return;
@@ -201,7 +248,7 @@ function verifyAndLockMadrasahTokens() {
   for (const m of madrasahs) {
     const currentBalance = m.cbtTokenBalance || 0;
     const expectedSig = calculateTokenSignature(m.id, currentBalance);
-    const expectedLegacySig = calculateTokenSignature(m.id, currentBalance, true);
+    const expectedLegacySig = TOKEN_LOCK_LEGACY_SECRET ? calculateTokenSignature(m.id, currentBalance, true) : null;
     
     if (!m.tokenSignature) {
       if (isLocalRuntime && currentBalance > 1) {
@@ -214,12 +261,12 @@ function verifyAndLockMadrasahTokens() {
         delete m.tokenSignatureInvalid;
         tampered = true;
       }
-    } else if (TOKEN_LOCK_SECRET && m.tokenSignature === expectedLegacySig) {
+    } else if (expectedLegacySig && m.tokenSignature === expectedLegacySig) {
        // Migrate to new signature
        m.tokenSignature = expectedSig;
        delete m.tokenSignatureInvalid;
        tampered = true;
-    } else if (m.tokenSignature !== expectedSig && m.tokenSignature !== expectedLegacySig) {
+    } else if (m.tokenSignature !== expectedSig && (!expectedLegacySig || m.tokenSignature !== expectedLegacySig)) {
       // Preserve data on mismatch. Do not destructively overwrite the balance.
       m.tokenSignatureInvalid = true;
       console.error(`[TOKEN SIGNATURE INVALID] Madrasah "${m.name}" (${m.id}) signature mismatch. Balance ${currentBalance} preserved; token use is blocked until resealed.`);

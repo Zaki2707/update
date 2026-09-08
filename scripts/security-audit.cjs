@@ -1,8 +1,13 @@
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 
 const server = fs.readFileSync('server.ts', 'utf8');
 const app = fs.readFileSync('src/appScript.js', 'utf8');
 const assessment = fs.readFileSync('src/assessmentModule.js', 'utf8');
+const gitignore = fs.readFileSync('.gitignore', 'utf8');
+const firestoreRules = fs.readFileSync('firestore.rules', 'utf8');
+const trackedFiles = new Set(execFileSync('git', ['ls-files'], { encoding: 'utf8' }).trim().split(/\r?\n/).filter(Boolean));
+const trackedRuntimeUploads = [...trackedFiles].filter((p) => p.startsWith('uploads/') && !p.endsWith('/.gitkeep') && p !== 'uploads/.gitkeep');
 
 const checks = [
   ['JWT query bearer removed', !server.includes('req.query.token')],
@@ -30,6 +35,13 @@ const checks = [
   ['CBT finish ignores client grade', !server.includes('const { examId, answers, clientGrade } = req.body')],
   ['CBT finish has no fabricated 100 fallback', server.includes('const pgScore = pgQuestions.length > 0 ? Math.round((correctPGCount / pgQuestions.length) * 100) : 0;') && server.includes('finalScore: essayQuestions.length === 0 ? pgScore : null')],
   ['CBT finish requires server master questions', server.includes('Kunci soal server tidak tersedia. Finalisasi ditolak')],
+  ['Runtime local_store files are not tracked', !trackedFiles.has('local_store.json') && !trackedFiles.has('local_store.json.backup')],
+  ['Runtime uploads are not tracked', trackedRuntimeUploads.length === 0],
+  ['Runtime state and secrets are gitignored', gitignore.includes('local_store.json.*') && gitignore.includes('.madrasah-secrets/') && gitignore.includes('uploads/*')],
+  ['Firestore is deny-all', firestoreRules.includes('allow read, write: if false') && !firestoreRules.includes('allow read, write: if true')],
+  ['Local-store legacy key is environment-only', !server.includes('const LEGACY_ENCRYPTION_SECRET = "') && server.includes("readConfiguredSecret('LOCAL_STORE_LEGACY_SECRET')")],
+  ['Token-lock legacy key is environment-only', !server.includes('const LEGACY_TOKEN_LOCK_SECRET = "') && server.includes("readConfiguredSecret('TOKEN_LOCK_LEGACY_SECRET')")],
+  ['Online runtime secrets fail closed', server.includes('Cloud/online deployments must never silently fall back') && server.includes("resolveRuntimeSecret('LOCAL_STORE_SECRET'") && server.includes("resolveRuntimeSecret('TOKEN_LOCK_SECRET'")],
 ];
 
 let failed = false;
