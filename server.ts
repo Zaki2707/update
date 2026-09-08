@@ -2711,6 +2711,34 @@ function verifyPassword(plainText: string, hashedPassword: string): boolean {
   return pStr === hStr;
 }
 
+async function verifyPasswordAsync(plainText: string, hashedPassword: string): Promise<boolean> {
+  if (!plainText || !hashedPassword) return false;
+  const pStr = String(plainText).trim();
+  const hStr = String(hashedPassword).trim();
+  if (!hStr.startsWith("scrypt$")) return verifyPassword(pStr, hStr);
+  const parts = hStr.split("$");
+  if (parts.length !== 6) return false;
+  const N = parseInt(parts[1], 10);
+  const r = parseInt(parts[2], 10);
+  const p = parseInt(parts[3], 10);
+  const salt = parts[4];
+  const expectedHash = parts[5];
+  if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p) || !salt || !expectedHash) return false;
+  let derivedKey: Buffer;
+  try {
+    derivedKey = await new Promise<Buffer>((resolve, reject) => {
+      crypto.scrypt(pStr, salt, 64, { N, r, p }, (err, key) => {
+        if (err) reject(err);
+        else resolve(key as Buffer);
+      });
+    });
+  } catch {
+    return false;
+  }
+  const expectedBuffer = Buffer.from(expectedHash, "hex");
+  if (derivedKey.length !== expectedBuffer.length) return false;
+  return crypto.timingSafeEqual(derivedKey, expectedBuffer);
+}
 function getAuthUser(req: any): AuthSession | null {
   // 1. Authorization: Bearer <token>
   const authHeader = req.headers?.authorization || req.headers?.Authorization;
@@ -3785,7 +3813,7 @@ function isCloudServer(req?: express.Request): boolean {
 }
 
 // 2. Auth Login
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ success: false, message: "Username dan password wajib diisi." });
@@ -3930,7 +3958,14 @@ app.post("/api/login", (req, res) => {
   }
 
   // 5. Check Students
-  const student = students.find(s => (String(s.username || '').toLowerCase() === uLower || String(s.nis || '').toLowerCase() === uLower) && verifyPassword(p, String(s.password)));
+  const studentCandidate = students.find(s =>
+    String(s.username || '').toLowerCase() === uLower ||
+    String(s.nis || '').toLowerCase() === uLower
+  );
+  const student = studentCandidate &&
+    await verifyPasswordAsync(p, String(studentCandidate.password))
+      ? studentCandidate
+      : null;
   if (student) {
     const studentUser = {
       id: student.id,
