@@ -32,3 +32,4 @@ if old_log in s:
 
 p.write_text(s, encoding='utf-8')
 print('final storage/security cleanup applied')
+# rerun
