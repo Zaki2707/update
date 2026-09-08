@@ -9,7 +9,8 @@
     "start": "node dist/server.cjs",
     "db:push": "npx drizzle-kit push --config=src/db/drizzle.config.ts",
     "clean": "node scripts/clean.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "security:audit": "node scripts/security-audit.cjs"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.1",

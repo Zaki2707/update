@@ -754,13 +754,30 @@ function initRealtimeSync() {
     let sseSource = null;
     let reconnectTimeout = null;
     
-    function connect() {
+    async function connect() {
         if (sseSource) {
             sseSource.close();
         }
-        
-        console.log('Connecting to real-time event stream...');
-        sseSource = new EventSource('/api/realtime-stream');
+
+        console.log('Connecting to authenticated real-time event stream...');
+        let realtimeTicket = '';
+        try {
+            const ticketResponse = await fetch('/api/realtime-token', { cache: 'no-store' });
+            const ticketData = await ticketResponse.json();
+            if (ticketResponse.ok && ticketData && ticketData.success && ticketData.token) {
+                realtimeTicket = String(ticketData.token);
+            }
+        } catch (err) {
+            console.warn('Unable to obtain realtime access ticket:', err);
+        }
+
+        if (!realtimeTicket) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = setTimeout(connect, 5000);
+            return;
+        }
+
+        sseSource = new EventSource('/api/realtime-stream?rt=' + encodeURIComponent(realtimeTicket));
         
         sseSource.onmessage = function(event) {
             try {
@@ -1316,7 +1333,6 @@ async function handleLogin(e) {
         });
 
         const data = await response.json();
-        console.log('Login response:', data);
 
         if (!response.ok || !data.success) {
             showToast(data.message || 'Username atau password salah.', 'error');

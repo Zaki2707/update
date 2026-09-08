@@ -20,6 +20,11 @@ let activeExamSession = null;
 let examTimerInterval = null;
 
 async function syncExamStateToServer(payload) {
+    const role = String((appState && appState.role) || (appState.currentUser && appState.currentUser.role) || '').toLowerCase();
+    if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
+        // Student state is persisted through the dedicated server-authoritative attempt endpoints.
+        return;
+    }
     try {
         await fetch('/api/exam-monitoring-state', {
             method: 'POST',
@@ -38,6 +43,20 @@ function shuffleArray(arr) {
         [array[i], array[j]] = [array[j], array[i]];
     }
     return array;
+}
+
+function stripStudentQuestionSecrets(question) {
+    if (!question || typeof question !== 'object') return question;
+    const safe = { ...question };
+    delete safe.answer;
+    delete safe.answerKey;
+    delete safe.correctAnswer;
+    delete safe.correctOptionText;
+    delete safe.originalOptions;
+    delete safe.explanation;
+    delete safe.solution;
+    delete safe.key;
+    return safe;
 }
 
 function prepareQuestionsForStudent(rawQuestions, ex) {
@@ -157,7 +176,7 @@ function prepareQuestionsForStudent(rawQuestions, ex) {
         return cloned;
     });
 
-    return processed;
+    return processed.map(stripStudentQuestionSecrets);
 }
 
 function isCorrectAnswer(q, studentAns) {
@@ -8231,7 +8250,7 @@ function getWebSocketUrl() {
 window.initSignalingWebSocket = function(clientId, onSignalReceived) {
     if (window._signalingWs && window._signalingWs.readyState === 1) {
         try {
-            window._signalingWs.send(JSON.stringify({ type: 'register', clientId: clientId }));
+            window._signalingWs.send(JSON.stringify({ type: 'register', clientId: clientId, token: (appState.currentUser && appState.currentUser.token) || '' }));
         } catch(e){}
         return;
     }
@@ -8245,7 +8264,7 @@ window.initSignalingWebSocket = function(clientId, onSignalReceived) {
         
         ws.onopen = () => {
             console.log("WebRTC Signaling WebSocket connected!");
-            ws.send(JSON.stringify({ type: 'register', clientId: clientId }));
+            ws.send(JSON.stringify({ type: 'register', clientId: clientId, token: (appState.currentUser && appState.currentUser.token) || '' }));
         };
         
         ws.onmessage = (event) => {

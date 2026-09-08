@@ -735,6 +735,25 @@ async function saveBase64ToFirestore(base64Str: string): Promise<string> {
   return `/api/photos/${photoId}`;
 }
 
+async function persistRestoredImageData(value: any): Promise<any> {
+  if (typeof value === 'string') {
+    return value.startsWith('data:image/') ? await saveBase64ToFirestore(value) : value;
+  }
+  if (Array.isArray(value)) {
+    const out = [];
+    for (const item of value) out.push(await persistRestoredImageData(item));
+    return out;
+  }
+  if (value && typeof value === 'object') {
+    const out: any = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = await persistRestoredImageData(item);
+    }
+    return out;
+  }
+  return value;
+}
+
 function getOrGenerateSSLCert() {
   if (process.env.VERCEL) return Promise.resolve(null);
   return (async () => {
@@ -1022,8 +1041,8 @@ async function determineAndInitPool() {
           name: `SQL_HOST (${hostPath} -> ${dbName})`,
           config: {
             host: hostPath,
-            user: process.env.SQL_USER || 'ai_studio_app_user',
-            password: process.env.SQL_PASSWORD || 'Sb9@c^VUmm+2]Vc>',
+            user: process.env.SQL_USER || process.env.PGUSER,
+            password: process.env.SQL_PASSWORD,
             database: dbName,
             max: 10,
             connectionTimeoutMillis,
@@ -1053,8 +1072,8 @@ async function determineAndInitPool() {
     config: {
       host: 'localhost',
       port: 5432,
-      user: process.env.SQL_USER || 'ai_studio_app_user',
-      password: process.env.SQL_PASSWORD || 'Sb9@c^VUmm+2]Vc>',
+      user: process.env.SQL_USER || process.env.PGUSER,
+      password: process.env.SQL_PASSWORD,
       database: process.env.SQL_DB_NAME || 'cloud_sql_production_database',
       max: 10,
       connectionTimeoutMillis: 2000,
@@ -1437,56 +1456,58 @@ async function loadData(key: string, fallback: any) {
   return fallback;
 }
 
-let sseClients: express.Response[] = [];
+let sseClients: Array<{ res: express.Response; user: any }> = [];
 const wsClients = new Map<string, any>();
 
 function broadcastStateUpdate(key: string, senderClientId?: string) {
-  const payload = JSON.stringify({ type: "state-update", key, senderClientId });
+  const payload = JSON.stringify({ type: 'state-update', key, senderClientId });
   sseClients = sseClients.filter(client => {
+    const res = client.res;
     try {
-      if ((client as any).writableEnded || (client as any).destroyed || (client as any).finished) {
-        return false;
-      }
-      client.write(`data: ${payload}\n\n`);
-      if (typeof (client as any).flush === 'function') {
-        (client as any).flush();
-      }
+      if ((res as any).writableEnded || (res as any).destroyed || (res as any).finished) return false;
+      res.write(`data: ${payload}\n\n`);
+      if (typeof (res as any).flush === 'function') (res as any).flush();
       return true;
-    } catch (err) {
+    } catch {
       return false;
     }
   });
 }
 
 function broadcastExamEvent(event: any) {
+  const eventTenant = (() => {
+    if (event?.madrasahId) return String(event.madrasahId);
+    if (event?.examId) {
+      const ex = (exams || []).find((item: any) => String(item.id) === String(event.examId));
+      if (ex?.madrasahId || ex?.tenant) return String(ex.madrasahId || ex.tenant);
+    }
+    if (event?.studentId) {
+      const st = (students || []).find((item: any) => String(item.id) === String(event.studentId));
+      if (st?.madrasahId || st?.tenant) return String(st.madrasahId || st.tenant);
+    }
+    return '';
+  })();
   const payload = JSON.stringify(event);
+
   sseClients = sseClients.filter(client => {
+    const res = client.res;
+    const user = client.user || {};
     try {
-      if ((client as any).writableEnded || (client as any).destroyed || (client as any).finished) {
-        return false;
-      }
-      client.write(`data: ${payload}\n\n`);
-      if (typeof (client as any).flush === 'function') {
-        (client as any).flush();
-      }
+      if ((res as any).writableEnded || (res as any).destroyed || (res as any).finished) return false;
+      const role = String(user.role || '').toLowerCase();
+      const isBoss = role === 'bos' || role === 'superadmin';
+      const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+      if (!isBoss && eventTenant && String(user.madrasahId || 'default') !== eventTenant) return true;
+      if (!isBoss && !eventTenant && !isStudent) return true;
+      if (isStudent && String(event?.studentId || '') !== String(user.id || '')) return true;
+      res.write(`data: ${payload}\n\n`);
+      if (typeof (res as any).flush === 'function') (res as any).flush();
       return true;
-    } catch (err) {
+    } catch {
       return false;
     }
   });
-
-  wsClients.forEach((ws) => {
-    try {
-      if (ws && ws.readyState === 1) {
-        ws.send(payload);
-      }
-    } catch {}
-  });
 }
-
-const dbWriteTimeouts = new Map<string, NodeJS.Timeout>();
-const lastDbWriteTimes = new Map<string, number>();
-const DB_WRITE_THROTTLE_INTERVAL = 3000; // 3 seconds throttle for PostgreSQL database writes per key
 
 function getJakartaTodayDateStr(): string {
   // Always get 'YYYY-MM-DD' in Asia/Jakarta timezone (WIB)
@@ -2059,6 +2080,7 @@ const app = express();
 export const appExport = app;
 export default app;
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+if (isOnlineMode) app.set('trust proxy', 1);
 
 // ONLINE persistence gate: never acknowledge a mutating API request when Cloud SQL is unavailable.
 // Login/health/connection diagnostics remain available so administrators can recover the service.
@@ -2095,23 +2117,178 @@ app.use(compression({
   }
 }));
 
+const configuredAllowedOrigins = new Set(
+  String(process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean)
+);
+
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "*");
-  res.removeHeader("X-Frame-Options");
-  res.setHeader("Content-Security-Policy", "frame-ancestors *");
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const effectiveProto = forwardedProto || req.protocol || (isOnlineMode ? 'https' : 'http');
+  const selfOrigin = req.headers.host ? `${effectiveProto}://${req.headers.host}` : '';
+  const originAllowed = !origin || origin === selfOrigin || configuredAllowedOrigins.has(origin);
+
+  if (isOnlineMode) {
+    if (origin && originAllowed) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
   }
-  if (req.path.startsWith("/api/")) {
-    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-    res.setHeader("Pragma", "no-cache");
-    res.setHeader("Expires", "0");
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token, X-Madrasah-Id, X-User-Id, X-User-Role');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(self)');
+
+  if (isOnlineMode) {
+    const frameAncestors = String(process.env.ALLOWED_FRAME_ANCESTORS || "'self'").trim();
+    res.setHeader('Content-Security-Policy', `frame-ancestors ${frameAncestors}`);
+    if (!process.env.ALLOWED_FRAME_ANCESTORS) {
+      res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    } else {
+      res.removeHeader('X-Frame-Options');
+    }
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  } else {
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  }
+
+  if (req.method === 'OPTIONS') {
+    if (isOnlineMode && origin && !originAllowed) {
+      return res.status(403).end();
+    }
+    return res.status(204).end();
   }
   next();
-}); app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+});
+const requestBodyLimit = isOnlineMode ? '25mb' : '50mb';
+app.use(express.json({ limit: requestBodyLimit }));
+app.use(express.urlencoded({ extended: true, limit: requestBodyLimit }));
+
+const apiRateBuckets = new Map<string, { count: number; resetAt: number }>();
+function enforceApiRateLimit(req: any, res: any, bucket: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const ip = String(req.ip || req.socket?.remoteAddress || 'unknown');
+  const key = `${bucket}:${ip}`;
+  let item = apiRateBuckets.get(key);
+  if (!item || item.resetAt <= now) {
+    item = { count: 0, resetAt: now + windowMs };
+    apiRateBuckets.set(key, item);
+  }
+  item.count += 1;
+  if (item.count > limit) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil((item.resetAt - now) / 1000))));
+    res.status(429).json({ success: false, message: 'Terlalu banyak permintaan. Silakan coba lagi beberapa saat.' });
+    return false;
+  }
+  return true;
+}
+
+const staffRoles = new Set(['teacher', 'guru', 'admin', 'bos', 'superadmin']);
+const adminRoles = new Set(['admin', 'bos', 'superadmin']);
+const bossRoles = new Set(['bos', 'superadmin']);
+const staffWritePrefixes = [
+  '/api/teachers', '/api/students', '/api/classes', '/api/subjects',
+  '/api/teacher-attendance', '/api/question-bank-groups', '/api/questions',
+  '/api/grades', '/api/time-slots', '/api/grade-categories', '/api/system-settings',
+  '/api/lesson-plans', '/api/schedules', '/api/rooms', '/api/journals',
+  '/api/calendar-events', '/api/generated-exams'
+];
+const staffOnlyPrefixes = [
+  '/api/teacher-attendance', '/api/question-bank-groups', '/api/journals',
+  '/api/lesson-plans', '/api/generated-exams'
+];
+
+app.use((req: any, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  const method = String(req.method || 'GET').toUpperCase();
+  const p = String(req.path || '');
+  if (method === 'OPTIONS') return next();
+
+  const publicApi =
+    (method === 'POST' && p === '/api/login') ||
+    (method === 'POST' && p === '/api/register-madrasah') ||
+    (method === 'GET' && p === '/api/settings') ||
+    (method === 'GET' && p === '/api/health') ||
+    (method === 'GET' && p.startsWith('/api/madrasah-by-slug/')) ||
+    (method === 'GET' && p.startsWith('/api/photos/'));
+
+  if (publicApi) {
+    if (method === 'POST' && p === '/api/login') {
+      const username = String(req.body?.username || '').trim().toLowerCase().slice(0, 128) || 'unknown';
+      const limit = isOnlineMode ? 12 : 120;
+      if (!enforceApiRateLimit(req, res, `login:${username}`, limit, 10 * 60 * 1000)) return;
+    }
+    if (method === 'POST' && p === '/api/register-madrasah') {
+      const limit = isOnlineMode ? 8 : 80;
+      if (!enforceApiRateLimit(req, res, 'register', limit, 60 * 60 * 1000)) return;
+    }
+    return next();
+  }
+
+  if (p === '/api/realtime-stream') {
+    const realtimeUser = verifyRealtimeToken(String(req.query?.rt || ''));
+    if (!realtimeUser) {
+      return res.status(401).json({ success: false, message: 'Realtime access ticket tidak sah atau kedaluwarsa.' });
+    }
+    req.user = realtimeUser;
+    return next();
+  }
+
+  const authUser = getAuthUser(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, message: 'Akses ditolak: Silakan login terlebih dahulu.' });
+  }
+  req.user = authUser;
+  const role = String(authUser.role || '').toLowerCase();
+
+  if (p.startsWith('/api/boss/') && !bossRoles.has(role)) {
+    return res.status(403).json({ success: false, message: 'Akses khusus BOSS.' });
+  }
+
+  const adminOnly =
+    p === '/api/db-status' ||
+    p.startsWith('/api/system/backup') ||
+    p.startsWith('/api/system/restore') ||
+    (p === '/api/settings' && method !== 'GET');
+  if (adminOnly && !adminRoles.has(role)) {
+    return res.status(403).json({ success: false, message: 'Akses hanya untuk administrator.' });
+  }
+
+  if (staffOnlyPrefixes.some(prefix => p.startsWith(prefix)) && !staffRoles.has(role)) {
+    return res.status(403).json({ success: false, message: 'Akses hanya untuk guru atau administrator.' });
+  }
+
+  const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+  const exactStaffWrite = p === '/api/exams' || p === '/api/lkpds' || p === '/api/games';
+  if (isMutation && (exactStaffWrite || staffWritePrefixes.some(prefix => p.startsWith(prefix))) && !staffRoles.has(role)) {
+    return res.status(403).json({ success: false, message: 'Aksi ini hanya dapat dilakukan guru atau administrator.' });
+  }
+
+  if (p === '/api/realtime-token') {
+    if (!enforceApiRateLimit(req, res, `realtime:${authUser.id}`, 120, 10 * 60 * 1000)) return;
+  }
+  if (p === '/api/boss/generate-activation-key') {
+    if (!enforceApiRateLimit(req, res, `activation:${authUser.id}`, 60, 60 * 1000)) return;
+  }
+
+  next();
+});
+
+app.get('/api/realtime-token', (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  if (!authUser) return res.status(401).json({ success: false, message: 'Belum login.' });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, token: createRealtimeToken(authUser), expiresIn: 600 });
+});
+
 if (isOfflineMode) app.use('/uploads', express.static(uploadsDir));
 
 app.get("/update_offline.zip", (req, res) => {
@@ -2807,6 +2984,44 @@ if (!JWT_SECRET) {
   console.error("======================================================================================");
 }
 
+const requestedJwtTtl = Number(process.env.JWT_TTL_SECONDS || '');
+const JWT_TTL_SECONDS = Number.isFinite(requestedJwtTtl) && requestedJwtTtl >= 900 && requestedJwtTtl <= (90 * 24 * 3600)
+  ? Math.floor(requestedJwtTtl)
+  : (isOnlineMode ? 12 * 3600 : 30 * 24 * 3600);
+
+function createRealtimeToken(user: any): string {
+  if (!JWT_SECRET) throw new Error('JWT_SECRET is required for realtime authentication.');
+  const payload = {
+    id: String(user.id || ''),
+    role: String(user.role || '').toLowerCase(),
+    madrasahId: String(user.madrasahId || 'default'),
+    scope: 'realtime',
+    exp: Math.floor(Date.now() / 1000) + 600
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', JWT_SECRET).update(`realtime.${encoded}`).digest('base64url');
+  return `${encoded}.${signature}`;
+}
+
+function verifyRealtimeToken(token: string): any | null {
+  if (!JWT_SECRET || !token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [encoded, signature] = parts;
+  const expected = crypto.createHmac('sha256', JWT_SECRET).update(`realtime.${encoded}`).digest('base64url');
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    if (payload.scope !== 'realtime') return null;
+    if (!payload.exp || Number(payload.exp) < Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 interface AuthSession {
   id: string;
   role: string;
@@ -2830,7 +3045,7 @@ function createAuthToken(user: any): string {
     name: user.name || '',
     classId: user.classId || user.class_id || '',
     madrasahId: user.madrasahId || 'default',
-    exp: Math.floor(Date.now() / 1000) + (30 * 24 * 3600) // 30 days
+    exp: Math.floor(Date.now() / 1000) + JWT_TTL_SECONDS
   };
   const b64Header = Buffer.from(JSON.stringify(header)).toString("base64url");
   const b64Payload = Buffer.from(JSON.stringify(payload)).toString("base64url");
@@ -2958,11 +3173,6 @@ function getAuthUser(req: any): AuthSession | null {
   const xAuthToken = req.headers ? (req.headers['x-auth-token'] || req.headers['X-Auth-Token']) : null;
   if (xAuthToken && typeof xAuthToken === 'string') {
     const verified = verifyAuthToken(xAuthToken.trim());
-    if (verified) return verified;
-  }
-  // 3. Query token
-  if (req.query && req.query.token && typeof req.query.token === 'string') {
-    const verified = verifyAuthToken(req.query.token.trim());
     if (verified) return verified;
   }
   return null;
@@ -4235,7 +4445,7 @@ app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   const authUser = req.user;
   const isBos = authUser && (authUser.role === 'bos' || authUser.role === 'superadmin');
   if (isBos) {
-    return res.json({ success: true, madrasahs: madrasahs || [] });
+    return res.json({ success: true, madrasahs: (madrasahs || []).map(({ adminPass, ...rest }: any) => rest) });
   }
   res.json({ success: true, madrasahs: (madrasahs || []).map(sanitizeMadrasahPublic) });
 });
@@ -5908,9 +6118,19 @@ function getRecordTimestamp(id: string, record: any): number {
   return 0;
 }
 
-app.get("/api/attendance", requireAuth, async (req, res) => {
+app.get("/api/attendance", requireAuth, async (req: any, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  res.json({ success: true, attendance: filterByMadrasah(attendance || [], req) });
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  let list = filterByMadrasah(attendance || [], req);
+  if (role === 'student' || role === 'siswa') {
+    list = list.filter((item: any) => String(item.studentId || '') === String(authUser.id));
+  } else if (role === 'class_leader' || role === 'ketua_kelas') {
+    const selfStudent = (students || []).find((s: any) => String(s.id) === String(authUser.id));
+    const classId = selfStudent?.classId || selfStudent?.class_id || authUser?.classId || '';
+    list = list.filter((item: any) => String(item.classId || '') === String(classId));
+  }
+  res.json({ success: true, attendance: list });
 });
 
 app.post("/api/attendance", requireAuth, async (req, res) => {
@@ -8125,8 +8345,14 @@ app.post("/api/chats/broadcast-apk", async (req, res) => {
   }
 });
 
-app.get("/api/grades", requireAuth, (req, res) => {
-  res.json({ success: true, grades: filterByMadrasah(grades, req) });
+app.get("/api/grades", requireAuth, (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  let list = filterByMadrasah(grades, req);
+  if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
+    list = list.filter((item: any) => String(item.studentId || item.student_id || '') === String(authUser.id));
+  }
+  res.json({ success: true, grades: list });
 });
 
 app.post("/api/grades", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
@@ -12468,9 +12694,12 @@ app.delete("/api/generated-exams/:id", async (req, res) => {
 
 // Settings API
 app.get("/api/settings", (req, res) => {
-  res.json({ success: true, settings: appSettings, isOfflineMode });
+  const safeSettings: any = { ...(appSettings || {}) };
+  ['adminPass', 'password', 'jwtSecret', 'apiKey', 'geminiApiKey', 'cloudinaryApiSecret'].forEach(k => delete safeSettings[k]);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, settings: safeSettings, isOfflineMode });
 });
-app.put("/api/settings", async (req, res) => {
+app.put("/api/settings", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   appSettings = { ...appSettings, ...req.body };
   await saveData('settings', appSettings);
   res.json({ success: true, settings: appSettings });
@@ -12511,10 +12740,11 @@ app.get("/api/system/backup", (req, res) => {
 
 app.post("/api/system/restore", async (req, res) => {
   try {
-    const backup = req.body;
+    let backup = req.body;
     if (!backup || typeof backup !== 'object') {
       return res.status(400).json({ success: false, message: "Format file backup tidak valid." });
     }
+    backup = await persistRestoredImageData(backup);
     const merged = await processSystemRestore(backup);
     res.json({ success: true, message: "Restore data sistem berhasil diproses!", merged });
   } catch (err: any) {
@@ -13447,7 +13677,9 @@ app.post("/api/sync-state", async (req, res) => {
 });
 
 // Real-time Event Stream (Server-Sent Events)
-app.get("/api/realtime-stream", (req, res) => {
+app.get("/api/realtime-stream", (req: any, res) => {
+  const authUser = req.user || verifyRealtimeToken(String(req.query?.rt || ''));
+  if (!authUser) return res.status(401).end();
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
@@ -13458,7 +13690,7 @@ app.get("/api/realtime-stream", (req, res) => {
     (res as any).flush();
   }
   
-  sseClients.push(res);
+  sseClients.push({ res, user: authUser });
   
   const pingInterval = setInterval(() => {
     try {
@@ -13473,7 +13705,7 @@ app.get("/api/realtime-stream", (req, res) => {
   
   req.on("close", () => {
     clearInterval(pingInterval);
-    sseClients = sseClients.filter(c => c !== res);
+    sseClients = sseClients.filter(c => c.res !== res);
   });
 });
 
@@ -13554,36 +13786,64 @@ async function startServer() {
 
     wss.on("connection", (ws: any) => {
       let registeredClientId: string | null = null;
+      let registeredUser: any = null;
 
-      ws.on("message", (message: string) => {
+      ws.on("message", (message: any) => {
         try {
-          const data = JSON.parse(message);
+          const data = JSON.parse(message.toString());
           if (data.type === "register") {
-            registeredClientId = String(data.clientId);
+            const authUser = verifyAuthToken(String(data.token || ''));
+            if (!authUser) {
+              ws.close(4001, 'Unauthorized');
+              return;
+            }
+            const requestedClientId = String(data.clientId || '');
+            const role = String(authUser.role || '').toLowerCase();
+            const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+            const isStaff = ['teacher', 'guru', 'admin', 'bos', 'superadmin'].includes(role);
+
+            if (isStudent && requestedClientId !== String(authUser.id)) {
+              ws.close(4003, 'Client identity mismatch');
+              return;
+            }
+            if (requestedClientId === 'admin' && !isStaff) {
+              ws.close(4003, 'Staff role required');
+              return;
+            }
+
+            registeredUser = authUser;
+            registeredClientId = requestedClientId || String(authUser.id);
             clients.set(registeredClientId, ws);
-            console.log(`Signaling WS: Client registered - ${registeredClientId}`);
+            console.log(`Signaling WS: authenticated client registered - ${registeredClientId}`);
           } else if (data.type === "signal") {
-            const { recipientId, senderId, signal } = data;
-            const recipientWs = clients.get(String(recipientId));
+            if (!registeredUser || !registeredClientId) {
+              ws.close(4001, 'Register first');
+              return;
+            }
+            const recipientId = String(data.recipientId || '');
+            const signal = data.signal;
+            if (!recipientId || signal === undefined) return;
+
+            const role = String(registeredUser.role || '').toLowerCase();
+            const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+            const isBoss = role === 'bos' || role === 'superadmin';
+            if (isStudent && recipientId !== 'admin') return;
+
+            if (!isStudent && recipientId !== 'admin' && !isBoss) {
+              const targetStudent = (students || []).find((st: any) => String(st.id) === recipientId);
+              if (targetStudent) {
+                const targetTenant = String(targetStudent.madrasahId || targetStudent.tenant || 'default');
+                if (targetTenant !== String(registeredUser.madrasahId || 'default')) return;
+              }
+            }
+
+            const recipientWs = clients.get(recipientId);
             if (recipientWs && recipientWs.readyState === 1) {
               recipientWs.send(JSON.stringify({
                 type: "signal",
-                senderId,
+                senderId: registeredClientId,
                 signal
               }));
-            } else {
-              // Fallback to in-memory fallback signaling pool
-              if (!examSignalingMessages[recipientId]) {
-                examSignalingMessages[recipientId] = {};
-              }
-              const sId = senderId || "unknown";
-              if (!examSignalingMessages[recipientId][sId]) {
-                examSignalingMessages[recipientId][sId] = [];
-              }
-              examSignalingMessages[recipientId][sId].push({ senderId: sId, signal, timestamp: Date.now() });
-              if (examSignalingMessages[recipientId][sId].length > 25) {
-                examSignalingMessages[recipientId][sId].shift();
-              }
             }
           }
         } catch (e) {
@@ -13592,7 +13852,7 @@ async function startServer() {
       });
 
       ws.on("close", () => {
-        if (registeredClientId) {
+        if (registeredClientId && clients.get(registeredClientId) === ws) {
           clients.delete(registeredClientId);
           console.log(`Signaling WS: Client disconnected - ${registeredClientId}`);
         }
