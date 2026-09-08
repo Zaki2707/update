@@ -1621,6 +1621,10 @@ function partitionAndSaveKey(key: string, value: any[]): { active: any[], archiv
   return { active, archives };
 }
 
+const DB_WRITE_THROTTLE_INTERVAL = 3000;
+const dbWriteTimeouts = new Map<string, NodeJS.Timeout>();
+const lastDbWriteTimes = new Map<string, number>();
+
 async function writeKeyToPostgresDirect(key: string) {
   if (dbWriteTimeouts.has(key)) {
     const timeout = dbWriteTimeouts.get(key);
@@ -4752,15 +4756,18 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
     const dataToVerify = `${madrasahId}:${qtyStr}:${timestampStr}`;
     let isValid = false;
 
-    // Check HMAC verification
-    const secret = TOKEN_LOCK_SECRET || LEGACY_TOKEN_LOCK_SECRET;
-    const expectedHmacPrimary = "HMAC_" + crypto.createHmac('sha256', secret).update(dataToVerify).digest('hex');
-    const expectedHmacDefault = "HMAC_" + crypto.createHmac('sha256', LEGACY_TOKEN_LOCK_SECRET).update(dataToVerify).digest('hex');
+    // RSA is authoritative. Legacy HMAC activation is forgeable when based on a shared legacy secret,
+    // so it is disabled by default and may only be enabled explicitly for a short OFFLINE migration.
+    const allowLegacyHmacActivation = isOfflineMode && String(process.env.ALLOW_LEGACY_HMAC_ACTIVATION || '').toLowerCase() === 'true';
+    if (allowLegacyHmacActivation) {
+      const secret = TOKEN_LOCK_SECRET || LEGACY_TOKEN_LOCK_SECRET;
+      const expectedHmacPrimary = "HMAC_" + crypto.createHmac('sha256', secret).update(dataToVerify).digest('hex');
+      const expectedHmacDefault = "HMAC_" + crypto.createHmac('sha256', LEGACY_TOKEN_LOCK_SECRET).update(dataToVerify).digest('hex');
+      if (signature === expectedHmacPrimary || signature === expectedHmacDefault) isValid = true;
+    }
 
-    if (signature === expectedHmacPrimary || signature === expectedHmacDefault) {
-      isValid = true;
-    } else {
-      // Check RSA keys as fallback
+    if (!isValid) {
+      // Check RSA keys (authoritative path)
       const keysToTry: string[] = [];
 
       // Offline verification must never depend on this installation's TOKEN_LOCK_SECRET or an ephemeral keypair.
@@ -4805,9 +4812,14 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
     }
 
     if (teacherId) {
+      const authUser = (req as any).user || getAuthUser(req);
+      const authRole = String(authUser?.role || '').toLowerCase();
       let tch = teachers.find(t => String(t.id) === String(teacherId) || String(t.username) === String(teacherId) || String(t.nip) === String(teacherId));
-      if (!tch) {
+      if (!tch || !isItemForCurrentMadrasah(tch, req)) {
         return res.status(404).json({ success: false, message: "Data guru tidak ditemukan." });
+      }
+      if ((authRole === 'teacher' || authRole === 'guru') && String(tch.id) !== String(authUser.id)) {
+        return res.status(403).json({ success: false, message: "Guru hanya dapat mengaktifkan token untuk akun sendiri." });
       }
       tch.cbtTokenBalance = (tch.cbtTokenBalance || 0) + qty;
       usedActivationKeys.push(signature);
@@ -5057,7 +5069,11 @@ function filterByMadrasah(list: any[], req: any): any[] {
       if (!item) return false;
       const imId = String(item.madrasahId || '').trim();
       const imSlug = String(item.madrasahSlug || '').trim();
-      if (!imId && !imSlug) return true; // Include untagged legacy items
+      if (isOnlineMode) {
+        // Production isolation is strict: never leak untagged/default legacy rows into another tenant.
+        return imId === targetId || imSlug === targetSlug || imId === targetSlug || imSlug === targetId;
+      }
+      if (!imId && !imSlug) return true; // Offline-only legacy compatibility.
       return imId === targetId || imSlug === targetSlug || imId === targetSlug || imSlug === targetId || imId === 'default' || imSlug === 'default';
     });
     if (matched.length > 0) return matched;
@@ -5098,6 +5114,9 @@ function isItemForCurrentMadrasah(item: any, req: any): boolean {
     const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
     const targetId = matchM ? matchM.id : mId;
     const targetSlug = matchM ? matchM.slug : mId;
+    if (isOnlineMode) {
+      return imId === targetId || imSlug === targetSlug || imId === targetSlug || imSlug === targetId;
+    }
     return imId === targetId || imSlug === targetSlug || imId === targetSlug || imSlug === targetId || imId === 'default' || imSlug === 'default';
   }
   
@@ -5131,8 +5150,9 @@ function mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any
   if (!Array.isArray(incomingData)) return globalList;
   if (!Array.isArray(globalList)) globalList = [];
 
-  const userRole = String(req.headers['x-user-role'] || 'student').trim().toLowerCase();
-  const isStudent = userRole === 'student';
+  const authenticatedUser = req.user || getAuthUser(req);
+  const userRole = String(authenticatedUser?.role || 'student').trim().toLowerCase();
+  const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(userRole);
 
   // 1. Tag incoming items with the current madrasah
   const taggedIncoming = incomingData.map(item => {

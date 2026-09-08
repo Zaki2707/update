@@ -19,6 +19,11 @@ const checks = [
   ['System restore image normalization exists', server.includes('persistRestoredImageData')],
   ['Student attendance privacy exists', server.includes("String(item.studentId || '') === String(authUser.id)")],
   ['Student grade privacy exists', server.includes("item.studentId || item.student_id")],
+  ['DB write throttle declarations exist', server.includes('const DB_WRITE_THROTTLE_INTERVAL = 3000;') && server.includes('const dbWriteTimeouts = new Map<string, NodeJS.Timeout>()') && server.includes('const lastDbWriteTimes = new Map<string, number>()')],
+  ['LKPD role uses authenticated identity', server.includes('const authenticatedUser = req.user || getAuthUser(req)')],
+  ['Online tenant isolation is strict', server.includes('Production isolation is strict')],
+  ['Legacy HMAC activation disabled by default', server.includes('ALLOW_LEGACY_HMAC_ACTIVATION')],
+  ['Teacher activation target is identity scoped', server.includes('Guru hanya dapat mengaktifkan token untuk akun sendiri')],
 ];
 
 let failed = false;
