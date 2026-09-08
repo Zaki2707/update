@@ -185,25 +185,26 @@ function verifyAndLockMadrasahTokens() {
     
     if (!m.tokenSignature) {
       if (isOfflineMode && currentBalance > 1) {
-        console.error(`[CRITICAL TOKEN TAMPERING DETECTED] Madrasah "${m.name}" (${m.id}) tokens have been modified illegally! Empty signature with balance > 1 is not allowed in offline mode. Resetting tokens to 1.`);
-        m.cbtTokenBalance = 1;
-        m.tokenSignature = calculateTokenSignature(m.id, 1);
-        tampered = true;
+        // Preserve the stored balance, but quarantine it until an official token action reseals it.
+        m.tokenSignatureInvalid = true;
+        console.error(`[TOKEN SIGNATURE INVALID] Madrasah "${m.name}" (${m.id}) has balance ${currentBalance} without a valid signature. Balance preserved; token use is blocked until resealed.`);
       } else {
         // First-time load or newly registered madrasah: compute and assign a valid signature
         m.tokenSignature = expectedSig;
+        delete m.tokenSignatureInvalid;
         tampered = true;
       }
     } else if (TOKEN_LOCK_SECRET && m.tokenSignature === expectedLegacySig) {
        // Migrate to new signature
        m.tokenSignature = expectedSig;
+       delete m.tokenSignatureInvalid;
        tampered = true;
     } else if (m.tokenSignature !== expectedSig && m.tokenSignature !== expectedLegacySig) {
-      // TAMPERING DETECTED!
-      console.error(`[CRITICAL TOKEN TAMPERING DETECTED] Madrasah "${m.name}" (${m.id}) tokens have been modified illegally! Resetting tokens to 0.`);
-      m.cbtTokenBalance = 0;
-      m.tokenSignature = calculateTokenSignature(m.id, 0);
-      tampered = true;
+      // Preserve data on mismatch. Do not destructively overwrite the balance.
+      m.tokenSignatureInvalid = true;
+      console.error(`[TOKEN SIGNATURE INVALID] Madrasah "${m.name}" (${m.id}) signature mismatch. Balance ${currentBalance} preserved; token use is blocked until resealed.`);
+    } else {
+      delete m.tokenSignatureInvalid;
     }
   }
   if (tampered) {
@@ -1583,6 +1584,8 @@ function scheduleDbWrite(key: string) {
 async function saveData(key: string, value: any, immediate = true) {
   if (key === 'madrasahs' && Array.isArray(value)) {
     for (const m of value) {
+      // Never silently legitimize a balance that failed signature verification.
+      if (m.tokenSignatureInvalid) continue;
       m.tokenSignature = calculateTokenSignature(m.id, m.cbtTokenBalance || 0);
     }
   }
@@ -4177,6 +4180,8 @@ app.post("/api/token-requests/:id/approve", requireAuth, requireRole(['bos', 'su
 
   if (targetM) {
     targetM.cbtTokenBalance = (targetM.cbtTokenBalance || 0) + addQty;
+    delete targetM.tokenSignatureInvalid;
+    targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
   }
 
   await saveData('tokenRequests', tokenRequests);
@@ -4222,6 +4227,8 @@ app.post("/api/madrasahs/:id/update-tokens", requireAuth, requireRole(['bos', 's
   } else if (deltaTokens !== undefined) {
     targetM.cbtTokenBalance = Math.max(0, (targetM.cbtTokenBalance || 0) + (parseInt(deltaTokens, 10) || 0));
   }
+  delete targetM.tokenSignatureInvalid;
+  targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance || 0);
   await saveData('madrasahs', madrasahs);
   return res.json({
     success: true,
@@ -4348,6 +4355,7 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
     // Add balance
     targetM.cbtTokenBalance = (targetM.cbtTokenBalance || 0) + qty;
     // Seal with HMAC local signature
+    delete targetM.tokenSignatureInvalid;
     targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
 
     // Track used key
@@ -4398,6 +4406,13 @@ app.post("/api/deduct-cbt-token", requireAuth, requireRole(['teacher', 'guru', '
     if (!targetM) {
       return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
     }
+    if (targetM.tokenSignatureInvalid) {
+      return res.status(409).json({
+        success: false,
+        code: 'TOKEN_SIGNATURE_RESEAL_REQUIRED',
+        message: 'Saldo token tersimpan tetapi signature perlu diverifikasi ulang melalui jalur resmi BOSS/top-up sebelum digunakan.'
+      });
+    }
     if ((targetM.cbtTokenBalance || 0) <= 0) {
       return res.status(400).json({
         success: false,
@@ -4406,6 +4421,7 @@ app.post("/api/deduct-cbt-token", requireAuth, requireRole(['teacher', 'guru', '
     }
     targetM.cbtTokenBalance -= 1;
     // Re-sign balance to prevent false-positive tamper detection on next startup
+    delete targetM.tokenSignatureInvalid;
     targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
     await saveData('madrasahs', madrasahs);
     return res.json({
@@ -4482,6 +4498,7 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
       // Ignore token balance changes from the general update API in offline mode to prevent cheating/tampering
     } else {
       targetM.cbtTokenBalance = Math.max(0, parseInt(cbtTokenBalance, 10) || 0);
+      delete targetM.tokenSignatureInvalid;
       targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
     }
   }
