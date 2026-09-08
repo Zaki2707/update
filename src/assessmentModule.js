@@ -4420,8 +4420,15 @@ function renderActiveExamScreen() {
                     ${sess.questions.map((qItem, idx) => {
                         const isCurrent = idx === sess.currentIndex;
                         const isAnswered = Boolean(sess.answers[qItem.id] && String(sess.answers[qItem.id]).trim() !== '');
+                        const navClass = isAnswered
+                            ? (isCurrent
+                                ? 'bg-emerald-800 text-white border border-emerald-900 ring-2 ring-emerald-300 shadow'
+                                : 'bg-emerald-800 hover:bg-emerald-900 text-white border border-emerald-900 shadow-sm')
+                            : (isCurrent
+                                ? 'bg-emerald-600 text-white ring-2 ring-emerald-300 shadow'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200');
                         return `
-                            <button type="button" onclick="jumpToExamQuestion(${idx})" class="w-8 h-8 rounded-xl text-xs font-bold transition flex items-center justify-center cursor-pointer ${isCurrent ? 'bg-emerald-600 text-white ring-2 ring-emerald-300 shadow' : isAnswered ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+                            <button type="button" onclick="jumpToExamQuestion(${idx})" class="w-8 h-8 rounded-xl text-xs font-bold transition flex items-center justify-center cursor-pointer ${navClass}">
                                 ${idx + 1}
                             </button>
                         `;

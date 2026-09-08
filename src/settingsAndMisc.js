@@ -3323,12 +3323,25 @@ async function loadDataFromServer() {
                 safeSetLocalStorage('madrasah_teacher_attendance', appState.teacherAttendance);
             }
             if (res.madrasahs) {
-                appState.madrasahs = res.madrasahs;
+                const incomingMadrasahs = Array.isArray(res.madrasahs) ? res.madrasahs : [];
+                appState.madrasahs = incomingMadrasahs.map(m => {
+                    const existingM = (appState.madrasahs || []).find(oldM =>
+                        String(oldM.id) === String(m.id) ||
+                        (m.slug && String(oldM.slug) === String(m.slug))
+                    );
+                    if (typeof m.cbtTokenBalance !== 'number' && existingM && typeof existingM.cbtTokenBalance === 'number') {
+                        return { ...m, cbtTokenBalance: existingM.cbtTokenBalance };
+                    }
+                    return m;
+                });
                 safeSetLocalStorage('madrasah_madrasahs', appState.madrasahs);
                 if (appState.currentUser && (appState.role === 'admin' || appState.role === 'administrator')) {
                     const currentMId = appState.currentUser.madrasahId || appState.currentUser.madrasahSlug || 'default';
-                    const matchedM = (res.madrasahs || []).find(m => String(m.id) === String(currentMId));
-                    if (matchedM) {
+                    const matchedM = appState.madrasahs.find(m =>
+                        String(m.id) === String(currentMId) ||
+                        String(m.slug) === String(currentMId)
+                    );
+                    if (matchedM && typeof matchedM.cbtTokenBalance === 'number') {
                         appState.currentUser.cbtTokenBalance = matchedM.cbtTokenBalance;
                         safeSetLocalStorage('madrasah_current_user', appState.currentUser);
                     }

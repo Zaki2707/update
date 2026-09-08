@@ -1595,6 +1595,9 @@ async function saveData(key: string, value: any, immediate = true) {
   try {
     const store = readLocalStore();
     store[key] = value;
+    // Token/madrasah balance must survive browser/server refresh even when PostgreSQL is unavailable.
+    // writeLocalStore is already throttled, so this does not create a disk-write hot path.
+    if (key === 'madrasahs') writeLocalStore(store);
   } catch (e) {}
 
   if (isRestoring) {

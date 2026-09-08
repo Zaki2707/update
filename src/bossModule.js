@@ -460,7 +460,6 @@ async function submitOfflineActivationKey() {
     const isTeacher = role === 'teacher' || role === 'guru';
     const teacherId = isTeacher ? appState.currentUser?.id : null;
 
-    let serverProcessed = false;
     try {
         const res = await fetch('/api/madrasah/activate-offline-tokens', {
             method: 'POST',
@@ -469,7 +468,6 @@ async function submitOfflineActivationKey() {
         });
         const data = await res.json();
         if (data.success) {
-            serverProcessed = true;
             if (window.showToast) window.showToast(data.message, 'success');
             else alert(data.message);
             
@@ -522,80 +520,19 @@ async function submitOfflineActivationKey() {
             closeTopUpTokenModal();
             return;
         } else {
-            console.warn('Server activation returned error message, attempting offline client validation fallback:', data.message);
+            const message = data.message || 'Kode aktivasi ditolak oleh server.';
+            console.warn('Server activation rejected:', message);
+            if (window.showToast) window.showToast(message, 'error');
+            else alert(message);
+            return;
         }
     } catch (err) {
-        console.warn('Network request failed for activation token, falling back to offline client validation:', err);
+        console.warn('Network request failed for activation token:', err);
+        const message = 'Server lokal tidak dapat dihubungi. Aktivasi token tidak dilakukan agar saldo tidak hanya berubah sementara.';
+        if (window.showToast) window.showToast(message, 'error');
+        else alert(message);
+        return;
     }
-
-    // Client-side local offline validation fallback
-    try {
-        const decoded = atob(key);
-        const parts = decoded.split(':');
-        if (parts.length >= 3) {
-            const qtyStr = parts[1];
-            const qty = parseInt(qtyStr, 10);
-            const signature = parts.slice(3).join(':') || parts[2] || key;
-
-            if (!isNaN(qty) && qty > 0) {
-                let usedKeys = [];
-                try {
-                    usedKeys = JSON.parse(localStorage.getItem('madrasah_usedActivationKeys') || '[]');
-                } catch(e) {}
-
-                if (usedKeys.includes(signature)) {
-                    if (window.showToast) window.showToast('Kode aktivasi ini sudah pernah digunakan sebelumnya!', 'error');
-                    else alert('Kode aktivasi ini sudah pernah digunakan sebelumnya!');
-                    return;
-                }
-
-                usedKeys.push(signature);
-                try { localStorage.setItem('madrasah_usedActivationKeys', JSON.stringify(usedKeys)); } catch(e) {}
-
-                if (isTeacher && appState.currentUser) {
-                    appState.currentUser.cbtTokenBalance = (appState.currentUser.cbtTokenBalance || 0) + qty;
-                    if (window.safeSetLocalStorage) window.safeSetLocalStorage('madrasah_current_user', appState.currentUser);
-                    if (appState.teachers) {
-                        const tchIdx = appState.teachers.findIndex(t => String(t.id) === String(appState.currentUser.id));
-                        if (tchIdx >= 0) {
-                            appState.teachers[tchIdx].cbtTokenBalance = appState.currentUser.cbtTokenBalance;
-                            if (window.saveState) window.saveState('teachers', appState.teachers);
-                        }
-                    }
-                    if (window.showToast) window.showToast(`Berhasil diaktivasi! Ditambahkan +${qty} Token ke akun Guru. Saldo terbaru: ${appState.currentUser.cbtTokenBalance} Token.`, 'success');
-                } else {
-                    if (appState.madrasahs && appState.madrasahs.length > 0) {
-                        const currentMId = appState.currentUser && (appState.currentUser.madrasahId || appState.currentUser.madrasahSlug);
-                        let mIdx = appState.madrasahs.findIndex(m =>
-                            String(m.id) === String(currentMId) ||
-                            String(m.slug) === String(currentMId)
-                        );
-                        if (mIdx < 0 && appState.madrasahs.length === 1) mIdx = 0;
-                        if (mIdx >= 0) {
-                            appState.madrasahs[mIdx].cbtTokenBalance = (appState.madrasahs[mIdx].cbtTokenBalance || 0) + qty;
-                            if (appState.currentUser) {
-                                appState.currentUser.cbtTokenBalance = appState.madrasahs[mIdx].cbtTokenBalance;
-                                if (window.safeSetLocalStorage) window.safeSetLocalStorage('madrasah_current_user', appState.currentUser);
-                            }
-                            if (window.saveState) window.saveState('madrasahs', appState.madrasahs);
-                        }
-                    }
-                    if (window.showToast) window.showToast(`Berhasil diaktivasi! Ditambahkan +${qty} Token secara offline.`, 'success');
-                }
-
-                if (typeof window.updateHeaderTokenBadge === 'function') {
-                    window.updateHeaderTokenBadge();
-                }
-                closeTopUpTokenModal();
-                return;
-            }
-        }
-    } catch (e) {
-        console.error('Offline fallback activation error:', e);
-    }
-
-    if (window.showToast) window.showToast('Kode aktivasi tidak valid atau sudah pernah digunakan.', 'error');
-    else alert('Kode aktivasi tidak valid atau sudah pernah digunakan.');
 }
 window.submitOfflineActivationKey = submitOfflineActivationKey;
 
