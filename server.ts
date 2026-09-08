@@ -26,8 +26,16 @@ import { generateMasterV2ModulAjar } from "./src/masterGenerativeRulesEngine.js"
 
 // Initialize Firebase - FORCE DISCONNECTED PER USER INSTRUCTION TO PREVENT QUOTA EXCEEDED
 let db: any = null;
-const isOfflineMode = true;
 
+// Runtime mode is derived from Cloud Run's platform-provided markers, never from APP_MODE/host headers.
+// This keeps one source tree for cloud + localhost while preventing a local .env toggle from enabling BOSS.
+const isTrustedCloudRunRuntime = Boolean(
+  process.env.K_SERVICE &&
+  (process.env.K_REVISION || process.env.K_CONFIGURATION)
+);
+const isOfflineMode = !isTrustedCloudRunRuntime;
+
+console.log(`[Runtime] ${isOfflineMode ? 'OFFLINE_LOCAL' : 'ONLINE_CLOUD_RUN'} mode detected.`);
 console.log("Firebase Firestore has been completely disconnected per user instructions to avoid daily free-tier read limits. Application is fully using local storage and Cloudinary backup.");
 
 // Cloudinary initialization
@@ -3805,17 +3813,17 @@ app.post("/api/db-pull-cloud", async (req, res) => {
   }
 });
 
-function isCloudServer(req?: express.Request): boolean {
-  if (process.env.K_SERVICE || process.env.CLOUD_RUN_JOB || process.env.IS_CLOUD_SERVER === "true" || process.env.GOOGLE_CLOUD_PROJECT) {
-    return true;
-  }
-  if (req) {
-    const host = (req.headers.host || req.hostname || "").toLowerCase();
-    if (host.includes("ai.studio") || host.includes("run.app") || host.includes("madrasahku")) {
-      return true;
-    }
-  }
-  return false;
+function isCloudServer(_req?: express.Request): boolean {
+  return isTrustedCloudRunRuntime;
+}
+
+function isBossRuntimeEnabled(): boolean {
+  return isTrustedCloudRunRuntime && Boolean(
+    process.env.BOSS_USERNAME &&
+    process.env.BOSS_PASSWORD &&
+    process.env.LICENSE_PRIVATE_KEY &&
+    process.env.LICENSE_PUBLIC_KEY
+  );
 }
 
 // 2. Auth Login
@@ -3834,18 +3842,12 @@ app.post("/api/login", async (req, res) => {
   const bossPassEnv = process.env.BOSS_PASSWORD;
 
   const isBoss =
+    isBossRuntimeEnabled() &&
     Boolean(bossUserEnv && bossPassEnv) &&
     uLower === String(bossUserEnv).toLowerCase() &&
     p === String(bossPassEnv);
 
   if (isBoss) {
-    if (!isCloudServer(req)) {
-      return res.status(401).json({
-        success: false,
-        message: ""
-      });
-    }
-
     const bossUser = {
       id: "BOSS",
       name: "Bos Platform (Super Admin)",
@@ -4242,6 +4244,14 @@ app.post("/api/madrasahs/:id/update-tokens", requireAuth, requireRole(['bos', 's
 
 // --- CRYPTOGRAPHIC OFFLINE ACTIVATION SYSTEM ---
 app.post("/api/boss/generate-activation-key", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
+  if (!isBossRuntimeEnabled()) {
+    return res.status(403).json({
+      success: false,
+      code: 'BOSS_RUNTIME_DISABLED',
+      message: 'Generator token hanya tersedia pada runtime BOSS Cloud Run yang memiliki kredensial dan private key platform.'
+    });
+  }
+
   const { quantity } = req.body;
   const qty = parseInt(quantity, 10);
   if (isNaN(qty) || qty <= 0) {
