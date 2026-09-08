@@ -2103,6 +2103,26 @@ let tokenRequests: any[] = bootStore['tokenRequests'] || [];
 let usedActivationKeys: string[] = bootStore['usedActivationKeys'] || [];
 let cbtTokenPrice: number = (bootStore['settings'] && bootStore['settings'].cbtTokenPrice) || 5000;
 
+function runOneTimeMigrations() {
+  if (Array.isArray(students)) {
+    students.forEach((s: any) => {
+      if (s && s.passwordRaw !== undefined) {
+        delete s.passwordRaw;
+      }
+    });
+  }
+  if (Array.isArray(madrasahs)) {
+    madrasahs.forEach((m: any) => {
+      if (m && m.adminPass && !String(m.adminPass).startsWith('scrypt$') && !String(m.adminPass).startsWith('sha256$')) {
+        m.adminPass = hashPassword(String(m.adminPass));
+      }
+    });
+  }
+  if (appSettings && appSettings.adminPass && !String(appSettings.adminPass).startsWith('scrypt$') && !String(appSettings.adminPass).startsWith('sha256$')) {
+    appSettings.adminPass = hashPassword(String(appSettings.adminPass));
+  }
+}
+runOneTimeMigrations();
 function parseDbRows(rows: any[]) {
   const dbData: Record<string, any> = {};
   const parsedDeltas: Record<string, Record<string, any>> = {
@@ -2339,6 +2359,8 @@ async function hydrate() {
     if (dbData['childguardLogs'] !== undefined) childguardLogs = dbData['childguardLogs'];
     if (dbData['childguardLocations'] !== undefined) childguardLocations = dbData['childguardLocations'];
     if (dbData['childguardStatus'] !== undefined) childguardStatus = dbData['childguardStatus'];
+
+    runOneTimeMigrations();
 
     console.log("All data hydrated successfully from PostgreSQL.");
     try {
@@ -3915,7 +3937,7 @@ app.post("/api/register-madrasah", async (req, res) => {
     level: level || 'MA',
     adminName: String(adminName).trim(),
     adminUser: String(adminUser).trim(),
-    adminPass: String(adminPass).trim(),
+    adminPass: hashPassword(String(adminPass).trim()),
     phone: String(phone || '').trim(),
     cbtTokenBalance: 1, // Free welcome token
     tokenSignature: calculateTokenSignature(newMadrasahId, 1),
@@ -4333,7 +4355,7 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
   if (level) targetM.level = String(level).trim();
   if (adminName) targetM.adminName = String(adminName).trim();
   if (adminUser) targetM.adminUser = String(adminUser).trim();
-  if (adminPass && String(adminPass).trim().length > 0) targetM.adminPass = String(adminPass).trim();
+  if (adminPass && String(adminPass).trim().length > 0) targetM.adminPass = hashPassword(String(adminPass).trim());
   if (phone !== undefined) targetM.phone = String(phone).trim();
   if (cbtTokenBalance !== undefined) {
     if (isOfflineMode) {
@@ -5385,11 +5407,11 @@ app.delete("/api/classes/:id", requireAuth, requireRole(['teacher', 'guru', 'adm
 });
 
 // 6. Subjects API
-app.get("/api/subjects", (req, res) => {
+app.get("/api/subjects", requireAuth, (req, res) => {
   res.json({ success: true, subjects: filterByMadrasah(subjects, req) });
 });
 
-app.post("/api/subjects", async (req, res) => {
+app.post("/api/subjects", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { code, name } = req.body;
   if (!code || !name) {
     return res.status(400).json({ success: false, message: "Kode dan Nama mapel wajib diisi." });
@@ -5401,7 +5423,7 @@ app.post("/api/subjects", async (req, res) => {
   res.json({ success: true, subject: newSub });
 });
 
-app.delete("/api/subjects/:id", async (req, res) => {
+app.delete("/api/subjects/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   subjects = subjects.filter(s => String(s.id) !== String(id));
   await saveData('subjects', subjects);
@@ -5421,12 +5443,12 @@ function getRecordTimestamp(id: string, record: any): number {
   return 0;
 }
 
-app.get("/api/attendance", async (req, res) => {
+app.get("/api/attendance", requireAuth, async (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   res.json({ success: true, attendance: filterByMadrasah(attendance || [], req) });
 });
 
-app.post("/api/attendance", async (req, res) => {
+app.post("/api/attendance", requireAuth, async (req, res) => {
   let { studentId, classId, date, status, location, photo, note, subjectId } = req.body;
   if (photo && photo.startsWith("data:image/")) {
     photo = await saveBase64ToFirestore(photo);
@@ -7206,12 +7228,27 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
         .map((s: any) => String(s.id))
     );
 
+    const tenantExams = (getMemoryKeyValue('exams') || exams || []).filter((e: any) => 
+      String(e.madrasahId || 'default').trim() === String(userMadrasahId).trim()
+    );
+    const tenantExamIds = new Set(tenantExams.map((e: any) => String(e.id)));
+
     const validateKey = (key: string) => {
       if (!key) return true;
-      const parts = key.split('_');
-      if (parts.length >= 1) {
-        const studentId = parts[0];
-        return tenantStudentIds.has(studentId);
+      if (key.startsWith('broadcast_')) {
+        const eId = key.replace('broadcast_', '');
+        return tenantExamIds.has(eId);
+      }
+      let matchedStudentId = null;
+      for (const sId of tenantStudentIds) {
+        if (key.startsWith(sId + '_') || key === sId) {
+          matchedStudentId = sId;
+          break;
+        }
+      }
+      if (matchedStudentId) {
+        const remainder = key.replace(matchedStudentId + '_', '');
+        return remainder === matchedStudentId || tenantExamIds.has(remainder) || tenantExamIds.has(key.split('_').slice(1).join('_')) || !key.includes('_');
       }
       return false;
     };
@@ -7657,11 +7694,11 @@ app.post("/api/grades", requireAuth, requireRole(['teacher', 'guru', 'admin', 'b
 });
 
 // Time Slots API for Roster
-app.get("/api/time-slots", (req, res) => {
+app.get("/api/time-slots", requireAuth, (req, res) => {
   res.json({ success: true, timeSlots: timeSlots || [], kbmDuration: kbmDuration || 40 });
 });
 
-app.post("/api/time-slots", async (req, res) => {
+app.post("/api/time-slots", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { timeSlots: newSlots, kbmDuration: newKbm } = req.body;
   if (Array.isArray(newSlots)) {
     timeSlots = newSlots;
@@ -7675,11 +7712,11 @@ app.post("/api/time-slots", async (req, res) => {
 });
 
 // Grade Categories API
-app.get("/api/grade-categories", (req, res) => {
+app.get("/api/grade-categories", requireAuth, (req, res) => {
   res.json({ success: true, gradeCategories: gradeCategories || [] });
 });
 
-app.post("/api/grade-categories", async (req, res) => {
+app.post("/api/grade-categories", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { gradeCategories: newCats, category } = req.body;
   if (Array.isArray(newCats)) {
     gradeCategories = newCats;
@@ -7693,7 +7730,7 @@ app.post("/api/grade-categories", async (req, res) => {
   res.json({ success: true, gradeCategories });
 });
 
-app.post("/api/grade-categories/rename", async (req, res) => {
+app.post("/api/grade-categories/rename", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { oldCategory, newCategory } = req.body;
   if (!oldCategory || !newCategory) {
     return res.status(400).json({ error: "Missing category parameters" });
@@ -7738,7 +7775,7 @@ app.post("/api/grade-categories/rename", async (req, res) => {
   res.json({ success: true, oldCategory, newCategory: newTrim, updatedCount, gradeCategories });
 });
 
-app.delete("/api/grade-categories/:name", async (req, res) => {
+app.delete("/api/grade-categories/:name", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { name } = req.params;
   const catLower = String(name).trim().toLowerCase();
 
