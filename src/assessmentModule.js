@@ -8244,28 +8244,38 @@ window.applyMonitoringSnapshot = function(item) {
   if (!item || !item.studentId) return;
   const stId = String(item.studentId);
 
-  // progress
+  const isForce = item.status === 'force_finished' || item.forceFinished === true || item.forceFinished === 'true';
+  const isCompleted = item.status === 'completed' || isForce;
+
+  // progress or finish
   window.updateStudentMonitoringCard({
-    type: item.status === 'completed' ||
-          item.status === 'force_finished' ||
-          item.forceFinished === true || item.forceFinished === 'true'
-            ? 'exam_finish'
-            : item.status === 'in_progress'
-              ? 'exam_started'
-              : 'monitor_snapshot',
+    type: isCompleted
+      ? 'exam_finish'
+      : item.status === 'in_progress'
+        ? 'exam_started'
+        : 'monitor_snapshot',
 
     studentId: stId,
     answered: item.answeredCount !== undefined ? item.answeredCount : (item.answered || 0),
-    total: item.totalQuestions !== undefined ? item.totalQuestions : (item.total || 0)
+    total: item.totalQuestions !== undefined ? item.totalQuestions : (item.total || 0),
+    forceFinished: isForce,
+    isCompleted: !isForce && item.status === 'completed'
   });
 
-  // violation history
-  if ((item.tabSwitches || 0) > 0) {
+  // manual blocked or auto blocked state restoration
+  if (item.blocked === true || item.blocked === 'true') {
+    window.updateStudentMonitoringCard({
+      type: 'exam_violation',
+      studentId: stId,
+      tabSwitches: item.tabSwitches || 0,
+      autoBlocked: true
+    });
+  } else if ((item.tabSwitches || 0) > 0) {
     window.updateStudentMonitoringCard({
       type: 'exam_violation',
       studentId: stId,
       tabSwitches: item.tabSwitches,
-      autoBlocked: item.blocked
+      autoBlocked: false
     });
   }
 
@@ -10255,22 +10265,25 @@ window.updateStudentMonitoringCard = function(event) {
             }
         }
     } else if (event.type === 'exam_finish') {
+        const isForce = event.forceFinished === true || event.forceFinished === 'true';
         const progressContainer = document.getElementById(`monitor-progress-${stId}`);
         if (progressContainer) {
             progressContainer.innerHTML = `
                 <div class="w-full">
                     <div class="w-full bg-slate-950/80 border border-white/10 h-1.5 rounded-full overflow-hidden">
-                        <div class="bg-emerald-500 h-full w-full"></div>
+                        <div class="${isForce ? 'bg-amber-500' : 'bg-emerald-500'} h-full w-full"></div>
                     </div>
-                    <div class="text-[9px] text-emerald-400 mt-1 text-center font-bold">100% Selesai</div>
+                    <div class="text-[9px] ${isForce ? 'text-amber-400' : 'text-emerald-400'} mt-1 text-center font-bold">${isForce ? 'Force Finish' : '100% Selesai'}</div>
                 </div>
             `;
         }
         const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
         if (statusBadge) {
-            statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-800 text-emerald-200';
-            statusBadge.innerHTML = '<i class="fa-solid fa-check"></i>';
-            statusBadge.title = 'Selesai';
+            statusBadge.className = isForce
+                ? 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-amber-800 text-amber-200'
+                : 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-800 text-emerald-200';
+            statusBadge.innerHTML = isForce ? '<i class="fa-solid fa-flag-checkered"></i>' : '<i class="fa-solid fa-check"></i>';
+            statusBadge.title = isForce ? 'Force Finish' : 'Selesai';
         }
         const actions = document.getElementById(`monitor-actions-${stId}`);
         if (actions) {

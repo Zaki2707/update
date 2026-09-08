@@ -6243,16 +6243,25 @@ app.get("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru
     const filtered: any = {};
     if (!mapObj) return filtered;
     for (const key of Object.keys(mapObj)) {
-      // Keys are usually formatted as studentId_examId or similar
-      const parts = key.split('_');
-      if (parts.length >= 2) {
-        const studentId = parts[0];
-        const examId = parts[1];
-        if (tenantStudentIds.has(studentId) && tenantExamIds.has(examId)) {
+      if (key.startsWith('broadcast_')) {
+        const eId = key.replace('broadcast_', '');
+        if (tenantExamIds.has(eId)) {
           filtered[key] = mapObj[key];
         }
-      } else if (tenantStudentIds.has(key)) {
-        filtered[key] = mapObj[key];
+        continue;
+      }
+      let matchedStudentId = null;
+      for (const sId of tenantStudentIds) {
+        if (key.startsWith(sId + '_') || key === sId) {
+          matchedStudentId = sId;
+          break;
+        }
+      }
+      if (matchedStudentId) {
+        const remainder = key.replace(matchedStudentId + '_', '');
+        if (remainder === matchedStudentId || tenantExamIds.has(remainder) || tenantExamIds.has(key.split('_').slice(1).join('_')) || !key.includes('_')) {
+          filtered[key] = mapObj[key];
+        }
       }
     }
     return filtered;
