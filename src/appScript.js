@@ -56,6 +56,26 @@
     }
 })();
 
+
+// Storage cache hygiene: large server-authoritative datasets must not fill localStorage
+(() => {
+    try {
+        localStorage.removeItem('madrasah_students');
+        localStorage.removeItem('madrasah_student_livecam_frames');
+
+        let role = '';
+        try {
+            const savedUser = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
+            role = String(savedUser && savedUser.role || '').toLowerCase();
+        } catch (_) {}
+
+        const examRecoveryRoles = ['student', 'class_leader', 'ketua_kelas'];
+        if (!examRecoveryRoles.includes(role)) {
+            localStorage.removeItem('madrasah_student_exam_questions');
+        }
+    } catch (_) {}
+})();
+
 var appState = {
     currentUser: JSON.parse(localStorage.getItem('madrasah_current_user')) || null,
     role: null,
@@ -78,13 +98,7 @@ var appState = {
     rooms: JSON.parse(localStorage.getItem('madrasah_rooms')) || [],
     classes: JSON.parse(localStorage.getItem('madrasah_classes')) || [],
     teachers: JSON.parse(localStorage.getItem('madrasah_teachers')) || [],
-    students: (() => {
-        try {
-            const saved = JSON.parse(localStorage.getItem('madrasah_students'));
-            if (Array.isArray(saved) && saved.length > 0) return saved;
-        } catch(e) {}
-        return [];
-    })(),
+    students: [],
     subjects: JSON.parse(localStorage.getItem('madrasah_subjects')) || [],
     schedules: JSON.parse(localStorage.getItem('madrasah_schedules')) || [],
     savedRosters: JSON.parse(localStorage.getItem('madrasah_savedRosters') || localStorage.getItem('madrasah_saved_rosters')) || [],
@@ -383,46 +397,95 @@ function syncActiveRosterWithSchedules() {
     }
 }
 
-function safeSetLocalStorage(key, value) {
+function getLocalStorageRole() {
+    let role = '';
     try {
-        const strVal = typeof value === 'string' ? value : JSON.stringify(value);
-        localStorage.setItem(key, strVal);
+        role = String(
+            (appState && appState.currentUser && appState.currentUser.role) ||
+            (appState && appState.role) ||
+            ''
+        ).toLowerCase();
+    } catch (_) {}
+
+    if (!role) {
+        try {
+            const savedUser = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
+            role = String(savedUser && savedUser.role || '').toLowerCase();
+        } catch (_) {}
+    }
+    return role;
+}
+
+function safeSetLocalStorage(key, value) {
+    const storageKey = String(key || '');
+    if (!storageKey) return false;
+
+    // Server/RAM is authoritative for the full student roster.
+    if (storageKey === 'madrasah_students') {
+        try { localStorage.removeItem(storageKey); } catch (_) {}
+        return true;
+    }
+
+    // Livecam frames are ephemeral and must never consume persistent browser quota.
+    if (storageKey === 'madrasah_student_livecam_frames') {
+        try { localStorage.removeItem(storageKey); } catch (_) {}
+        return true;
+    }
+
+    // Full per-student question maps are only useful as recovery cache on a student device.
+    if (storageKey === 'madrasah_student_exam_questions') {
+        const role = getLocalStorageRole();
+        const recoveryRoles = ['student', 'class_leader', 'ketua_kelas'];
+        if (!recoveryRoles.includes(role)) {
+            try { localStorage.removeItem(storageKey); } catch (_) {}
+            return true;
+        }
+    }
+
+    let strVal;
+    try {
+        strVal = typeof value === 'string' ? value : JSON.stringify(value);
     } catch (e) {
-        if (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014) {
-            console.warn(`LocalStorage kuota penuh saat menyimpan key: ${key}. Membersihkan cache opsional...`);
-            try {
-                const disposableKeys = [
-                    'madrasah_attendance_photos',
-                    'madrasah_teacherAttendance_photos',
-                    'madrasah_student_exam_questions',
-                    'madrasah_questionBank_photos',
-                    'madrasah_student_livecam_frames'
-                ];
-                for (const k of disposableKeys) {
-                    if (k !== key) {
-                        try { localStorage.removeItem(k); } catch (_) {}
-                    }
-                }
-                let strVal = typeof value === 'string' ? value : JSON.stringify(value);
-                if (strVal.length > 1000000 && typeof value === 'object' && value !== null) {
-                    try {
-                        const keys = Object.keys(value);
-                        if (keys.length > 5) {
-                            const prunedObj = {};
-                            const latestKeys = keys.slice(-5);
-                            for (const lk of latestKeys) {
-                                prunedObj[lk] = value[lk];
-                            }
-                            strVal = JSON.stringify(prunedObj);
-                        }
-                    } catch (_) {}
-                }
-                localStorage.setItem(key, strVal);
-            } catch (retryErr) {
-                console.warn(`LocalStorage tetap penuh untuk ${key}. Menggunakan memori runtime (appState) & database server secara aman.`);
-            }
-        } else {
-            console.warn(`LocalStorage error for ${key}:`, e);
+        console.warn(`Gagal serialisasi localStorage key ${storageKey}:`, e);
+        return false;
+    }
+
+    try {
+        localStorage.setItem(storageKey, strVal);
+        return true;
+    } catch (e) {
+        const isQuota = e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014);
+        if (!isQuota) {
+            console.warn(`LocalStorage error for ${storageKey}:`, e);
+            return false;
+        }
+
+        console.warn(`LocalStorage kuota penuh saat menyimpan key: ${storageKey}. Membersihkan cache opsional...`);
+
+        const disposableKeys = [
+            'madrasah_students',
+            'madrasah_student_livecam_frames',
+            'madrasah_attendance_photos',
+            'madrasah_teacherAttendance_photos',
+            'madrasah_questionBank_photos'
+        ];
+
+        const role = getLocalStorageRole();
+        if (!['student', 'class_leader', 'ketua_kelas'].includes(role)) {
+            disposableKeys.push('madrasah_student_exam_questions');
+        }
+
+        for (const k of disposableKeys) {
+            if (k === storageKey) continue;
+            try { localStorage.removeItem(k); } catch (_) {}
+        }
+
+        try {
+            localStorage.setItem(storageKey, strVal);
+            return true;
+        } catch (retryError) {
+            console.warn(`LocalStorage tetap penuh; key ${storageKey} tidak dipersist. Data RAM/server tetap dipakai.`, retryError);
+            return false;
         }
     }
 }
