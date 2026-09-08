@@ -2092,10 +2092,12 @@ let madrasahs: any[] = bootStore['madrasahs'] || [
     level: 'MA',
     adminName: (bootStore['settings'] && bootStore['settings'].adminName) || 'Administrator',
     adminUser: (bootStore['settings'] && bootStore['settings'].adminUser) || 'admin',
-    adminPass: (bootStore['settings'] && bootStore['settings'].adminPass) || 'admin123',
+    adminPass: '',
     phone: '081234567890',
-    cbtTokenBalance: 100,
-    createdAt: '2026-01-01'
+    cbtTokenBalance: 0,
+    isActive: false,
+    requiresSetup: true,
+    createdAt: new Date().toISOString()
   }
 ];
 
@@ -2103,26 +2105,46 @@ let tokenRequests: any[] = bootStore['tokenRequests'] || [];
 let usedActivationKeys: string[] = bootStore['usedActivationKeys'] || [];
 let cbtTokenPrice: number = (bootStore['settings'] && bootStore['settings'].cbtTokenPrice) || 5000;
 
-function runOneTimeMigrations() {
+async function runOneTimeMigrations() {
+  let studentsChanged = false;
+  let madrasahsChanged = false;
+  let settingsChanged = false;
+
   if (Array.isArray(students)) {
     students.forEach((s: any) => {
-      if (s && s.passwordRaw !== undefined) {
+      if (s && Object.prototype.hasOwnProperty.call(s, 'passwordRaw')) {
         delete s.passwordRaw;
+        studentsChanged = true;
       }
     });
   }
+
   if (Array.isArray(madrasahs)) {
     madrasahs.forEach((m: any) => {
-      if (m && m.adminPass && !String(m.adminPass).startsWith('scrypt$') && !String(m.adminPass).startsWith('sha256$')) {
+      if (
+        m?.adminPass &&
+        !String(m.adminPass).startsWith('scrypt$') &&
+        !String(m.adminPass).startsWith('sha256$')
+      ) {
         m.adminPass = hashPassword(String(m.adminPass));
+        madrasahsChanged = true;
       }
     });
   }
-  if (appSettings && appSettings.adminPass && !String(appSettings.adminPass).startsWith('scrypt$') && !String(appSettings.adminPass).startsWith('sha256$')) {
+
+  if (
+    appSettings?.adminPass &&
+    !String(appSettings.adminPass).startsWith('scrypt$') &&
+    !String(appSettings.adminPass).startsWith('sha256$')
+  ) {
     appSettings.adminPass = hashPassword(String(appSettings.adminPass));
+    settingsChanged = true;
   }
+
+  if (studentsChanged) await saveData('students', students);
+  if (madrasahsChanged) await saveData('madrasahs', madrasahs);
+  if (settingsChanged) await saveData('settings', appSettings);
 }
-runOneTimeMigrations();
 function parseDbRows(rows: any[]) {
   const dbData: Record<string, any> = {};
   const parsedDeltas: Record<string, Record<string, any>> = {
@@ -2360,7 +2382,7 @@ async function hydrate() {
     if (dbData['childguardLocations'] !== undefined) childguardLocations = dbData['childguardLocations'];
     if (dbData['childguardStatus'] !== undefined) childguardStatus = dbData['childguardStatus'];
 
-    runOneTimeMigrations();
+    await runOneTimeMigrations();
 
     console.log("All data hydrated successfully from PostgreSQL.");
     try {
@@ -3740,13 +3762,10 @@ app.post("/api/login", (req, res) => {
   const bossUserEnv = process.env.BOSS_USERNAME;
   const bossPassEnv = process.env.BOSS_PASSWORD;
 
-  let isBoss = false;
-  if (bossUserEnv && bossPassEnv) {
-    isBoss = (uLower === bossUserEnv.toLowerCase() && p === bossPassEnv);
-  }
-  if (!isBoss) {
-    isBoss = ((uLower === "bos" || uLower === "superbos" || uLower === "bos123") && (p === "bos123" || p === "adminbos" || p === "bos"));
-  }
+  const isBoss =
+    Boolean(bossUserEnv && bossPassEnv) &&
+    uLower === String(bossUserEnv).toLowerCase() &&
+    p === String(bossPassEnv);
 
   if (isBoss) {
     if (!isCloudServer(req)) {
@@ -5542,7 +5561,7 @@ app.post("/api/attendance", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/attendance/bulk", async (req, res) => {
+app.post("/api/attendance/bulk", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { items } = req.body;
   if (!Array.isArray(items)) {
     return res.status(400).json({ success: false, message: "Payload tidak valid." });
@@ -5600,7 +5619,7 @@ app.post("/api/attendance/bulk", async (req, res) => {
   }
 });
 
-app.post("/api/attendance/reset", async (req, res) => {
+app.post("/api/attendance/reset", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { classId, subjectId, date, studentIds } = req.body;
   if (!date || !Array.isArray(studentIds)) {
     return res.status(400).json({ success: false, message: "Date and studentIds are required." });
