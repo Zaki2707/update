@@ -2271,6 +2271,7 @@ async function hydrate() {
   }
 
   if (!pool) {
+    await runOneTimeMigrations();
     console.log("Database URL / SQL_HOST not set. Using local JSON store.");
     return;
   }
@@ -3819,29 +3820,56 @@ app.post("/api/login", (req, res) => {
   }
 
   // 3. Check Default Admin
-  const adminUserVal = (appSettings && appSettings.adminUser) ? String(appSettings.adminUser).toLowerCase() : "admin";
-  const adminPassVal = (appSettings && appSettings.adminPass) ? String(appSettings.adminPass) : "admin123";
+  const adminUserVal =
+    appSettings?.adminUser
+      ? String(appSettings.adminUser).toLowerCase()
+      : "admin";
 
-  if ((uLower === "admin" || uLower === "administrator" || uLower === adminUserVal) && verifyPassword(p, adminPassVal)) {
-    const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
+  const adminPassVal =
+    appSettings?.adminPass
+      ? String(appSettings.adminPass)
+      : "";
+
+  if (
+    adminPassVal &&
+    (
+      uLower === "admin" ||
+      uLower === "administrator" ||
+      uLower === adminUserVal
+    ) &&
+    verifyPassword(p, adminPassVal)
+  ) {
+    const defaultM =
+      madrasahs.find(m => m.id === "default" || m.slug === "default") ||
+      madrasahs[0];
+
     if (defaultM && defaultM.isActive === false) {
-      return res.status(403).json({ success: false, message: "Akses diblokir: Akun madrasah ini dinonaktifkan oleh Super Admin (Bos)." });
+      return res.status(403).json({
+        success: false,
+        message: "Akses diblokir: Akun madrasah ini belum aktif."
+      });
     }
+
     const defAdminUser = {
       id: "ADMIN",
-      name: (appSettings && appSettings.adminName) || "Administrator",
-      username: "admin",
+      name: appSettings?.adminName || "Administrator",
+      username: adminUserVal,
       role: "admin",
-      madrasahId: defaultM ? defaultM.id : "default",
-      madrasahSlug: defaultM ? defaultM.slug : "default",
-      schoolName: defaultM ? defaultM.name : "Madrasah Utama",
-      cbtTokenBalance: defaultM ? (defaultM.cbtTokenBalance || 0) : 0
+      madrasahId: defaultM?.id || "default",
+      madrasahSlug: defaultM?.slug || "default",
+      schoolName: defaultM?.name || "Madrasah Utama",
+      cbtTokenBalance: defaultM?.cbtTokenBalance || 0
     };
+
     const token = createAuthToken(defAdminUser);
+
     return res.json({
       success: true,
       token,
-      user: { ...defAdminUser, token }
+      user: {
+        ...defAdminUser,
+        token
+      }
     });
   }
 
@@ -4404,17 +4432,18 @@ app.delete("/api/madrasahs/:id", requireAuth, requireRole(['bos', 'superadmin'])
   madrasahs.splice(index, 1);
   if (madrasahs.length === 0) {
     madrasahs.push({
-      id: 'default',
-      name: (appSettings && appSettings.schoolName) || 'Madrasah Utama',
-      slug: 'default',
-      level: 'MA',
-      adminName: 'Administrator',
-      adminUser: 'admin',
-      adminPass: 'admin123',
-      phone: '081234567890',
+      id: "default",
+      name: appSettings?.schoolName || "Madrasah Utama",
+      slug: "default",
+      level: "MA",
+      adminName: "Administrator",
+      adminUser: "admin",
+      adminPass: "",
+      phone: "",
       cbtTokenBalance: 0,
-      isActive: true,
-      createdAt: '2026-01-01'
+      isActive: false,
+      requiresSetup: true,
+      createdAt: new Date().toISOString()
     });
   }
   await saveData('madrasahs', madrasahs);
