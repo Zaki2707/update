@@ -4753,19 +4753,25 @@ app.put("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
   res.json({ success: true, teacher: sanitizedUpdatedTeacher });
 });
 
-app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const tIdx = teachers.findIndex(t => String(t.id) === String(id));
   if (tIdx < 0) {
     return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
   }
   const t = teachers[tIdx];
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(t, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak." });
+  }
+
   // Remove from teachers, add to students
   teachers.splice(tIdx, 1);
   const rawPassword = req.body.password || t.password || "123456";
   const hashed = hashPassword(rawPassword);
 
-  const newStudent = {
+  const newStudent = tagNewRecord({
     id: "ST_" + Date.now(),
     nis: req.body.nis || t.nip || "100" + Date.now(),
     name: req.body.name || t.name,
@@ -4776,7 +4782,7 @@ app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['teacher', 'g
     photo: req.body.photo || "",
     no_hp: req.body.no_hp || "",
     role: req.body.role || "student"
-  };
+  }, req);
   students.push(newStudent);
   await saveData('teachers', teachers);
   await saveData('students', students);
@@ -5021,6 +5027,11 @@ app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
   }
   const st = students[idx];
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(st, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak." });
+  }
 
   let updatedPassword = st.password;
   const credentials: any[] = [];
