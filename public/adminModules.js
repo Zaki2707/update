@@ -142,7 +142,8 @@ function filterHomeroomTeachers(searchQuery = '') {
 function openClassModal(id = null) {
     const grades = getClassGrades();
     const defaultGrade = grades[0] || 'X';
-    const item = id ? appState.classes.find(c => String(c.id) === String(id)) : { id: 'C' + (appState.classes.length + 1), name: '', grade: defaultGrade };
+    const classes = appState.classes || [];
+    const item = id ? classes.find(c => String(c.id) === String(id)) : { id: 'C' + (classes.length + 1), name: '', grade: defaultGrade };
     if (!item) return;
 
     appState.tempSelectedTeacherId = item.homeroomTeacherId || item.homeroom_teacher_id || "";
@@ -511,12 +512,14 @@ async function renderTeacherModule(container) {
 }
 
 function openTeacherModal(id = null) {
-    const item = id ? appState.teachers.find(t => String(t.id) === String(id)) : { 
+    const teachers = appState.teachers || [];
+    const subjects = appState.subjects || [];
+    const item = id ? teachers.find(t => String(t.id) === String(id)) : { 
         id: '', 
         nip: '', 
         nuptk: '',
         name: '', 
-        mapel: [appState.subjects[0]?.name || 'Fikih'], 
+        mapel: [subjects[0]?.name || 'Fikih'], 
         phone: '',
         email: '',
         address: '',
@@ -1315,7 +1318,7 @@ function renderStudentModule(container) {
                         </thead>
                         <tbody class="divide-y divide-slate-100 text-sm">
                             ${filteredStudents.map(s => {
-                                const cls = appState.classes.find(c => String(c.id) === String(s.classId || s.class_id));
+                                const cls = (appState.classes || []).find(c => String(c.id) === String(s.classId || s.class_id));
                                 const activeExamKeys = Object.keys(appState.activeExamSessions || {});
                                 const isOnline = activeExamKeys.some(k => k.startsWith(s.id + '_')) || (appState.chats && appState.chats.some(c => String(c.senderId) === String(s.id) && Date.now() - c.timestamp < 300000));
                                 return `
@@ -1352,10 +1355,10 @@ function renderStudentModule(container) {
 }
 
 function showStudentProfileModal(studentId) {
-    const student = appState.students.find(s => String(s.id) === String(studentId));
+    const student = (appState.students || []).find(s => String(s.id) === String(studentId));
     if (!student) return;
 
-    const cls = appState.classes.find(c => String(c.id) === String(student.classId || student.class_id));
+    const cls = (appState.classes || []).find(c => String(c.id) === String(student.classId || student.class_id));
     const activeExamKeys = Object.keys(appState.activeExamSessions || {});
     const isOnline = activeExamKeys.some(k => k.startsWith(student.id + '_')) || (appState.chats && appState.chats.some(c => String(c.senderId) === String(student.id) && Date.now() - c.timestamp < 300000));
 
@@ -1492,6 +1495,18 @@ async function saveStudent(e, id) {
         });
         const data = await response.json();
         if (!response.ok || !data.success) throw new Error(data.message || 'Gagal menyimpan siswa.');
+
+        if (data.credentials && data.credentials.length > 0) {
+            try {
+                const existing = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
+                const map = new Map();
+                existing.forEach(c => { if (c.studentId) map.set(String(c.studentId), c); });
+                data.credentials.forEach(c => { if (c.studentId) map.set(String(c.studentId), c); });
+                sessionStorage.setItem('cbt_print_credentials', JSON.stringify(Array.from(map.values())));
+            } catch (err_cred) {
+                console.warn("Gagal menyimpan credentials ke sessionStorage:", err_cred);
+            }
+        }
 
         if (!appState.students) appState.students = [];
         const savedStudent = data.student;
@@ -1783,6 +1798,19 @@ async function importStudentsExcel(e) {
             body: JSON.stringify({ students: rows })
         });
         const result = await response.json();
+
+        if (result.success && result.credentials && result.credentials.length > 0) {
+            try {
+                const existing = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
+                const map = new Map();
+                existing.forEach(c => { if (c.studentId) map.set(String(c.studentId), c); });
+                result.credentials.forEach(c => { if (c.studentId) map.set(String(c.studentId), c); });
+                sessionStorage.setItem('cbt_print_credentials', JSON.stringify(Array.from(map.values())));
+            } catch (err_cred) {
+                console.warn("Gagal menyimpan credentials ke sessionStorage:", err_cred);
+            }
+        }
+
         await loadStudentsFromServer();
         showToast(`${result.imported || rows.length} siswa berhasil diimport!`, 'success');
         renderStudentModule(document.getElementById('view-container'));
@@ -3571,9 +3599,9 @@ function openSusunJadwalModal() {
     
     // Schedules list html
     const schedulesList = (appState.schedules || []).map((sc, idx) => {
-        const cls = appState.classes.find(c => c.id === sc.classId);
-        const sub = appState.subjects.find(s => s.id === sc.subjectId);
-        const tch = appState.teachers.find(t => t.id === sc.teacherId || t.id === sc.teacher_id);
+        const cls = (appState.classes || []).find(c => c.id === sc.classId);
+        const sub = (appState.subjects || []).find(s => s.id === sc.subjectId);
+        const tch = (appState.teachers || []).find(t => t.id === sc.teacherId || t.id === sc.teacher_id);
         return `
             <tr class="hover:bg-slate-50 transition text-xs">
                 <td class="p-2.5 border border-slate-200 font-bold text-slate-800 text-center">${idx + 1}</td>

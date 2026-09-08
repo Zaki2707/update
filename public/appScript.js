@@ -14,6 +14,20 @@
         
         const activeMId = (savedUserData && (savedUserData.madrasahId || savedUserData.madrasahSlug)) || window.__activeTenant?.id || window.__activeTenant?.slug;
         
+        // Add User Role header to identify client role
+        const userRole = (savedUserData && savedUserData.role) || (window.appState && window.appState.role) || 'student';
+        options.headers['X-User-Role'] = userRole;
+
+        if (savedUserData) {
+            if (savedUserData.id) {
+                options.headers['X-User-Id'] = String(savedUserData.id);
+            }
+            if (savedUserData.token) {
+                options.headers['Authorization'] = 'Bearer ' + savedUserData.token;
+                options.headers['X-Auth-Token'] = savedUserData.token;
+            }
+        }
+        
         if (activeMId && activeMId !== 'BOSS') {
             options.headers['X-Madrasah-Id'] = activeMId;
             if (typeof url === 'string' && url.includes('/api/')) {
@@ -42,6 +56,26 @@
     }
 })();
 
+
+// Storage cache hygiene: large server-authoritative datasets must not fill localStorage
+(() => {
+    try {
+        localStorage.removeItem('madrasah_students');
+        localStorage.removeItem('madrasah_student_livecam_frames');
+
+        let role = '';
+        try {
+            const savedUser = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
+            role = String(savedUser && savedUser.role || '').toLowerCase();
+        } catch (_) {}
+
+        const examRecoveryRoles = ['student', 'class_leader', 'ketua_kelas'];
+        if (!examRecoveryRoles.includes(role)) {
+            localStorage.removeItem('madrasah_student_exam_questions');
+        }
+    } catch (_) {}
+})();
+
 var appState = {
     currentUser: JSON.parse(localStorage.getItem('madrasah_current_user')) || null,
     role: null,
@@ -62,72 +96,17 @@ var appState = {
     questionBankGroups: [],
     exams: JSON.parse(localStorage.getItem('madrasah_exams')) || [],
     rooms: JSON.parse(localStorage.getItem('madrasah_rooms')) || [],
-    classes: JSON.parse(localStorage.getItem('madrasah_classes')) || [
-        { id: 'C1', name: 'X-IPA-1', grade: 'X' },
-        { id: 'C2', name: 'XI-IPS-1', grade: 'XI' }
-    ],
-    teachers: JSON.parse(localStorage.getItem('madrasah_teachers')) || [
-        {
-            id: 'T1',
-            nip: '198501012010011001',
-            name: 'Drs. H. Ahmad Fauzi',
-            mapel: ["Al-Qur'an Hadits"],
-            username: 'guru1',
-            password: 'guru123'
-        },
-        {
-            id: 'T2',
-            nip: '199005052015022002',
-            name: 'Siti Aminah, S.Pd.I',
-            mapel: ['Fikih'],
-            username: 'guru2',
-            password: 'guru123'
-        }
-    ],
-    students: (() => {
-        try {
-            const saved = JSON.parse(localStorage.getItem('madrasah_students'));
-            if (Array.isArray(saved) && saved.length > 0) return saved;
-        } catch(e) {}
-        return [
-            {
-                id: 'ST1',
-                nis: '1001',
-                name: 'Muhammad Al Fatih',
-                classId: 'C1',
-                username: 'siswa1',
-                password: '123456',
-                photo: ''
-            },
-            {
-                id: 'ST2',
-                nis: '1002',
-                name: 'Fatimah Az-Zahra',
-                classId: 'C1',
-                username: 'siswa2',
-                password: '123456',
-                photo: ''
-            }
-        ];
-    })(),
-    subjects: JSON.parse(localStorage.getItem('madrasah_subjects')) || [
-        { id: 'S1', code: 'QH', name: "Al-Qur'an Hadits" },
-        { id: 'S2', code: 'FQ', name: 'Fikih' },
-        { id: 'S3', code: 'SKI', name: 'Sejarah Kebudayaan Islam' },
-        { id: 'S4', code: 'KAI', name: 'Koding AI' },
-        { id: 'S5', code: 'ARB', name: 'Bahasa Arab' }
-    ],
-    schedules: JSON.parse(localStorage.getItem('madrasah_schedules')) || [
-        { id: 'SCH1', day: 'Senin', classId: 'C1', subjectId: 'S1', time: '07:30 - 09:00', teacherId: 'T1' }
-    ],
+    classes: JSON.parse(localStorage.getItem('madrasah_classes')) || [],
+    teachers: JSON.parse(localStorage.getItem('madrasah_teachers')) || [],
+    students: [],
+    subjects: JSON.parse(localStorage.getItem('madrasah_subjects')) || [],
+    schedules: JSON.parse(localStorage.getItem('madrasah_schedules')) || [],
     savedRosters: JSON.parse(localStorage.getItem('madrasah_savedRosters') || localStorage.getItem('madrasah_saved_rosters')) || [],
     activeRosterId: localStorage.getItem('madrasah_activeRosterId') || null,
     timeSlots: JSON.parse(localStorage.getItem('madrasah_timeSlots') || localStorage.getItem('madrasah_time_slots')) || [],
     kbmDuration: Number(localStorage.getItem('madrasah_kbmDuration') || localStorage.getItem('madrasah_kbm_duration')) || 40,
     attendance: (() => {
-        let list = JSON.parse(localStorage.getItem('madrasah_attendance')) || [
-            { id: 'ATT1', date: '2026-03-24', classId: 'C1', studentId: 'ST1', status: 'HADIR', location: '-6.2000, 106.8166' }
-        ];
+        let list = JSON.parse(localStorage.getItem('madrasah_attendance')) || [];
         let photos = {};
         try { photos = JSON.parse(localStorage.getItem('madrasah_attendance_photos') || '{}'); } catch(e) {}
         return list.map(item => {
@@ -154,22 +133,8 @@ var appState = {
     calendarEvents: JSON.parse(localStorage.getItem('madrasah_calendarEvents')) || [],
     generatedExams: JSON.parse(localStorage.getItem('madrasah_generated_exams')) || [],
     blockedStudents: JSON.parse(localStorage.getItem('madrasah_blocked_students')) || {},
-    journals: JSON.parse(localStorage.getItem('madrasah_journals')) || [
-        {
-            id: 'J1',
-            subjectId: 'S2',
-            classId: 'C1',
-            teacherId: 'T1',
-            date: '2026-03-24',
-            material: "Hukum Tajwid & Mad Thabi'i",
-            enrichment: 'Pembahasan mendalam tentang panjang bacaan dan latihan praktik tartil.',
-            achievement: '95%',
-            notes: 'Murid sangat antusias.'
-        }
-    ],
-    questionBankGroups: JSON.parse(localStorage.getItem('madrasah_questionBankGroups') || localStorage.getItem('madrasah_question_groups')) || [
-        { id: 'BG1', code: 'KODE-FIK-01', subjectId: 'S2', classId: 'C1' }
-    ],
+    journals: JSON.parse(localStorage.getItem('madrasah_journals')) || [],
+    questionBankGroups: JSON.parse(localStorage.getItem('madrasah_questionBankGroups') || localStorage.getItem('madrasah_question_groups')) || [],
     activeBankGroupCode: null,
     activeBank: { subjectId: '', classId: '' },
     activeJournalSubjectId: '',
@@ -432,32 +397,95 @@ function syncActiveRosterWithSchedules() {
     }
 }
 
-function safeSetLocalStorage(key, value) {
+function getLocalStorageRole() {
+    let role = '';
     try {
-        const strVal = typeof value === 'string' ? value : JSON.stringify(value);
-        localStorage.setItem(key, strVal);
+        role = String(
+            (appState && appState.currentUser && appState.currentUser.role) ||
+            (appState && appState.role) ||
+            ''
+        ).toLowerCase();
+    } catch (_) {}
+
+    if (!role) {
+        try {
+            const savedUser = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
+            role = String(savedUser && savedUser.role || '').toLowerCase();
+        } catch (_) {}
+    }
+    return role;
+}
+
+function safeSetLocalStorage(key, value) {
+    const storageKey = String(key || '');
+    if (!storageKey) return false;
+
+    // Server/RAM is authoritative for the full student roster.
+    if (storageKey === 'madrasah_students') {
+        try { localStorage.removeItem(storageKey); } catch (_) {}
+        return true;
+    }
+
+    // Livecam frames are ephemeral and must never consume persistent browser quota.
+    if (storageKey === 'madrasah_student_livecam_frames') {
+        try { localStorage.removeItem(storageKey); } catch (_) {}
+        return true;
+    }
+
+    // Full per-student question maps are only useful as recovery cache on a student device.
+    if (storageKey === 'madrasah_student_exam_questions') {
+        const role = getLocalStorageRole();
+        const recoveryRoles = ['student', 'class_leader', 'ketua_kelas'];
+        if (!recoveryRoles.includes(role)) {
+            try { localStorage.removeItem(storageKey); } catch (_) {}
+            return true;
+        }
+    }
+
+    let strVal;
+    try {
+        strVal = typeof value === 'string' ? value : JSON.stringify(value);
     } catch (e) {
-        if (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014) {
-            console.warn(`LocalStorage kuota penuh saat menyimpan key: ${key}. Membersihkan cache opsional...`);
-            try {
-                const disposableKeys = [
-                    'madrasah_attendance_photos',
-                    'madrasah_teacherAttendance_photos',
-                    'madrasah_student_exam_questions',
-                    'madrasah_questionBank_photos'
-                ];
-                for (const k of disposableKeys) {
-                    if (k !== key) {
-                        try { localStorage.removeItem(k); } catch (_) {}
-                    }
-                }
-                const strVal = typeof value === 'string' ? value : JSON.stringify(value);
-                localStorage.setItem(key, strVal);
-            } catch (retryErr) {
-                console.warn(`LocalStorage tetap penuh untuk ${key}. Menggunakan memori runtime (appState) & database server secara aman.`);
-            }
-        } else {
-            console.warn(`LocalStorage error for ${key}:`, e);
+        console.warn(`Gagal serialisasi localStorage key ${storageKey}:`, e);
+        return false;
+    }
+
+    try {
+        localStorage.setItem(storageKey, strVal);
+        return true;
+    } catch (e) {
+        const isQuota = e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014);
+        if (!isQuota) {
+            console.warn(`LocalStorage error for ${storageKey}:`, e);
+            return false;
+        }
+
+        console.warn(`LocalStorage kuota penuh saat menyimpan key: ${storageKey}. Membersihkan cache opsional...`);
+
+        const disposableKeys = [
+            'madrasah_students',
+            'madrasah_student_livecam_frames',
+            'madrasah_attendance_photos',
+            'madrasah_teacherAttendance_photos',
+            'madrasah_questionBank_photos'
+        ];
+
+        const role = getLocalStorageRole();
+        if (!['student', 'class_leader', 'ketua_kelas'].includes(role)) {
+            disposableKeys.push('madrasah_student_exam_questions');
+        }
+
+        for (const k of disposableKeys) {
+            if (k === storageKey) continue;
+            try { localStorage.removeItem(k); } catch (_) {}
+        }
+
+        try {
+            localStorage.setItem(storageKey, strVal);
+            return true;
+        } catch (retryError) {
+            console.warn(`LocalStorage tetap penuh; key ${storageKey} tidak dipersist. Data RAM/server tetap dipakai.`, retryError);
+            return false;
         }
     }
 }
@@ -522,7 +550,10 @@ function saveState(key) {
             safeSetLocalStorage('madrasah_' + key, appState[key]);
         }
     } else {
-        safeSetLocalStorage('madrasah_' + key, appState[key]);
+        const storageKey = (key === 'lkpdList' && typeof window.getLkpdStorageKey === 'function') 
+            ? window.getLkpdStorageKey() 
+            : 'madrasah_' + key;
+        safeSetLocalStorage(storageKey, appState[key]);
     }
     if (key === 'schedules') {
         syncActiveRosterWithSchedules();
@@ -560,6 +591,11 @@ async function syncKeyFromServer(key) {
     else if (key === 'generatedExams') endpoint = '/api/generated-exams';
     else if (key === 'lessonPlans') endpoint = '/api/lesson-plans';
     else if (key === 'grades') endpoint = '/api/grades';
+    else if (key === 'lkpdList') endpoint = '/api/sync-state?key=lkpdList';
+    else if (key === 'activeExamSessions') {
+        if (appState.role === 'student' || appState.role === 'siswa') return;
+        endpoint = '/api/exam-monitoring-state';
+    }
     else if (key === 'calendarEvents') endpoint = '/api/calendar-events';
     else if (key === 'settings') endpoint = '/api/settings';
     else if (key === 'madrasahs') endpoint = '/api/madrasahs';
@@ -568,11 +604,24 @@ async function syncKeyFromServer(key) {
     if (!endpoint) return;
     
     try {
-        const response = await fetch(endpoint);
-        const resData = await response.json();
-        if (resData.success) {
+        const response = await fetch(endpoint).catch(() => null);
+        if (!response || !response.ok) return;
+        const resData = await response.json().catch(() => null);
+        if (resData && resData.success) {
             let newData = null;
-            if (key === 'teachers') newData = resData.teachers;
+            if (key === 'teachers') {
+                newData = resData.teachers;
+                if (appState.currentUser && (appState.role === 'teacher' || appState.role === 'guru')) {
+                    const matchedT = (resData.teachers || []).find(t => String(t.id) === String(appState.currentUser.id) || String(t.username) === String(appState.currentUser.username) || String(t.nip) === String(appState.currentUser.nip));
+                    if (matchedT && typeof matchedT.cbtTokenBalance === 'number') {
+                        appState.currentUser.cbtTokenBalance = matchedT.cbtTokenBalance;
+                        safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+                    }
+                }
+                if (typeof window.updateHeaderTokenBadge === 'function') {
+                    window.updateHeaderTokenBadge();
+                }
+            }
             else if (key === 'students') newData = resData.students;
             else if (key === 'classes') newData = resData.classes;
             else if (key === 'subjects') newData = resData.subjects;
@@ -597,14 +646,32 @@ async function syncKeyFromServer(key) {
             else if (key === 'generatedExams') newData = resData.generatedExams;
             else if (key === 'lessonPlans') newData = resData.lessonPlans;
             else if (key === 'grades') newData = resData.grades;
+            else if (key === 'lkpdList') newData = resData.lkpdList;
             else if (key === 'settings') newData = resData.settings;
             else if (key === 'madrasahs') {
-                newData = resData.madrasahs;
-                // Update active user's local balance if applicable
-                if (appState.currentUser) {
+                // /api/madrasahs intentionally returns a sanitized object for non-BOSS users.
+                // Preserve the last authoritative token balance when that sanitized payload omits cbtTokenBalance.
+                const incomingMadrasahs = Array.isArray(resData.madrasahs) ? resData.madrasahs : [];
+                newData = incomingMadrasahs.map(m => {
+                    const existingM = (appState.madrasahs || []).find(oldM =>
+                        String(oldM.id) === String(m.id) ||
+                        (m.slug && String(oldM.slug) === String(m.slug))
+                    );
+                    if (typeof m.cbtTokenBalance !== 'number' && existingM && typeof existingM.cbtTokenBalance === 'number') {
+                        return { ...m, cbtTokenBalance: existingM.cbtTokenBalance };
+                    }
+                    return m;
+                });
+
+                // Update the active admin session only when the server actually supplied a numeric balance.
+                // Never overwrite a fresh activation balance with undefined from the sanitized madrasah response.
+                if (appState.currentUser && (appState.role === 'admin' || appState.role === 'administrator')) {
                     const currentMId = appState.currentUser.madrasahId || appState.currentUser.madrasahSlug || 'default';
-                    const matchedM = (resData.madrasahs || []).find(m => String(m.id) === String(currentMId));
-                    if (matchedM) {
+                    const matchedM = newData.find(m =>
+                        String(m.id) === String(currentMId) ||
+                        String(m.slug) === String(currentMId)
+                    );
+                    if (matchedM && typeof matchedM.cbtTokenBalance === 'number') {
                         appState.currentUser.cbtTokenBalance = matchedM.cbtTokenBalance;
                         safeSetLocalStorage('madrasah_current_user', appState.currentUser);
                     }
@@ -614,6 +681,17 @@ async function syncKeyFromServer(key) {
                 }
             }
             else if (key === 'tokenRequests') newData = resData.tokenRequests;
+            else if (key === 'activeExamSessions') {
+                newData = resData.activeExamSessions;
+                if (resData.completedExams) {
+                    appState.completedExams = resData.completedExams;
+                    safeSetLocalStorage('madrasah_completed_exams', appState.completedExams);
+                }
+                if (resData.studentLivecamFrames) appState.runtimeLivecamFrames = resData.studentLivecamFrames;
+                if (resData.studentTabSwitches) safeSetLocalStorage('madrasah_student_tab_switches', resData.studentTabSwitches);
+                if (resData.studentOutOfTab) safeSetLocalStorage('madrasah_student_out_of_tab', resData.studentOutOfTab);
+                if (resData.blockedStudents) safeSetLocalStorage('madrasah_blocked_students', resData.blockedStudents);
+            }
             
             if (newData !== null && newData !== undefined) {
                 if (stateField === 'students' && typeof sortStudentsByNis === 'function') {
@@ -630,7 +708,10 @@ async function syncKeyFromServer(key) {
                 } else {
                     appState[stateField] = newData;
                 }
-                safeSetLocalStorage('madrasah_' + stateField, appState[stateField]);
+                const storageKey = (stateField === 'lkpdList' && typeof window.getLkpdStorageKey === 'function') 
+                    ? window.getLkpdStorageKey() 
+                    : 'madrasah_' + stateField;
+                safeSetLocalStorage(storageKey, appState[stateField]);
                 
                 const lastRoute = localStorage.getItem('madrasah_last_route') || 'dashboard';
                 const activeEl = document.activeElement;
@@ -648,6 +729,8 @@ async function syncKeyFromServer(key) {
                     'questions': ['bank_soal'],
                     'journals': ['jurnal', 'dashboard'],
                     'grades': ['nilai'],
+                    'lkpdList': ['asesmen', 'dashboard'],
+                    'activeExamSessions': ['asesmen'],
                     'calendarEvents': ['kalender', 'dashboard'],
                     'settings': ['setting'],
                     'madrasahs': ['token', 'boss_dashboard', 'dashboard'],
@@ -663,7 +746,7 @@ async function syncKeyFromServer(key) {
             }
         }
     } catch (err) {
-        console.error('Error in real-time syncing key: ' + key, err);
+        console.warn('Real-time sync pause for key: ' + key, err?.message || err);
     }
 }
 
@@ -686,6 +769,10 @@ function initRealtimeSync() {
                     if (payload.senderClientId !== appState.clientId) {
                         console.log('Real-time update received for key:', payload.key);
                         syncKeyFromServer(payload.key);
+                    }
+                } else if (payload && (payload.type === 'exam_progress' || payload.type === 'student_heartbeat' || payload.type === 'exam_violation' || payload.type === 'exam_finish' || payload.type === 'exam_started' || payload.type === 'exam_presence')) {
+                    if (typeof window.__onExamMonitoringEvent === 'function') {
+                        window.__onExamMonitoringEvent(payload);
                     }
                 }
             } catch (e) {
@@ -1232,51 +1319,6 @@ async function handleLogin(e) {
         console.log('Login response:', data);
 
         if (!response.ok || !data.success) {
-            // Fallback check against local appState before failing
-            if ((u === 'bos' || u === 'superbos') && (p === 'bos123' || p === 'bos')) {
-                if (appState.isOfflineMode || window.isOfflineMode) {
-                    showToast('Akses Akun BOS (Super Admin) dinonaktifkan dalam mode offline demi keamanan.', 'error');
-                    return;
-                }
-                const userObj = { id: 'BOSS', name: 'Bos Platform (Super Admin)', username: 'bos', role: 'bos' };
-                appState.currentUser = userObj;
-                appState.role = 'bos';
-                localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-                localStorage.setItem('madrasah_active_account', 'BOSS');
-                startSession(false);
-                return;
-            }
-            if ((u === 'admin' || u === 'administrator') && p === 'admin123') {
-                const userObj = { id: 'ADMIN', name: 'Administrator', username: 'admin', role: 'admin' };
-                appState.currentUser = userObj;
-                appState.role = 'admin';
-                localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-                localStorage.setItem('madrasah_active_account', 'ADMIN');
-                startSession(false);
-                return;
-            }
-            const tch = (appState.teachers || []).find(t => (t.username === u || t.nip === u) && t.password === p);
-            if (tch) {
-                const userObj = { ...tch, role: 'teacher' };
-                appState.currentUser = userObj;
-                appState.role = 'teacher';
-                localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-                localStorage.setItem('madrasah_active_account', String(tch.id));
-                startSession(false);
-                return;
-            }
-            const std = (appState.students || []).find(s => (s.username === u || s.nis === u) && s.password === p);
-            if (std) {
-                const foundRole = (std.role === 'class_leader' || std.role === 'ketua_kelas') ? 'class_leader' : 'student';
-                const userObj = { ...std, role: foundRole };
-                appState.currentUser = userObj;
-                appState.role = foundRole;
-                localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-                localStorage.setItem('madrasah_active_account', String(std.id));
-                startSession(false);
-                return;
-            }
-
             showToast(data.message || 'Username atau password salah.', 'error');
             return;
         }
@@ -1284,6 +1326,10 @@ async function handleLogin(e) {
         appState.currentUser = data.user;
         const loggedInUser = data.user;
         const loggedInId = String(loggedInUser.id);
+        
+        appState.role = loggedInUser.role;
+        localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser));
+        localStorage.setItem('madrasah_active_account', loggedInId);
 
         // Load all data BEFORE we determine the role and start the session!
         const fetchLoad = window.loadDataFromServer || (typeof loadDataFromServer !== 'undefined' ? loadDataFromServer : null);
@@ -1333,44 +1379,27 @@ async function handleLogin(e) {
 
         startSession(false);
     } catch (error) {
-        console.error('Login error:', error);
-        // Fallback local authentication logic
-        let foundRole = null;
-        let userObj = null;
-
-        if ((u === 'bos' || u === 'superbos') && (p === 'bos123' || p === 'bos')) {
-            foundRole = 'bos';
-            userObj = { id: 'BOSS', name: 'Bos Platform (Super Admin)', username: 'bos', role: 'bos' };
-        } else if ((u === 'admin' || u === 'administrator') && p === 'admin123') {
-            foundRole = 'admin';
-            userObj = { id: 'ADMIN', name: 'Administrator', username: 'admin', role: 'admin' };
-        } else {
-            const tch = (appState.teachers || []).find(t => (t.username === u || t.nip === u) && t.password === p);
-            if (tch) {
-                foundRole = 'teacher';
-                userObj = { ...tch, role: 'teacher' };
-            } else {
-                const std = (appState.students || []).find(s => (s.username === u || s.nis === u) && s.password === p);
-                if (std) {
-                    foundRole = (std.role === 'class_leader' || std.role === 'ketua_kelas') ? 'class_leader' : 'student';
-                    userObj = { ...std, role: foundRole };
-                }
-            }
-        }
-
-        if (userObj) {
-            appState.currentUser = userObj;
-            appState.role = foundRole;
-            localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-            localStorage.setItem('madrasah_active_account', String(userObj.id));
-            startSession(false);
-        } else {
-            showToast('Username atau password salah.', 'error');
-        }
+        console.warn('Network login failed (server might be restarting or client is offline):', error.message || error);
+        showToast('Server lokal tidak dapat dihubungi', 'error');
+        return;
     }
 }
 
 function getActiveMadrasahTokenBalance() {
+    const role = String(appState.role || '').toLowerCase().trim();
+    if (role === 'teacher' || role === 'guru') {
+        if (appState.currentUser && typeof appState.currentUser.cbtTokenBalance === 'number') {
+            return appState.currentUser.cbtTokenBalance;
+        }
+        if (appState.teachers && appState.currentUser) {
+            const matchedT = appState.teachers.find(t => String(t.id) === String(appState.currentUser.id) || String(t.username) === String(appState.currentUser.username) || String(t.nip) === String(appState.currentUser.nip));
+            if (matchedT && typeof matchedT.cbtTokenBalance === 'number') {
+                return matchedT.cbtTokenBalance;
+            }
+        }
+        return 0;
+    }
+
     if (appState.madrasahs && appState.madrasahs.length > 0) {
         const currentMId = (appState.currentUser && (appState.currentUser.madrasahId || appState.currentUser.madrasahSlug)) || appState.currentSlug || 'default';
         const found = appState.madrasahs.find(m => String(m.id) === String(currentMId) || String(m.slug) === String(currentMId));
@@ -1542,6 +1571,9 @@ function startSession(isRefresh = false) {
                 console.warn('Initial camera stream request error:', err);
             });
         }
+        if (window.checkAndResumeActiveLkpdSession && window.checkAndResumeActiveLkpdSession()) {
+            return;
+        }
         navigateTo(lastRoute || 'profil_siswa');
         return;
     }
@@ -1690,6 +1722,10 @@ function buildSidebar() {
                 <i class="fa-regular fa-calendar-days w-5 text-emerald-400"></i>
                 <span>Kalender Akademik</span>
             </button>
+            <button type="button" onclick="navigateTo('game_edukasi')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
+                <i class="fa-solid fa-gamepad w-5 text-emerald-400"></i>
+                <span>Game Edukasi</span>
+            </button>
             ${(role === 'teacher' || role === 'guru') ? `
             <button type="button" onclick="navigateTo('profil_guru')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-id-badge w-5 text-emerald-400"></i>
@@ -1702,6 +1738,7 @@ function buildSidebar() {
             </button>` : ''}
         `;
     } else if (role === 'student' || role === 'murid') {
+        const isGameEnabled = appState.settings?.gameModuleEnabled !== false;
         html = `
             <button type="button" onclick="navigateTo('profil_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-house w-5 text-blue-400"></i>
@@ -1715,6 +1752,11 @@ function buildSidebar() {
                 <i class="fa-solid fa-file-shield w-5 text-blue-400"></i>
                 <span>CBT / Ujian Online</span>
             </button>
+            ${isGameEnabled ? `
+            <button type="button" onclick="navigateTo('game_edukasi_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
+                <i class="fa-solid fa-gamepad w-5 text-blue-400"></i>
+                <span>Game Edukasi</span>
+            </button>` : ''}
             <button type="button" onclick="navigateTo('kalender')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-regular fa-calendar-days w-5 text-blue-400"></i>
                 <span>Kalender Akademik</span>
@@ -1726,6 +1768,7 @@ function buildSidebar() {
             </button>` : ''}
         `;
     } else if (role === 'class_leader' || role === 'ketua_kelas') {
+        const isGameEnabled = appState.settings?.gameModuleEnabled !== false;
         html = `
             <button type="button" onclick="navigateTo('profil_ketua')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-id-card w-5 text-amber-400"></i>
@@ -1743,6 +1786,11 @@ function buildSidebar() {
                 <i class="fa-solid fa-file-shield w-5 text-amber-400"></i>
                 <span>CBT / Ujian Online</span>
             </button>
+            ${isGameEnabled ? `
+            <button type="button" onclick="navigateTo('game_edukasi_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
+                <i class="fa-solid fa-gamepad w-5 text-amber-400"></i>
+                <span>Game Edukasi</span>
+            </button>` : ''}
             <button type="button" onclick="navigateTo('kalender')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-regular fa-calendar-days w-5 text-amber-400"></i>
                 <span>Kalender Akademik</span>
@@ -1829,6 +1877,12 @@ function navigateTo(route) {
         else if (typeof renderTeacherProfile === 'function') renderTeacherProfile(container);
     }
     else if (route === 'profil_siswa') renderStudentProfile(container);
+    else if (route === 'lkpd_worksheet') {
+        if (window.checkAndResumeActiveLkpdSession && window.checkAndResumeActiveLkpdSession()) {
+            return;
+        }
+        renderStudentCBTList(container);
+    }
     else if (route === 'profil_ketua') renderClassLeaderDashboard(container);
     else if (route === 'absen_siswa') renderStudentAttendance(container);
     else if (route === 'asesmen_siswa') renderStudentCBTList(container);
@@ -1836,6 +1890,18 @@ function navigateTo(route) {
     else if (route === 'absen_kelas') renderClassLeaderAttendance(container);
     else if (route === 'absen_guru_self') renderTeacherAttendance(container);
     else if (route === 'absen_guru_admin') renderTeacherAttendanceAdmin(container);
+    else if (route === 'game_edukasi') {
+        if (window.renderGameAdminModule) window.renderGameAdminModule(container);
+    }
+    else if (route === 'game_edukasi_siswa') {
+        const isGameEnabled = appState.settings?.gameModuleEnabled !== false;
+        if (!isGameEnabled && (appState.role === 'student' || appState.role === 'murid' || appState.role === 'class_leader' || appState.role === 'ketua_kelas')) {
+            showToast('Modul Game Edukasi sedang dinonaktifkan oleh administrator.', 'info');
+            navigateTo(appState.role === 'class_leader' || appState.role === 'ketua_kelas' ? 'profil_ketua' : 'profil_siswa');
+            return;
+        }
+        if (window.renderGameStudentModule) window.renderGameStudentModule(container);
+    }
 }
 
 function renderMainDashboard(container) {

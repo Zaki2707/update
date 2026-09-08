@@ -4,6 +4,10 @@ var appState = window.appState || {};
 
 // Quick fill Bos Login credentials
 function fillBosLogin() {
+    if (appState.isOfflineMode || window.isOfflineMode) {
+        if (window.showToast) window.showToast('Akun Bos (Super Admin) dinonaktifkan pada mode offline.', 'error');
+        return;
+    }
     const uEl = document.getElementById('login-user');
     const pEl = document.getElementById('login-pass');
     if (uEl) uEl.value = 'bos';
@@ -188,9 +192,77 @@ function openTopUpTokenModal() {
     }
     
     const isOffline = appState.isOfflineMode || window.isOfflineMode;
+    const role = String(appState.role || '').toLowerCase().trim();
+    const isTeacher = role === 'teacher' || role === 'guru';
     
     modal.className = 'fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto';
     
+    if (isTeacher) {
+        const teacherName = (appState.currentUser && appState.currentUser.name) || 'Guru';
+        const teacherTokens = (typeof window.getActiveMadrasahTokenBalance === 'function')
+            ? window.getActiveMadrasahTokenBalance()
+            : ((appState.currentUser && appState.currentUser.cbtTokenBalance) || 0);
+
+        modal.innerHTML = `
+        <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl border border-slate-100 p-6 sm:p-8 space-y-5 animate-in fade-in zoom-in-95 duration-200">
+            <div class="flex items-center justify-between border-b border-slate-100 pb-4">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-amber-100 text-amber-800 rounded-2xl flex items-center justify-center font-bold text-lg shadow-sm">
+                        <i class="fa-solid fa-coins"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-slate-800">Top-Up Token Akun Guru</h3>
+                        <p class="text-[11px] text-slate-500">${teacherName} | Saldo: <strong class="text-amber-600 font-extrabold">${teacherTokens} Token</strong></p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeTopUpTokenModal()" class="w-8 h-8 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="bg-amber-50/70 border border-amber-200/80 rounded-2xl p-4 space-y-2">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-circle-info text-amber-600 text-sm"></i>
+                    <span class="text-xs font-bold text-amber-900 uppercase tracking-wider">Aktivasi Token Khusus Guru</span>
+                </div>
+                <p class="text-[11px] text-amber-800/90 leading-relaxed">
+                    Setiap akun guru memiliki saldo token terpisah untuk pengawasan live video ujian siswa. Untuk menambah saldo token akun Anda, silakan masukkan <strong>Kode Aktivasi Token</strong> dari Bos Platform di bawah ini.
+                </p>
+            </div>
+
+            <div class="bg-emerald-50 border border-emerald-100 rounded-2xl p-3.5 space-y-2">
+                <div class="flex items-center gap-2">
+                    <i class="fa-brands fa-whatsapp text-emerald-600 text-base"></i>
+                    <span class="text-xs font-bold text-emerald-800">Hubungi Bos via WhatsApp</span>
+                </div>
+                <div class="flex items-center gap-2 bg-white rounded-xl p-2.5 border border-emerald-200 shadow-xs">
+                    <div class="flex-1 font-mono text-xs font-bold text-slate-800">085746719790</div>
+                    <a href="https://wa.me/6285746719790?text=${encodeURIComponent('Halo Admin Bos, saya Guru ' + teacherName + ' ingin minta Kode Aktivasi Token Ujian Guru.')}" target="_blank" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 transition">
+                        Chat WA <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i>
+                    </a>
+                </div>
+            </div>
+
+            <div class="pt-1">
+                <div class="flex items-center gap-2 mb-2.5">
+                    <div class="w-7 h-7 bg-amber-100 text-amber-700 rounded-full flex items-center justify-center text-xs shadow-xs">
+                        <i class="fa-solid fa-key text-[10px]"></i>
+                    </div>
+                    <h4 class="text-xs font-extrabold text-slate-800 uppercase tracking-wider">Aktivasi Kode Lisensi Guru</h4>
+                </div>
+                <div class="space-y-2.5">
+                    <input type="text" id="offline-activation-key-input" placeholder="Tempel Kode Aktivasi Token di sini..." class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-mono focus:bg-white focus:outline-none focus:border-amber-500 shadow-xs" />
+                    <button type="button" onclick="submitOfflineActivationKey()" class="w-full py-2.5 bg-amber-600 hover:bg-amber-700 active:scale-98 text-white font-bold text-xs rounded-2xl transition flex items-center justify-center gap-2 shadow-md shadow-amber-600/10 cursor-pointer">
+                        <i class="fa-solid fa-circle-check"></i> Aktivasi Token Sekarang
+                    </button>
+                </div>
+            </div>
+        </div>
+        `;
+        modal.classList.remove('hidden');
+        return;
+    }
+
     if (isOffline) {
         modal.innerHTML = `
         <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl border border-slate-100 p-6 sm:p-8 space-y-5 animate-in fade-in zoom-in-95 duration-200">
@@ -224,6 +296,16 @@ function openTopUpTokenModal() {
                     </a>
                 </div>
                 <p class="text-[10px] text-emerald-600 font-semibold italic">Admin akan memberikan Kunci Aktivasi / Kode Lisensi.</p>
+            </div>
+
+            <div class="bg-indigo-50 border border-indigo-100 rounded-2xl p-3.5 space-y-1.5">
+                <span class="block text-[10px] font-bold text-indigo-700 uppercase tracking-wider">ID Madrasah Anda (Kirim ke WA Bos):</span>
+                <div class="flex gap-2">
+                    <input type="text" id="offline-my-madrasah-id-field" readonly value="${(appState.currentUser && appState.currentUser.madrasahId) || 'DEFAULT'}" class="flex-1 bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-xs font-mono font-bold text-indigo-900 focus:outline-none" />
+                    <button type="button" onclick="const f=document.getElementById('offline-my-madrasah-id-field'); f.select(); navigator.clipboard.writeText(f.value); window.showToast ? window.showToast('ID Madrasah berhasil disalin!', 'success') : alert('ID disalin!');" class="px-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs rounded-xl font-bold transition flex items-center gap-1 cursor-pointer">
+                        <i class="fa-solid fa-copy"></i> Salin
+                    </button>
+                </div>
             </div>
 
             <div class="pt-2">
@@ -374,30 +456,82 @@ async function submitOfflineActivationKey() {
         return;
     }
     
+    const role = String(appState.role || '').toLowerCase().trim();
+    const isTeacher = role === 'teacher' || role === 'guru';
+    const teacherId = isTeacher ? appState.currentUser?.id : null;
+
     try {
         const res = await fetch('/api/madrasah/activate-offline-tokens', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ activationKey: key })
+            body: JSON.stringify({ activationKey: key, teacherId })
         });
         const data = await res.json();
         if (data.success) {
             if (window.showToast) window.showToast(data.message, 'success');
             else alert(data.message);
             
+            if (isTeacher && typeof data.remainingTokens === 'number') {
+                if (appState.currentUser) {
+                    appState.currentUser.cbtTokenBalance = data.remainingTokens;
+                    if (window.safeSetLocalStorage) window.safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+                }
+                if (appState.teachers && appState.currentUser) {
+                    const tchIdx = appState.teachers.findIndex(t => String(t.id) === String(appState.currentUser.id));
+                    if (tchIdx >= 0) {
+                        appState.teachers[tchIdx].cbtTokenBalance = data.remainingTokens;
+                    }
+                }
+            } else if (!isTeacher && typeof data.remainingTokens === 'number') {
+                const newBalance = Number(data.remainingTokens) || 0;
+
+                // Keep the logged-in admin/session copy in sync with the authoritative server balance.
+                if (appState.currentUser) {
+                    appState.currentUser.cbtTokenBalance = newBalance;
+                    if (window.safeSetLocalStorage) {
+                        window.safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+                    }
+                }
+
+                // Also update the matching madrasah object immediately so every badge/helper sees the same value.
+                if (Array.isArray(appState.madrasahs) && appState.madrasahs.length > 0) {
+                    const currentMId = appState.currentUser && (appState.currentUser.madrasahId || appState.currentUser.madrasahSlug);
+                    let mIdx = appState.madrasahs.findIndex(m =>
+                        String(m.id) === String(currentMId) ||
+                        String(m.slug) === String(currentMId)
+                    );
+                    if (mIdx < 0 && appState.madrasahs.length === 1) mIdx = 0;
+                    if (mIdx >= 0) {
+                        appState.madrasahs[mIdx].cbtTokenBalance = newBalance;
+                    }
+                    if (window.safeSetLocalStorage) {
+                        window.safeSetLocalStorage('madrasah_madrasahs', appState.madrasahs);
+                    }
+                }
+            }
+
             // Reload the local data
             if (window.loadDataFromServer) {
                 await window.loadDataFromServer();
             }
+            if (typeof window.updateHeaderTokenBadge === 'function') {
+                window.updateHeaderTokenBadge();
+            }
             closeTopUpTokenModal();
+            return;
         } else {
-            if (window.showToast) window.showToast(data.message || 'Kode aktivasi tidak valid.', 'error');
-            else alert(data.message || 'Kode aktivasi tidak valid.');
+            const message = data.message || 'Kode aktivasi ditolak oleh server.';
+            console.warn('Server activation rejected:', message);
+            if (window.showToast) window.showToast(message, 'error');
+            else alert(message);
+            return;
         }
     } catch (err) {
-        console.error(err);
-        if (window.showToast) window.showToast('Gagal memverifikasi kode aktivasi.', 'error');
-        else alert('Gagal memverifikasi kode aktivasi.');
+        console.warn('Network request failed for activation token:', err);
+        const message = 'Server lokal tidak dapat dihubungi. Aktivasi token tidak dilakukan agar saldo tidak hanya berubah sementara.';
+        if (window.showToast) window.showToast(message, 'error');
+        else alert(message);
+        return;
     }
 }
 window.submitOfflineActivationKey = submitOfflineActivationKey;
@@ -1525,6 +1659,7 @@ function openManageMadrasahModal(madrasahId) {
                                         <th class="p-2.5">Nama Guru / NIP</th>
                                         <th class="p-2.5">Username</th>
                                         <th class="p-2.5">Mapel</th>
+                                        <th class="p-2.5 text-right">Saldo Token</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-slate-100">
@@ -1533,6 +1668,13 @@ function openManageMadrasahModal(madrasahId) {
                                             <td class="p-2.5 font-bold text-slate-800">${t.name} <span class="block text-[10px] font-normal text-slate-400">NIP: ${t.nip || '-'}</span></td>
                                             <td class="p-2.5 font-mono text-slate-600">${t.username}</td>
                                             <td class="p-2.5 text-slate-600">${Array.isArray(t.mapel) ? t.mapel.join(', ') : (t.mapel || '-')}</td>
+                                            <td class="p-2.5 text-right">
+                                                <button type="button" onclick="editTeacherTokenBalance('${t.id}', '${(t.name||'Guru').replace(/'/g, "\\'")}', ${t.cbtTokenBalance || 0})" class="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 font-extrabold rounded-xl text-[10px] transition inline-flex items-center gap-1 cursor-pointer" title="Klik untuk edit token guru">
+                                                    <i class="fa-solid fa-coins text-amber-500"></i>
+                                                    <span>${t.cbtTokenBalance || 0} Token</span>
+                                                    <i class="fa-solid fa-pen text-[9px] text-amber-600 ml-0.5"></i>
+                                                </button>
+                                            </td>
                                         </tr>
                                     `).join('')}
                                 </tbody>
@@ -1635,6 +1777,38 @@ function copyOfflineActivationKey() {
     }
 }
 
+async function editTeacherTokenBalance(teacherId, teacherName, currentBalance) {
+    const val = prompt(`Edit Saldo Token Ujian untuk Guru: ${teacherName}`, currentBalance);
+    if (val === null) return;
+    const newBal = parseInt(val, 10);
+    if (isNaN(newBal) || newBal < 0) {
+        alert('Jumlah token tidak valid.');
+        return;
+    }
+    try {
+        const res = await fetch(`/api/teachers/${teacherId}/tokens`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cbtTokenBalance: newBal })
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (window.showToast) window.showToast(data.message, 'success');
+            else alert(data.message);
+            if (window.loadDataFromServer) await window.loadDataFromServer();
+            const tch = (appState.teachers || []).find(t => String(t.id) === String(teacherId));
+            if (tch && tch.madrasahId) {
+                openManageMadrasahModal(tch.madrasahId);
+            }
+        } else {
+            alert(data.message || 'Gagal mengubah token guru.');
+        }
+    } catch (e) {
+        console.error(e);
+        alert('Terjadi kesalahan jaringan.');
+    }
+}
+
 window.renderBossDashboard = renderBossDashboard;
 window.switchBossTab = switchBossTab;
 window.filterMadrasahTable = filterMadrasahTable;
@@ -1647,3 +1821,4 @@ window.openManageMadrasahModal = openManageMadrasahModal;
 window.closeManageMadrasahModal = closeManageMadrasahModal;
 window.generateOfflineActivationKey = generateOfflineActivationKey;
 window.copyOfflineActivationKey = copyOfflineActivationKey;
+window.editTeacherTokenBalance = editTeacherTokenBalance;

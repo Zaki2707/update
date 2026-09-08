@@ -1,6 +1,21 @@
 var appState = window.appState || {};
 // Assessment Module: Exam Schedule, CBT Player with PiP Camera & Countdown, Live Monitoring & Evaluation
 
+function safeSetStorage(key, value) {
+    if (typeof window.safeSetLocalStorage === 'function') {
+        window.safeSetLocalStorage(key, value);
+    } else if (typeof safeSetLocalStorage === 'function') {
+        safeSetLocalStorage(key, value);
+    } else {
+        try {
+            localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+        } catch (e) {
+            console.warn('Storage set fallback error for ' + key, e);
+        }
+    }
+}
+window.safeSetStorage = safeSetStorage;
+
 let activeExamSession = null;
 let examTimerInterval = null;
 
@@ -10,9 +25,10 @@ async function syncExamStateToServer(payload) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
-        });
+        }).catch(() => null);
     } catch (e) {}
 }
+window.syncExamStateToServer = syncExamStateToServer;
 
 function shuffleArray(arr) {
     if (!Array.isArray(arr)) return [];
@@ -269,15 +285,9 @@ function getExamQuestions(ex, studentId = null) {
         return false;
     });
 
-    // 3. Fallback: If no questions matched in bank, create schedule-synced questions specifically for this exam subject & title
+    // 3. No fallback questions on client-side to ensure secure server-side questions retrieval only
     if (questions.length === 0) {
-        const subName = ex.subject || 'Ujian Madrasah';
-        const titleName = ex.title || 'Evaluasi CBT';
-        questions = [
-            { id: 'Q1_' + ex.id, question: `[${subName}] Apa hukum menuntut ilmu dan mendalami materi ${subName} bagi setiap Muslim?`, options: ['Wajib', 'Sunnah', 'Makruh', 'Haram'], answer: 'Wajib', type: 'mc' },
-            { id: 'Q2_' + ex.id, question: `[${subName}] Berikut ini yang merupakan prinsip utama saat mengerjakan ${titleName} adalah?`, options: ['Jujur & Niat Ikhlas', 'Mencontek', 'Membuka Tab Lain', 'Ragu-ragu'], answer: 'Jujur & Niat Ikhlas', type: 'mc' },
-            { id: 'Q3_' + ex.id, question: `[${subName}] Jelaskan hikmah dan pentingnya mengamalkan pemahaman ${subName} dalam kehidupan sehari-hari!`, type: 'esay', answer: `Mempelajari dan mengamalkan ilmu ${subName} membimbing kita memiliki akhlak terpuji, ketakwaan, serta kemanfaatan bagi diri sendiri, madrasah, dan masyarakat.` }
-        ];
+        questions = [];
     }
 
     if (studentId) {
@@ -287,7 +297,13 @@ function getExamQuestions(ex, studentId = null) {
         if (!appState.studentExamQuestions) appState.studentExamQuestions = {};
         appState.studentExamQuestions[key1] = questions;
         appState.studentExamQuestions[key2] = questions;
-        localStorage.setItem('madrasah_student_exam_questions', JSON.stringify(appState.studentExamQuestions));
+        
+        // Prune older cached question keys if too large
+        const qKeys = Object.keys(appState.studentExamQuestions);
+        if (qKeys.length > 25) {
+            qKeys.slice(0, qKeys.length - 15).forEach(k => delete appState.studentExamQuestions[k]);
+        }
+        safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
         syncExamStateToServer({ studentQuestions: { [key1]: questions, [key2]: questions } });
         return questions;
     }
@@ -394,27 +410,27 @@ function startEvaluasiPolling() {
                 let hasChanges = false;
                 if (data.activeExamSessions) {
                     appState.activeExamSessions = data.activeExamSessions;
-                    localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(data.activeExamSessions));
+                    safeSetStorage('madrasah_active_exam_sessions', data.activeExamSessions);
                     hasChanges = true;
                 }
                 if (data.completedExams && (Object.keys(data.completedExams).length > 0 || !appState.completedExams || Object.keys(appState.completedExams).length === 0)) {
                     appState.completedExams = data.completedExams;
-                    localStorage.setItem('madrasah_completed_exams', JSON.stringify(data.completedExams));
+                    safeSetStorage('madrasah_completed_exams', data.completedExams);
                     hasChanges = true;
                 }
                 if (data.forceFinishedExams) {
                     appState.forceFinishedExams = data.forceFinishedExams;
-                    localStorage.setItem('madrasah_force_finished_exams', JSON.stringify(data.forceFinishedExams));
+                    safeSetStorage('madrasah_force_finished_exams', data.forceFinishedExams);
                     hasChanges = true;
                 }
                 if (data.studentExamGrades && (Object.keys(data.studentExamGrades).length > 0 || !appState.studentExamGrades || Object.keys(appState.studentExamGrades).length === 0)) {
                     appState.studentExamGrades = data.studentExamGrades;
-                    localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(data.studentExamGrades));
+                    safeSetStorage('madrasah_student_exam_grades', data.studentExamGrades);
                     hasChanges = true;
                 }
                 if (data.studentExamAnswers && (Object.keys(data.studentExamAnswers).length > 0 || !appState.studentExamAnswers || Object.keys(appState.studentExamAnswers).length === 0)) {
                     appState.studentExamAnswers = data.studentExamAnswers;
-                    localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(data.studentExamAnswers));
+                    safeSetStorage('madrasah_student_exam_answers', data.studentExamAnswers);
                     hasChanges = true;
                 }
 
@@ -431,14 +447,125 @@ function startEvaluasiPolling() {
     }, 10000);
 }
 
+async function refreshAssessmentStudentsFromServer() {
+    try {
+        const res = await fetch('/api/students', {
+            cache: 'no-store'
+        });
+
+        const data = await res.json();
+
+        const list = Array.isArray(data)
+            ? data
+            : (data.students || data.data || []);
+
+        if (!Array.isArray(list)) return false;
+
+        let freshStudents = list;
+
+        if (typeof sortStudentsByNis === 'function') {
+            freshStudents = sortStudentsByNis(list);
+        } else if (typeof window.sortStudentsByNis === 'function') {
+            freshStudents = window.sortStudentsByNis(list);
+        }
+
+        const oldStudents = appState.students || [];
+
+        const oldIds = new Set(
+            oldStudents.map(s => String(s.id))
+        );
+
+        const changed =
+            oldStudents.length !== freshStudents.length ||
+            freshStudents.some(s => !oldIds.has(String(s.id)));
+
+        // RAM saja. Jangan wajibkan localStorage.
+        appState.students = freshStudents;
+
+        return changed;
+
+    } catch (err) {
+        console.warn('Gagal memperbarui roster siswa untuk CBT:', err);
+        return false;
+    }
+}
+
 function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = null) {
     appState.lastAssessmentSubTab = activeSubTab;
+
+    // Selalu ambil roster terbaru dari server untuk Monitoring/Evaluasi.
+    // Dibatasi supaya tidak fetch berulang pada setiap render/polling.
+    if (
+        (activeSubTab === 'monitoring' || activeSubTab === 'evaluasi') &&
+        !window.__assessmentRosterSyncInProgress
+    ) {
+        const now = Date.now();
+        const lastSync = Number(window.__assessmentRosterSyncAt || 0);
+
+        // Maksimal sekali tiap 30 detik
+        if ((now - lastSync) > 30000) {
+            window.__assessmentRosterSyncInProgress = true;
+            window.__assessmentRosterSyncAt = now;
+
+            refreshAssessmentStudentsFromServer()
+                .then(changed => {
+                    if (!changed) return;
+
+                    // Jangan render ulang kalau user sudah pindah tab
+                    if (appState.lastAssessmentSubTab !== activeSubTab) return;
+
+                    const viewContainer =
+                        document.getElementById('view-container');
+
+                    if (!viewContainer) return;
+
+                    let selectedExamId = examId;
+
+                    if (
+                        activeSubTab === 'monitoring' &&
+                        !selectedExamId
+                    ) {
+                        selectedExamId =
+                            appState.activeMonitoringExamId || null;
+                    }
+
+                    if (
+                        activeSubTab === 'evaluasi' &&
+                        !selectedExamId
+                    ) {
+                        selectedExamId =
+                            appState.evaluasiSelectedExamId || null;
+                    }
+
+                    renderAssessmentModule(
+                        viewContainer,
+                        activeSubTab,
+                        selectedExamId
+                    );
+                })
+                .catch(err => {
+                    console.warn(
+                        'Sinkron roster CBT gagal:',
+                        err
+                    );
+                })
+                .finally(() => {
+                    window.__assessmentRosterSyncInProgress = false;
+                });
+        }
+    }
+
     if (activeSubTab === 'monitoring') {
         appState.activeMonitoringExamId = examId;
         stopEvaluasiPolling();
     } else if (activeSubTab === 'evaluasi') {
         if (examId) appState.evaluasiSelectedExamId = examId;
         appState.activeEvaluationExamId = examId;
+        const validExams = (appState.exams || []).filter(e => e.recordType !== 'EVENT');
+        const foundSelected = validExams.find(e => String(e.id) === String(appState.evaluasiSelectedExamId));
+        if (!foundSelected && validExams.length > 0) {
+            appState.evaluasiSelectedExamId = validExams[0].id;
+        }
         if (appState.evaluasiSelectedExamId && !appState.evaluasiSelectedClassId) {
             const foundEx = (appState.exams || []).find(e => String(e.id) === String(appState.evaluasiSelectedExamId));
             if (foundEx && Array.isArray(foundEx.classes) && foundEx.classes.length > 0 && foundEx.classes[0] !== 'ALL') {
@@ -505,7 +632,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                         <div>
                             <span class="text-xs uppercase font-extrabold tracking-wider text-amber-200 block">Saldo Token Ujian CBT Madrasah</span>
                             <div class="flex items-baseline gap-2 mt-0.5">
-                                <span class="text-2xl sm:text-3xl font-black text-white">${currentTokens} Token</span>
+                                <span id="token-balance-display-card" class="text-2xl sm:text-3xl font-black text-white">${currentTokens} Token</span>
                                 <span class="text-xs text-amber-100/90 font-medium">tersedia untuk pembuatan jadwal ujian</span>
                             </div>
                         </div>
@@ -516,20 +643,53 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                         </button>
                     </div>
                 </div>
-            ` : ''}
+            ` : `
+                <div class="bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 rounded-3xl p-5 sm:p-6 text-white shadow-lg shadow-amber-700/15 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div class="flex items-center gap-4">
+                        <div class="w-14 h-14 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center text-2xl font-black text-amber-100 shadow-inner">
+                            <i class="fa-solid fa-coins"></i>
+                        </div>
+                        <div>
+                            <span class="text-xs uppercase font-extrabold tracking-wider text-amber-200 block">Saldo Token Ujian Guru (${(appState.currentUser && appState.currentUser.name) || 'Akun Guru'})</span>
+                            <div class="flex items-baseline gap-2 mt-0.5">
+                                <span id="token-balance-display-card" class="text-2xl sm:text-3xl font-black text-white">${currentTokens} Token</span>
+                                <span class="text-xs text-amber-100/90 font-medium">tersedia untuk live video monitoring ujian</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 w-full sm:w-auto">
+                        <button type="button" onclick="if (typeof openTopUpTokenModal === 'function') openTopUpTokenModal();" class="w-full sm:w-auto px-5 py-3 bg-white hover:bg-amber-50 text-amber-900 font-extrabold text-xs rounded-2xl shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer">
+                            <i class="fa-solid fa-cart-plus text-amber-700"></i> <span>Top-Up Token Guru</span>
+                        </button>
+                    </div>
+                </div>
+            `}
 
             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
                 <div><h1 class="text-xl sm:text-2xl font-bold text-slate-800">Asesmen & CBT Madrasah</h1><p class="text-xs text-slate-400">Jadwal Ujian, Live Monitoring, dan Evaluasi Hasil</p></div>
                 <div class="flex flex-wrap gap-2 w-full sm:w-auto">
                     <button type="button" onclick="appState.activeMonitoringExamId = null; appState.activeEvaluationExamId = null; renderAssessmentModule(document.getElementById('view-container'), 'jadwal', null)" class="px-4 py-2.5 rounded-2xl text-xs font-semibold ${currentTab === 'jadwal' ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-700'}">Jadwal Ujian</button>
+                    <button type="button" id="btn-cbt-lkpd" onclick="appState.activeMonitoringExamId = null; appState.activeEvaluationExamId = null; renderAssessmentModule(document.getElementById('view-container'), 'lkpd', null);" class="px-4 py-2.5 rounded-2xl text-xs font-semibold ${currentTab === 'lkpd' ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-700'} flex items-center gap-1.5 cursor-pointer" title="Lembar Kerja Peserta Didik (LKPD)">
+                        <i class="fa-solid fa-file-pen text-amber-500"></i>
+                        <span>LKPD</span>
+                    </button>
                     ${!isTeacher ? `<button type="button" onclick="appState.activeMonitoringExamId = null; appState.activeEvaluationExamId = null; renderAssessmentModule(document.getElementById('view-container'), 'ruang', null)" class="px-4 py-2.5 rounded-2xl text-xs font-semibold ${currentTab === 'ruang' ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-700'}">Ruang Ujian</button>` : ''}
                     ${!isTeacher ? `<button type="button" onclick="appState.activeMonitoringExamId = null; appState.activeEvaluationExamId = null; renderAssessmentModule(document.getElementById('view-container'), 'kartu_peserta', null)" class="px-4 py-2.5 rounded-2xl text-xs font-semibold ${currentTab === 'kartu_peserta' ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-700'}">Generate Nomor Peserta</button>` : ''}
-                    <button type="button" onclick="appState.activeEvaluationExamId = null; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null)" class="px-4 py-2.5 rounded-2xl text-xs font-semibold ${currentTab === 'monitoring' ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-700'}">Monitoring</button>
+                    <button type="button" onclick="appState.activeEvaluationExamId = null; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null)" class="px-4 py-2.5 rounded-2xl text-xs font-semibold ${currentTab === 'monitoring' ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-700'} flex items-center gap-1.5 relative">
+                        <span>Monitoring</span>
+                        ${Object.keys(appState.activeExamSessions || {}).length > 0 ? `
+                            <span class="inline-flex items-center justify-center min-w-[16px] h-4 px-1 bg-rose-500 text-white text-[9px] font-black rounded-full shadow-sm animate-pulse">
+                                ${Object.keys(appState.activeExamSessions || {}).length}
+                            </span>
+                        ` : ''}
+                    </button>
                     <button type="button" onclick="appState.activeMonitoringExamId = null; renderAssessmentModule(document.getElementById('view-container'), 'evaluasi', appState.evaluasiSelectedExamId || null)" class="px-4 py-2.5 rounded-2xl text-xs font-semibold ${currentTab === 'evaluasi' ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-700'}">Evaluasi</button>
                 </div>
             </div>
  
-            ${currentTab === 'jadwal' ? (() => {
+            ${currentTab === 'lkpd' ? `
+                <div id="lkpd-tab-wrapper" class="w-full"></div>
+            ` : currentTab === 'jadwal' ? (() => {
                 const isViewingEvent = !!appState.assessmentEventId;
                 
                 if (!isViewingEvent) {
@@ -1093,64 +1253,148 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                 `;
             })() : currentTab === 'monitoring' ? `
                 <div class="space-y-6">
-                    ${!activeExam ? `
-                        <div class="bg-white p-6 rounded-3xl shadow-sm border space-y-4">
-                            <h3 class="font-bold text-slate-800 text-lg">Pilih Jadwal Ujian untuk Dimonitor</h3>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                ${displayExams.map(ex => `
-                                    <div class="bg-slate-900 text-white p-6 rounded-3xl shadow-lg space-y-4">
-                                        <h4 class="font-bold text-lg">${ex.title}</h4>
-                                        <button type="button" onclick="renderAssessmentModule(document.getElementById('view-container'), 'monitoring', '${ex.id}')" class="w-full py-3 bg-emerald-600 text-white font-semibold rounded-2xl text-xs shadow">Mulai Live Monitoring</button>
-                                    </div>
-                                `).join('')}
-                            </div>
+                    ${appState.activeMonitoringLkpdId ? `
+                        <div class="flex items-center justify-between">
+                            <button type="button" onclick="appState.activeMonitoringLkpdId = null; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null);" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl text-xs flex items-center gap-1.5 transition cursor-pointer">
+                                <i class="fa-solid fa-arrow-left"></i> <span>Kembali ke Pilihan Monitoring</span>
+                            </button>
                         </div>
-                     ` : (() => {
+                        <div id="lkpd-monitoring-container"></div>
+                    ` : !activeExam ? `
+                        <div class="space-y-6">
+                            ${!appState.selectedMonitoringType ? `
+                                <!-- DUA KARTU UTAMA MONITORING BERDAMPINGAN -->
+                                <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-6">
+                                    <div class="space-y-1">
+                                        <h3 class="font-extrabold text-slate-800 text-lg sm:text-xl flex items-center gap-2">
+                                            <i class="fa-solid fa-desktop text-emerald-600"></i> Pusat Monitoring Terpadu
+                                        </h3>
+                                        <p class="text-xs text-slate-400">Pilih tipe monitoring aktivitas madrasah yang ingin Anda pantau secara live real-time.</p>
+                                    </div>
+
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <!-- KARTU 1: MONITORING ASESMEN CBT -->
+                                        <div onclick="appState.selectedMonitoringType = 'cbt'; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null);" class="group relative bg-gradient-to-br from-indigo-900 to-slate-900 text-white p-8 rounded-3xl border border-indigo-800 hover:border-indigo-500 shadow-xl hover:shadow-indigo-950/20 hover:scale-[1.02] transition-all duration-300 flex flex-col justify-between min-h-[220px] cursor-pointer">
+                                            <div class="absolute top-5 right-5 w-16 h-16 bg-white/5 group-hover:bg-white/10 rounded-2xl flex items-center justify-center text-3xl transition duration-300">
+                                                <i class="fa-solid fa-laptop text-indigo-400"></i>
+                                            </div>
+                                            <div class="space-y-2 max-w-[75%]">
+                                                <span class="px-3 py-1 bg-indigo-500/20 text-indigo-300 font-black text-[10px] rounded-full border border-indigo-400/30 uppercase tracking-widest">
+                                                    Asesmen CBT
+                                                </span>
+                                                <h4 class="font-black text-lg sm:text-xl text-white">Monitoring Asesmen CBT</h4>
+                                                <p class="text-xs text-indigo-100/70 leading-relaxed">Pantau pengerjaan ujian, kecurangan siswa keluar tab, livecam snapshot, dan force-finish kontrol ujian.</p>
+                                            </div>
+                                            <div class="flex items-center justify-between border-t border-indigo-800/60 pt-4 mt-4">
+                                                <span class="text-xs font-extrabold text-indigo-300">${displayExams.filter(ex => ex.recordType !== 'EVENT').length} Ujian Terjadwal</span>
+                                                <span class="text-[10px] bg-indigo-600 text-white font-extrabold px-3 py-1 rounded-full uppercase tracking-wider group-hover:bg-indigo-500 transition">PILIH &rarr;</span>
+                                            </div>
+                                        </div>
+
+                                        <!-- KARTU 2: MONITORING LKPD -->
+                                        <div onclick="appState.selectedMonitoringType = 'lkpd'; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null);" class="group relative bg-gradient-to-br from-emerald-900 to-teal-950 text-white p-8 rounded-3xl border border-emerald-800 hover:border-emerald-500 shadow-xl hover:shadow-emerald-950/20 hover:scale-[1.02] transition-all duration-300 flex flex-col justify-between min-h-[220px] cursor-pointer">
+                                            <div class="absolute top-5 right-5 w-16 h-16 bg-white/5 group-hover:bg-white/10 rounded-2xl flex items-center justify-center text-3xl transition duration-300">
+                                                <i class="fa-solid fa-file-signature text-emerald-400"></i>
+                                            </div>
+                                            <div class="space-y-2 max-w-[75%]">
+                                                <span class="px-3 py-1 bg-emerald-500/20 text-emerald-300 font-black text-[10px] rounded-full border border-emerald-400/30 uppercase tracking-widest">
+                                                    LKPD Siswa
+                                                </span>
+                                                <h4 class="font-black text-lg sm:text-xl text-white">Monitoring Lembar Kerja (LKPD)</h4>
+                                                <p class="text-xs text-emerald-100/70 leading-relaxed">Pantau pengumpulan lembar kerja, letak nomor koordinat, live absen foto, dan ulasan penilaian jawaban siswa.</p>
+                                            </div>
+                                            <div class="flex items-center justify-between border-t border-emerald-800/60 pt-4 mt-4">
+                                                <span class="text-xs font-extrabold text-emerald-300">${(Array.isArray(appState.lkpdList) ? appState.lkpdList.length : 0)} LKPD Aktif</span>
+                                                <span class="text-[10px] bg-emerald-600 text-white font-extrabold px-3 py-1 rounded-full uppercase tracking-wider group-hover:bg-emerald-500 transition">PILIH &rarr;</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ` : `
+                                <!-- DETAIL SELECTION BERDASARKAN TIPE MONITORING -->
+                                <div class="bg-white p-6 rounded-3xl shadow-sm border space-y-6">
+                                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-100 pb-4 gap-4">
+                                        <div>
+                                            <h3 class="font-extrabold text-slate-800 text-base sm:text-lg">
+                                                ${appState.selectedMonitoringType === 'cbt' ? 'Pilih Ujian CBT yang Dipantau' : 'Pilih Lembar Kerja (LKPD) yang Dipantau'}
+                                            </h3>
+                                            <p class="text-xs text-slate-400">Silakan pilih salah satu jadwal aktif di bawah untuk memulai sesi pemantauan.</p>
+                                        </div>
+                                        <button type="button" onclick="appState.selectedMonitoringType = null; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null);" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs flex items-center gap-1.5 transition cursor-pointer">
+                                            <i class="fa-solid fa-arrow-left"></i> <span>Ganti Tipe Monitoring</span>
+                                        </button>
+                                    </div>
+
+                                    ${appState.selectedMonitoringType === 'lkpd' ? `
+                                        <!-- DAFTAR LKPD -->
+                                        ${(Array.isArray(appState.lkpdList) && appState.lkpdList.length > 0) ? `
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                ${appState.lkpdList.map(lk => `
+                                                    <div class="bg-slate-900 text-white p-6 rounded-3xl shadow-lg border border-slate-800 space-y-4 flex flex-col justify-between">
+                                                        <div>
+                                                            <div class="flex items-center gap-2 mb-2">
+                                                                <span class="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 font-black text-[10px] rounded-full border border-emerald-400/30">
+                                                                    LKPD Interaktif
+                                                                </span>
+                                                                <span class="text-xs text-emerald-200 font-semibold">${lk.className || 'Semua Kelas'}</span>
+                                                            </div>
+                                                            <h4 class="font-black text-base text-white">${lk.title}</h4>
+                                                            <p class="text-xs text-slate-400 line-clamp-1 mt-1">${lk.markers?.length || 0} Titik Penanda Soal &bull; ${lk.submissions?.length || 0} Jawaban Siswa Masuk</p>
+                                                        </div>
+                                                        <button type="button" onclick="appState.activeMonitoringLkpdId = '${lk.id}'; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null);" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-2xl text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer">
+                                                            <i class="fa-solid fa-desktop"></i> <span>Mulai Live Monitoring LKPD</span>
+                                                        </button>
+                                                    </div>
+                                                `).join('')}
+                                            </div>
+                                        ` : `
+                                            <div class="p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed text-xs">Belum ada LKPD terdaftar untuk kelas ini.</div>
+                                        `}
+                                    ` : `
+                                        <!-- DAFTAR UJIAN CBT -->
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            ${displayExams.filter(ex => ex.recordType !== 'EVENT').map(ex => `
+                                                <div class="bg-slate-900 text-white p-6 rounded-3xl shadow-lg border border-slate-800 space-y-4 flex flex-col justify-between">
+                                                    <div>
+                                                        <div class="flex items-center gap-2 mb-2">
+                                                            <span class="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-300 font-black text-[10px] rounded-full border border-indigo-400/30">
+                                                                CBT Exam
+                                                            </span>
+                                                            <span class="text-xs text-slate-400 font-semibold">${ex.className || 'Semua Kelas'}</span>
+                                                        </div>
+                                                        <h4 class="font-bold text-base text-white">${ex.title}</h4>
+                                                        <p class="text-xs text-slate-400 mt-1">${ex.subjectName || ex.subject || 'Mapel'}</p>
+                                                    </div>
+                                                    <button type="button" onclick="renderAssessmentModule(document.getElementById('view-container'), 'monitoring', '${ex.id}')" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-2xl text-xs shadow transition cursor-pointer">Mulai Live Monitoring CBT</button>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    `}
+                                </div>
+                            `}
+                        </div>
+                    ` : (() => {
                         if (appState.monitoringFilterClassId === undefined) appState.monitoringFilterClassId = '';
                         if (appState.monitoringFilterRoomId === undefined) appState.monitoringFilterRoomId = '';
                         if (!appState.livecamMode) appState.livecamMode = 'gambar';
 
-                        // Set up live monitoring poll with server sync
-                        if (!window.__monitoringPollInterval) {
-                            window.__monitoringPollInterval = setInterval(async () => {
-                                if (document.visibilityState !== 'visible') return;
-                                try {
-                                    const res = await fetch('/api/exam-monitoring-state');
-                                    const data = await res.json();
-                                    if (data.success) {
-                                        if (data.activeExamSessions) {
-                                            appState.activeExamSessions = data.activeExamSessions;
-                                            localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(data.activeExamSessions));
-                                        }
-                                        if (data.completedExams) {
-                                            appState.completedExams = data.completedExams;
-                                            localStorage.setItem('madrasah_completed_exams', JSON.stringify(data.completedExams));
-                                        }
-                                        if (data.forceFinishedExams) {
-                                            appState.forceFinishedExams = data.forceFinishedExams;
-                                            localStorage.setItem('madrasah_force_finished_exams', JSON.stringify(data.forceFinishedExams));
-                                        }
-                                        if (data.studentExamGrades) {
-                                            appState.studentExamGrades = data.studentExamGrades;
-                                            localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(data.studentExamGrades));
-                                        }
-                                        if (data.studentExamAnswers) {
-                                            appState.studentExamAnswers = data.studentExamAnswers;
-                                            localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(data.studentExamAnswers));
-                                        }
-                                        if (data.studentTabSwitches) localStorage.setItem('madrasah_student_tab_switches', JSON.stringify(data.studentTabSwitches));
-                                        if (data.studentOutOfTab) localStorage.setItem('madrasah_student_out_of_tab', JSON.stringify(data.studentOutOfTab));
-                                        if (data.blockedStudents) localStorage.setItem('madrasah_blocked_students', JSON.stringify(data.blockedStudents));
-                                        if (data.studentLivecamFrames) appState.runtimeLivecamFrames = data.studentLivecamFrames;
-                                    }
-                                } catch (e) {}
-
-                                const containerEl = document.getElementById('view-container');
-                                if (containerEl && appState.activeMonitoringExamId && appState.lastAssessmentSubTab === 'monitoring') {
-                                    renderAssessmentModule(containerEl, 'monitoring', appState.activeMonitoringExamId);
-                                }
-                            }, 10000);
+                        // Poin 11: Event-Driven Monitoring - remove heavy 10-second full page polling
+                        if (window.__monitoringPollInterval) {
+                            clearInterval(window.__monitoringPollInterval);
+                            window.__monitoringPollInterval = null;
                         }
+
+                        // Attach event listener for real-time surgical updates from SSE/WS
+                        window.__onExamMonitoringEvent = function(event) {
+                            if (!event || !event.studentId) return;
+                            if (appState.lastAssessmentSubTab !== 'monitoring') return;
+                            if (event.examId && appState.activeMonitoringExamId && String(event.examId) !== String(appState.activeMonitoringExamId)) {
+                                return;
+                            }
+                            if (typeof window.updateStudentMonitoringCard === 'function') {
+                                window.updateStudentMonitoringCard(event);
+                            }
+                        };
 
                         const activeSessions = appState.activeExamSessions || JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
                         const completedExams = appState.completedExams || JSON.parse(localStorage.getItem('madrasah_completed_exams')) || {};
@@ -1203,9 +1447,14 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                         return `
                             <div class="space-y-4">
                                 <div class="bg-white p-6 rounded-3xl shadow-sm border flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-                                    <div class="space-y-0.5">
-                                        <h3 class="font-extrabold text-slate-800 text-lg">Live Monitoring: ${activeExam.title}</h3>
-                                        <p class="text-xs text-slate-400">Pantau kehadiran, status pengerjaan, livecam, pelanggaran keluar tab, dan kontrol peserta.</p>
+                                    <div class="space-y-2">
+                                        <button type="button" onclick="appState.activeMonitoringExamId = null; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null);" class="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 font-extrabold rounded-2xl text-xs inline-flex items-center gap-2 transition cursor-pointer border border-slate-200/80 shadow-sm">
+                                            <i class="fa-solid fa-arrow-left"></i> <span>Kembali ke Pilih Jadwal Ujian</span>
+                                        </button>
+                                        <div>
+                                            <h3 class="font-extrabold text-slate-800 text-lg">Live Monitoring: ${activeExam.title}</h3>
+                                            <p class="text-xs text-slate-400">Pantau kehadiran, status pengerjaan, livecam, pelanggaran keluar tab, dan kontrol peserta.</p>
+                                        </div>
                                     </div>
                                     <div class="flex flex-wrap items-center gap-3 w-full lg:w-auto">
                                         <!-- Search Nama / NIS -->
@@ -1237,6 +1486,10 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                         <button type="button" onclick="toggleLivecamMode('${activeExam.id}')" class="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-2xl text-xs shadow flex items-center space-x-1.5 transition cursor-pointer">
                                             <i class="fa-solid ${appState.livecamMode === 'video' ? 'fa-video' : 'fa-image'} text-[11px]"></i>
                                             <span>Mode Semua: ${appState.livecamMode === 'video' ? 'Video Live' : 'Foto Absen'}</span>
+                                        </button>
+                                        <!-- Log Pelanggaran Anti-Cheat -->
+                                        <button type="button" onclick="openViolationsLogModal('${activeExam.id}')" class="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-2xl text-xs shadow flex items-center space-x-1.5 transition cursor-pointer">
+                                            <i class="fa-solid fa-triangle-exclamation text-[11px]"></i><span>Log Pelanggaran</span>
                                         </button>
                                     </div>
                                 </div>
@@ -1350,10 +1603,16 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                         <div class="text-[9px] text-emerald-400 mt-1 text-center font-bold">100% Selesai</div>
                                                     </div>
                                                 `;
+                                            } else {
+                                                progressHtml = `
+                                                    <div class="w-full text-center py-1">
+                                                        <span class="text-[10px] text-slate-400 font-sans">Belum Memulai Ujian</span>
+                                                    </div>
+                                                `;
                                             }
 
                                             return `
-                                                <div onclick="focusStudentLivecam('${st.id}')" class="relative bg-slate-900 text-white rounded-3xl shadow-xl flex flex-col justify-between overflow-hidden border ${isBlocked ? 'border-rose-500 ring-2 ring-rose-500/30' : (isCurrentlyOutOfTab ? 'border-amber-500 ring-2 ring-amber-500/30' : 'border-slate-800')} min-h-[300px] cursor-pointer hover:scale-[1.02] transition-transform duration-300">
+                                                <div id="monitor-card-${st.id}" onclick="focusStudentLivecam('${st.id}')" class="relative bg-slate-900 text-white rounded-3xl shadow-xl flex flex-col justify-between overflow-hidden border ${isBlocked ? 'border-rose-500 ring-2 ring-rose-500/30' : (isCurrentlyOutOfTab ? 'border-amber-500 ring-2 ring-amber-500/30' : 'border-slate-800')} min-h-[300px] cursor-pointer hover:scale-[1.02] transition-transform duration-300">
                                                     <!-- Full Card Background Image / Video Frame -->
                                                     <div class="absolute inset-0 z-0 bg-slate-950 overflow-hidden">
                                                         ${isStudentVideo ? (isActive ? `
@@ -1398,44 +1657,45 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                     <div class="relative z-10 p-4 flex flex-col justify-between h-full space-y-3 min-h-[300px]">
                                                         <!-- Top Bar: Student Name (Left) & Corner Badges (Right) -->
                                                         <div class="flex justify-between items-start gap-2">
-                                                            <div class="bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-2xl border border-white/10 shadow-md max-w-[65%]">
-                                                                <span class="text-xs text-emerald-300 font-bold block truncate" title="${st.name}">${st.name}</span>
-                                                                <span class="text-[10px] text-slate-300 font-mono block truncate">NIS: ${st.nis || '-'}</span>
+                                                            <div class="bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-2xl border border-white/10 shadow-md max-w-[65%] flex items-center space-x-2">
+                                                                <span id="monitor-hb-${st.id}" title="Indikator Komunikasi Siswa" class="w-2 h-2 rounded-full bg-emerald-400 ${isActive ? 'opacity-100' : 'opacity-30'} transition-all duration-300 shrink-0"></span>
+                                                                <div class="min-w-0">
+                                                                    <span class="text-xs text-emerald-300 font-bold block truncate" title="${st.name}">${st.name}</span>
+                                                                    <span class="text-[10px] text-slate-300 font-mono block truncate">NIS: ${st.nis || '-'}</span>
+                                                                </div>
                                                             </div>
 
                                                             <!-- Notifikasi Pojok -->
-                                                            <div class="flex items-center space-x-1.5">
+                                                            <div id="monitor-corner-${st.id}" class="flex items-center space-x-1.5">
                                                                 ${isCurrentlyOutOfTab ? `
-                                                                    <span title="Keluar Tab (${tabSwitches}x)" class="w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs shadow-lg animate-pulse backdrop-blur-md border border-rose-400">
+                                                                    <span id="monitor-tab-badge-${st.id}" title="Keluar Tab (${tabSwitches}x)" class="w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs shadow-lg animate-pulse backdrop-blur-md border border-rose-400">
                                                                         <i class="fa-solid fa-triangle-exclamation"></i>
-                                                                    </span>
-                                                                ` : (isActive && !isDone ? `
-                                                                    <span title="${tabSwitches > 0 ? `Fokus Kembali (Total Keluar Tab: ${tabSwitches}x)` : 'Fokus Ujian'}" class="w-7 h-7 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-xs shadow-lg backdrop-blur-md border border-emerald-300">
-                                                                        <i class="fa-solid fa-check"></i>
                                                                     </span>
                                                                 ` : (tabSwitches > 0 ? `
-                                                                    <span title="Total Keluar Tab: ${tabSwitches}x" class="w-7 h-7 rounded-full bg-slate-950/80 text-amber-300 flex items-center justify-center text-xs shadow backdrop-blur-md border border-amber-500/40">
+                                                                    <span id="monitor-tab-badge-${st.id}" title="Total Keluar Tab: ${tabSwitches}x" class="w-7 h-7 rounded-full bg-slate-950/80 text-amber-300 flex items-center justify-center text-xs shadow backdrop-blur-md border border-amber-500/40">
                                                                         <i class="fa-solid fa-triangle-exclamation"></i>
                                                                     </span>
-                                                                ` : ''))}
+                                                                ` : '')}
 
                                                                 <!-- Status Icon Badge -->
-                                                                <span title="${isBlocked ? 'Diblokir' : (isForceDone ? 'Force Finish oleh Admin' : (isActive ? 'Aktif Mengerjakan' : (isDone ? 'Selesai' : 'Belum Mulai')))}" class="w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md ${isBlocked ? 'bg-rose-600 text-white border border-rose-400' : (isForceDone ? 'bg-amber-600 text-white border border-amber-400' : (isActive ? 'bg-emerald-500 text-slate-900 font-bold animate-pulse border border-emerald-300' : (isDone ? 'bg-emerald-800 text-emerald-200' : 'bg-slate-900/80 text-slate-300 border border-white/10')))}">
+                                                                <span id="monitor-status-icon-${st.id}" class="monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md ${isBlocked ? 'bg-rose-600 text-white border border-rose-400' : (isForceDone ? 'bg-amber-600 text-white border border-amber-400' : (isActive ? 'bg-emerald-500 text-slate-900 font-bold animate-pulse border border-emerald-300' : (isDone ? 'bg-emerald-800 text-emerald-200' : 'bg-slate-900/80 text-slate-300 border border-white/10')))}">
                                                                     <i class="fa-solid ${isBlocked ? 'fa-ban' : (isForceDone ? 'fa-flag-checkered' : (isActive ? 'fa-circle-dot' : (isDone ? 'fa-check' : 'fa-clock')))}"></i>
                                                                 </span>
                                                             </div>
                                                         </div>
 
                                                         <!-- Space Filler & Blocked Status -->
-                                                        <div class="my-auto">
+                                                        <div id="monitor-blocked-filler-${st.id}" class="my-auto monitor-blocked-filler">
                                                             ${isBlocked ? `<span class="px-2.5 py-1 bg-rose-600 text-white text-[10px] font-bold rounded-full shadow-lg border border-rose-400">Diblokir</span>` : ''}
                                                         </div>
 
                                                         <!-- Bottom Section: Progress Bar & Buttons -->
                                                         <div class="space-y-2 bg-slate-950/85 backdrop-blur-md p-3 rounded-2xl border border-white/10 shadow-lg">
-                                                            ${progressHtml}
+                                                            <div id="monitor-progress-${st.id}">
+                                                                ${progressHtml}
+                                                            </div>
 
-                                                            <div class="flex gap-2 pt-1">
+                                                            <div id="monitor-actions-${st.id}" class="flex gap-2 pt-1">
                                                                 <button type="button" title="${isBlocked ? 'Unblock Siswa' : 'Blokir Siswa'}" onclick="event.stopPropagation(); toggleBlockStudent('${activeExam.id}', '${st.id}')" class="flex-1 py-2 rounded-xl text-xs font-semibold ${isBlocked ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-rose-600 hover:bg-rose-700 text-white'} shadow flex items-center justify-center gap-1.5 cursor-pointer transition">
                                                                     <i class="fa-solid ${isBlocked ? 'fa-user-check' : 'fa-ban'}"></i>
                                                                     ${isBlocked ? '<span class="text-[10px] font-bold">Unblok</span>' : ''}
@@ -1468,13 +1728,24 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                     <!-- Section Header -->
                     <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                         <div>
-                            <h3 class="font-extrabold text-lg text-slate-800">Evaluasi Ujian & Hasil CBT</h3>
-                            <p class="text-xs text-slate-400 mt-0.5">Koreksi lembar jawaban, input nilai esay, dan cetak laporan hasil ujian.</p>
+                            <h3 class="font-extrabold text-lg text-slate-800">Evaluasi Hasil & Koreksi Nilai</h3>
+                            <p class="text-xs text-slate-400 mt-0.5">Koreksi lembar jawaban siswa, input nilai, dan cetak laporan hasil.</p>
+                        </div>
+                        <div class="flex items-center gap-2 bg-slate-100 p-1.5 rounded-2xl">
+                            <button type="button" onclick="appState.evaluasiMode = 'cbt'; renderAssessmentModule(document.getElementById('view-container'), 'evaluasi', appState.evaluasiSelectedExamId || null);" class="px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${(!appState.evaluasiMode || appState.evaluasiMode === 'cbt') ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}">
+                                <i class="fa-solid fa-laptop text-indigo-600"></i> <span>Ujian CBT</span>
+                            </button>
+                            <button type="button" onclick="appState.evaluasiMode = 'lkpd'; renderAssessmentModule(document.getElementById('view-container'), 'evaluasi', null);" class="px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${appState.evaluasiMode === 'lkpd' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-900'}">
+                                <i class="fa-solid fa-file-pen text-amber-400"></i> <span>Lembar Kerja (LKPD)</span>
+                            </button>
                         </div>
                     </div>
 
-                    <!-- Filter Toolbar -->
-                    <div class="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm space-y-4 max-w-4xl mx-auto">
+                    ${appState.evaluasiMode === 'lkpd' ? `
+                        <div id="lkpd-evaluation-container" class="w-full"></div>
+                    ` : `
+                        <!-- Filter Toolbar -->
+                        <div class="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm space-y-4 max-w-4xl mx-auto">
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div>
                                 <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">1. Pilih Rombel / Kelas</label>
@@ -1487,7 +1758,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                 <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">2. Pilih Jadwal Ujian CBT</label>
                                 <select id="eval-exam-select" onchange="onEvaluasiFilterChange()" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-700">
                                     <option value="">-- Pilih Jadwal Ujian --</option>
-                                    ${displayExams.map(e => `<option value="${e.id}" ${String(appState.evaluasiSelectedExamId) === String(e.id) ? 'selected' : ''}>${e.title}</option>`).join('')}
+                                    ${displayExams.filter(e => e.recordType !== 'EVENT').map(e => `<option value="${e.id}" ${String(appState.evaluasiSelectedExamId) === String(e.id) ? 'selected' : ''}>${e.title}</option>`).join('')}
                                 </select>
                             </div>
                             <div>
@@ -1752,7 +2023,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                         grades[key1] = gradeObj;
                                                         grades[key2] = gradeObj;
                                                     }
-                                                    localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades));
+                                                    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
                                                 } else if (isCompleted && gradeObj && !hasEssay && (gradeObj.finalScore === null || gradeObj.finalScore === undefined)) {
                                                     gradeObj.finalScore = gradeObj.pgScore;
                                                     gradeObj.isGraded = true;
@@ -1763,7 +2034,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                         grades[key1] = gradeObj;
                                                         grades[key2] = gradeObj;
                                                     }
-                                                    localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades));
+                                                    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
                                                 }
 
                                                 const pctAccuracy = pgQuestions.length > 0 ? Math.round((correctPGCount / pgQuestions.length) * 100) : 0;
@@ -1981,9 +2252,39 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                         `;
                     })()}
                 </div>
+                `}
             `}
         </div>
     `;
+
+    if (currentTab === 'lkpd') {
+        const lkpdWrapper = document.getElementById('lkpd-tab-wrapper');
+        if (lkpdWrapper && typeof window.renderLkpdCardsView === 'function') {
+            window.renderLkpdCardsView(lkpdWrapper);
+        }
+    }
+
+    if (currentTab === 'monitoring' && appState.activeMonitoringLkpdId) {
+        const monContainer = document.getElementById('lkpd-monitoring-container');
+        if (monContainer && typeof window.renderLkpdMonitoringSection === 'function') {
+            window.renderLkpdMonitoringSection(monContainer, appState.activeMonitoringLkpdId);
+        }
+    }
+
+    if (currentTab === 'evaluasi' && appState.evaluasiMode === 'lkpd') {
+        const evalContainer = document.getElementById('lkpd-evaluation-container');
+        if (evalContainer && typeof window.renderLkpdEvaluationSection === 'function') {
+            window.renderLkpdEvaluationSection(evalContainer, appState.activeEvaluationLkpdId || null);
+        }
+    }
+
+    if (currentTab === 'monitoring' && appState.activeMonitoringExamId) {
+        setTimeout(() => {
+            if (typeof window.refreshMonitoringState === 'function') {
+                window.refreshMonitoringState(appState.activeMonitoringExamId).catch(err => console.warn("Auto-monitoring state sync failed:", err));
+            }
+        }, 50);
+    }
 }
 
 let tempExamClasses = [];
@@ -2004,8 +2305,8 @@ function openExamModal(editId = null, eventId = null) {
     // 1. If Token is 0, BLOCK and show popup warning
     if (tokenBalance <= 0) {
         modal.innerHTML = `
-            <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 sm:p-7 space-y-5 text-center border border-rose-100">
+            <div class="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto animate-in fade-in duration-200">
+                <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 sm:p-7 space-y-5 text-center border border-rose-100 my-8">
                     <div class="w-16 h-16 bg-rose-100 text-rose-600 rounded-3xl flex items-center justify-center text-3xl mx-auto shadow-inner">
                         <i class="fa-solid fa-ban"></i>
                     </div>
@@ -2095,9 +2396,9 @@ function renderExamModalForm(editId = null, eventId = null) {
     const defaultDate = new Date().toISOString().split('T')[0];
 
     modal.innerHTML = `
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
-            <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-6 space-y-4 my-8 max-h-[90vh] overflow-y-auto">
-                <div class="flex justify-between items-center"><h3 class="font-bold text-slate-800">${ex ? 'Edit Jadwal Ujian CBT' : 'Buat Jadwal Ujian CBT'}</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>
+        <div class="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
+            <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-6 space-y-4 my-8 max-h-none sm:max-h-none overflow-visible">
+                <div class="flex justify-between items-center shrink-0"><h3 class="font-bold text-slate-800">${ex ? 'Edit Jadwal Ujian CBT' : 'Buat Jadwal Ujian CBT'}</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>
                 <form onsubmit="saveExam(event)" class="space-y-3 text-xs sm:text-sm">
                     <input type="hidden" id="ex-edit-id" value="${editId || ''}">
                     <div>
@@ -2341,6 +2642,10 @@ async function saveExam(e) {
             return;
         }
 
+        const role = String(appState.role || '').toLowerCase().trim();
+        const isTeacher = role === 'teacher' || role === 'guru';
+        const teacherId = isTeacher ? appState.currentUser?.id : null;
+
         const currentMadrasah = (appState.madrasahs && appState.madrasahs.find(m => String(m.id) === String(appState.currentUser?.madrasahId) || String(m.slug) === String(appState.currentUser?.madrasahSlug))) || (appState.madrasahs && appState.madrasahs[0]) || {};
         const madrasahId = currentMadrasah.id || (appState.currentUser && appState.currentUser.madrasahId) || 'default';
 
@@ -2348,7 +2653,7 @@ async function saveExam(e) {
             const deductRes = await fetch('/api/deduct-cbt-token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ madrasahId, amount: 1 })
+                body: JSON.stringify({ madrasahId, teacherId, amount: 1 })
             });
             const deductData = await deductRes.json();
             if (!deductData.success) {
@@ -2356,9 +2661,20 @@ async function saveExam(e) {
                 return;
             }
             const remaining = typeof deductData.remainingTokens === 'number' ? deductData.remainingTokens : (typeof deductData.cbtTokenBalance === 'number' ? deductData.cbtTokenBalance : 0);
-            if (currentMadrasah) currentMadrasah.cbtTokenBalance = remaining;
-            if (appState.madrasah) appState.madrasah.cbtTokenBalance = remaining;
-            if (appState.currentUser) appState.currentUser.cbtTokenBalance = remaining;
+            if (isTeacher) {
+                if (appState.currentUser) {
+                    appState.currentUser.cbtTokenBalance = remaining;
+                    if (window.safeSetLocalStorage) window.safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+                }
+                if (appState.teachers && appState.currentUser) {
+                    const tchIdx = appState.teachers.findIndex(t => String(t.id) === String(appState.currentUser.id));
+                    if (tchIdx >= 0) appState.teachers[tchIdx].cbtTokenBalance = remaining;
+                }
+            } else {
+                if (currentMadrasah) currentMadrasah.cbtTokenBalance = remaining;
+                if (appState.madrasah) appState.madrasah.cbtTokenBalance = remaining;
+                if (appState.currentUser) appState.currentUser.cbtTokenBalance = remaining;
+            }
             if (window.updateHeaderTokenBadge) window.updateHeaderTokenBadge();
         } catch (err) {
             console.error('Error deduct token:', err);
@@ -2428,7 +2744,7 @@ async function saveExam(e) {
             });
 
             if (Object.keys(batchToSync).length > 0) {
-                localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
+                safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
                 fetch('/api/exam-monitoring-state', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2626,7 +2942,197 @@ window.showScheduleExpiredAlert = function(examId) {
     }
 };
 
-async function renderStudentCBTList(container) {
+window.openStudentExamReviewModal = function(examId) {
+    const ex = (appState.exams || []).find(e => String(e.id) === String(examId));
+    if (!ex) {
+        showToast('Ujian tidak ditemukan!', 'error');
+        return;
+    }
+    const currUser = appState.currentUser || {};
+    const st = (appState.students || []).find(s => 
+        String(s.id) === String(currUser.id) || 
+        (currUser.username && String(s.username).toLowerCase() === String(currUser.username).toLowerCase()) ||
+        (currUser.nis && String(s.nis) === String(currUser.nis)) ||
+        (currUser.id && String(s.id).toLowerCase() === String(currUser.id).toLowerCase())
+    ) || currUser || {};
+
+    const stId = st.id || currUser.id || '';
+    const key1 = stId + '_' + ex.id;
+    const key2 = String(stId) + '_' + String(ex.id);
+    
+    // Retrieve student exam questions
+    const questions = getExamQuestions(ex, st.id);
+    const answers = (appState.studentExamAnswers && (appState.studentExamAnswers[key1] || appState.studentExamAnswers[key2])) || {};
+    const grades = appState.studentExamGrades || {};
+    const gr = grades[key1] || grades[key2];
+    const scoreText = gr ? (gr.finalScore !== null && gr.finalScore !== undefined ? `${gr.finalScore} / 100` : 'Sedang Dikoreksi') : 'Belum Dinilai / Ujian Tidak Dikerjakan';
+
+    const modal = document.getElementById('modal-container');
+    if (!modal) return;
+
+    let questionItemsHtml = '';
+    if (!questions || questions.length === 0) {
+        questionItemsHtml = `
+            <div class="p-8 text-center text-slate-400 bg-slate-50 rounded-3xl border border-dashed border-slate-200">
+                <i class="fa-solid fa-folder-open text-4xl mb-2 text-slate-300"></i>
+                <p class="text-xs font-bold">Tidak ada soal yang terdata pada ujian ini.</p>
+            </div>
+        `;
+    } else {
+        questionItemsHtml = questions.map((q, idx) => {
+            const studentAns = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
+            const hasAnswered = studentAns !== undefined && studentAns !== null && String(studentAns).trim() !== '';
+            
+            let isCorrect = false;
+            let statusBadge = '';
+            
+            if (q.type === 'esay' || q.type === 'essay') {
+                statusBadge = `<span class="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-xl text-[10px] font-bold">Soal Esay</span>`;
+            } else {
+                isCorrect = isCorrectAnswer(q, studentAns);
+                if (hasAnswered) {
+                    statusBadge = isCorrect 
+                        ? `<span class="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-xl text-[10px] font-bold"><i class="fa-solid fa-circle-check mr-1"></i> Benar</span>`
+                        : `<span class="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-xl text-[10px] font-bold"><i class="fa-solid fa-circle-xmark mr-1"></i> Salah</span>`;
+                } else {
+                    statusBadge = `<span class="px-2.5 py-1 bg-slate-100 text-slate-500 rounded-xl text-[10px] font-bold"><i class="fa-solid fa-circle-minus mr-1"></i> Tidak Dijawab</span>`;
+                }
+            }
+
+            // Options display
+            let optionsHtml = '';
+            if (q.type !== 'esay' && q.type !== 'essay') {
+                const opts = q.options || [];
+                optionsHtml = `
+                    <div class="grid grid-cols-1 gap-2.5 mt-3">
+                        ${opts.map((opt, oIdx) => {
+                            const optLetter = String.fromCharCode(65 + oIdx);
+                            const isStudentSelection = String(studentAns).trim().toLowerCase() === optLetter.toLowerCase() || String(studentAns).trim() === String(opt).trim();
+                            const isCorrectOpt = isOptionAnswerKey(q, opt) || String(q.answer || '').trim().toLowerCase() === optLetter.toLowerCase();
+                            
+                            let optClass = 'bg-slate-50 border-slate-200 text-slate-700';
+                            let iconHtml = `<span class="w-6 h-6 rounded-lg bg-slate-200 text-slate-600 flex items-center justify-center text-xs font-black">${optLetter}</span>`;
+                            
+                            if (isCorrectOpt) {
+                                optClass = 'bg-emerald-50 border-emerald-300 text-emerald-950 font-semibold';
+                                iconHtml = `<span class="w-6 h-6 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xs font-black"><i class="fa-solid fa-check"></i></span>`;
+                            } else if (isStudentSelection) {
+                                optClass = 'bg-rose-50 border-rose-300 text-rose-950 font-semibold';
+                                iconHtml = `<span class="w-6 h-6 rounded-lg bg-rose-600 text-white flex items-center justify-center text-xs font-black"><i class="fa-solid fa-xmark"></i></span>`;
+                            }
+                            
+                            return `
+                                <div class="p-3 rounded-2xl border flex items-center gap-3 text-xs transition ${optClass}">
+                                    ${iconHtml}
+                                    <div class="flex-1 leading-relaxed">${opt}</div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+            } else {
+                // Essay
+                optionsHtml = `
+                    <div class="mt-3 space-y-2">
+                        <p class="text-[10px] uppercase tracking-wider font-bold text-slate-400">Jawaban Anda:</p>
+                        <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-800 leading-relaxed font-medium whitespace-pre-wrap">
+                            ${studentAns || '<span class="text-slate-400 italic font-normal">Tidak ada jawaban esay yang diserahkan.</span>'}
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Image display
+            const imgHtml = (q.imageUrl || q.image) ? `
+                <div class="mt-3">
+                    <img src="${q.imageUrl || q.image}" class="max-h-48 rounded-2xl border border-slate-200 object-contain bg-slate-50 p-1" />
+                </div>
+            ` : '';
+
+            // Explanation
+            const explain = q.explanation || q.explain || q.pembahasan;
+            const explainHtml = explain ? `
+                <div class="mt-4 p-4 bg-indigo-50/50 border border-indigo-100/60 rounded-2xl text-xs space-y-1">
+                    <p class="font-extrabold text-indigo-950 flex items-center gap-1.5"><i class="fa-solid fa-circle-info text-indigo-600"></i> Pembahasan / Penjelasan:</p>
+                    <p class="text-indigo-900 leading-relaxed font-medium">${explain}</p>
+                </div>
+            ` : '';
+
+            return `
+                <div class="bg-white p-5 sm:p-6 rounded-3xl border border-slate-100 shadow-xs space-y-3">
+                    <div class="flex items-center justify-between gap-2 flex-wrap">
+                        <span class="px-3 py-1 bg-slate-800 text-white rounded-xl text-[10px] font-black">Soal No. ${idx + 1}</span>
+                        ${statusBadge}
+                    </div>
+                    
+                    <div class="text-xs font-bold text-slate-800 leading-relaxed">${q.question || q.text || ''}</div>
+                    
+                    ${imgHtml}
+                    ${optionsHtml}
+                    ${explainHtml}
+                </div>
+            `;
+        }).join('');
+    }
+
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-3 sm:p-6">
+            <div class="bg-slate-50 w-full max-w-4xl h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-slate-200 animate-fade-in">
+                <!-- Header -->
+                <div class="p-5 sm:p-6 bg-white border-b border-slate-200 flex items-center justify-between shrink-0">
+                    <div>
+                        <h3 class="font-extrabold text-slate-800 text-sm sm:text-base flex items-center gap-2">
+                            <i class="fa-solid fa-graduation-cap text-indigo-600"></i> Review Lembar Kerja & Soal Ujian
+                        </h3>
+                        <p class="text-[11px] text-slate-500 font-medium mt-0.5">${ex.title} &nbsp;|&nbsp; Mapel: ${ex.subject || '-'}</p>
+                    </div>
+                    <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="w-9 h-9 bg-slate-100 hover:bg-rose-100 hover:text-rose-600 text-slate-500 rounded-full flex items-center justify-center transition cursor-pointer">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+
+                <!-- Info Banner -->
+                <div class="bg-white px-5 sm:px-6 py-4 border-b border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-4 shrink-0 text-xs font-bold text-slate-700">
+                    <div class="space-y-0.5">
+                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Nama Peserta</p>
+                        <p class="text-slate-900 font-black truncate">${st.name || currUser.name || 'Siswa Contoh'}</p>
+                    </div>
+                    <div class="space-y-0.5">
+                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Kelas</p>
+                        <p class="text-slate-900 font-black">${st.className || 'Semua Kelas'}</p>
+                    </div>
+                    <div class="space-y-0.5">
+                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total Soal</p>
+                        <p class="text-slate-900 font-black">${questions.length} Butir Soal</p>
+                    </div>
+                    <div class="space-y-0.5">
+                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Nilai Perolehan</p>
+                        <p class="text-emerald-700 font-black text-sm">${scoreText}</p>
+                    </div>
+                </div>
+
+                <!-- Content Area -->
+                <div class="flex-1 overflow-y-auto p-5 sm:p-6 space-y-4" id="exam-review-scroll-container">
+                    ${questionItemsHtml}
+                </div>
+
+                <!-- Footer -->
+                <div class="p-4 sm:p-5 bg-white border-t border-slate-200 flex justify-end shrink-0">
+                    <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="px-6 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-extrabold text-xs rounded-xl shadow transition cursor-pointer">
+                        Selesai Meninjau
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Process KaTeX math typesetting
+    if (window.renderMathInElementSafely) {
+        window.renderMathInElementSafely(document.getElementById('exam-review-scroll-container'));
+    }
+};
+
+async function renderStudentCBTList(container, isRefresh = false) {
     if (!container) return;
 
     // Helper to get current student context consistently
@@ -2663,36 +3169,53 @@ async function renderStudentCBTList(container) {
         window.__examTimerInterval = null;
     }
     activeExamSession = null;
-
-    // Fetch fresh data from server to ensure real-time sync across devices
-    try {
-        const [exRes, stdRes, clsRes, qRes, monRes] = await Promise.all([
-            fetch('/api/exams').then(r => r.json()).catch(() => ({ success: false })),
-            fetch('/api/students').then(r => r.json()).catch(() => ({ success: false })),
-            fetch('/api/classes').then(r => r.json()).catch(() => ({ success: false })),
-            fetch('/api/questions').then(r => r.json()).catch(() => ({ success: false })),
-            fetch('/api/exam-monitoring-state').then(r => r.json()).catch(() => ({ success: false }))
-        ]);
-        if (exRes.success) appState.exams = exRes.exams || [];
-        if (stdRes.success) appState.students = stdRes.students || [];
-        if (clsRes.success) appState.classes = clsRes.classes || [];
-        if (qRes.success) appState.questionBank = qRes.questions || [];
-        if (monRes.success) {
-            if (monRes.completedExams) appState.completedExams = monRes.completedExams;
-            if (monRes.studentExamGrades) appState.studentExamGrades = monRes.studentExamGrades;
-            if (monRes.studentExamAnswers) appState.studentExamAnswers = monRes.studentExamAnswers;
-            if (monRes.activeExamSessions) {
-                // Merge rather than overwrite to prevent wiping active local sessions
-                const localSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
-                appState.activeExamSessions = { ...localSessions, ...(appState.activeExamSessions || {}), ...monRes.activeExamSessions };
+    
+    // Performance Optimization: Non-blocking data refresh
+    // We fetch fresh data in the background while showing the student the list instantly
+    const refreshData = async () => {
+        try {
+            const stId = String(st.id || currUser.id || '');
+            const [exRes, lkRes, mySumRes] = await Promise.all([
+                fetch('/api/exams').then(r => r.json()).catch(() => ({ success: false })),
+                fetch('/api/lkpds').then(r => r.json()).catch(() => ({ success: false })),
+                stId ? fetch(`/api/exam/my-summary?studentId=${encodeURIComponent(stId)}`).then(r => r.json()).catch(() => ({ success: false })) : Promise.resolve({ success: false })
+            ]);
+            
+            let changed = false;
+            if (exRes.success) { appState.exams = exRes.exams || []; changed = true; }
+            if (lkRes.success) { appState.lkpdList = lkRes.lkpdList || []; changed = true; }
+            if (mySumRes.success) {
+                if (!appState.completedExams) appState.completedExams = {};
+                if (Array.isArray(mySumRes.completedExams)) {
+                    mySumRes.completedExams.forEach(eId => {
+                        const key = stId + '_' + eId;
+                        appState.completedExams[key] = true;
+                    });
+                }
+                if (mySumRes.completedMap) {
+                    appState.completedExams = { ...appState.completedExams, ...mySumRes.completedMap };
+                }
+                if (mySumRes.grades) {
+                    appState.studentExamGrades = { ...(appState.studentExamGrades || {}), ...mySumRes.grades };
+                }
+                if (mySumRes.activeSessions) {
+                    const localSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
+                    appState.activeExamSessions = { ...localSessions, ...(appState.activeExamSessions || {}), ...mySumRes.activeSessions };
+                }
+                changed = true;
             }
-            localStorage.setItem('madrasah_completed_exams', JSON.stringify(appState.completedExams || {}));
-            localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades || {}));
-            localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(appState.studentExamAnswers || {}));
-            localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions || {}));
-        }
-    } catch (e) {
-        console.warn('Gagal memuat data ujian dari server:', e);
+            if (changed) {
+                // If data changed significantly, re-render to show updates
+                const containerNow = document.getElementById('view-container');
+                if (containerNow && containerNow.querySelector('h1')?.innerText?.includes('Ujian')) {
+                    renderStudentCBTList(containerNow, true);
+                }
+            }
+        } catch (e) {}
+    };
+
+    if (!isRefresh) {
+        refreshData(); 
     }
 
     const stClassId = String(st.classId || st.class_id || st.class || currUser.classId || currUser.class_id || '').trim();
@@ -2724,12 +3247,13 @@ async function renderStudentCBTList(container) {
             return;
         } else {
             delete appState.activeExamSessions[currentActiveExamKey];
-            localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
+            safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
         }
     }
 
-    // Filter exams assigned to ALL or to the student's specific class
+    // Filter exams assigned to ALL or to the student's specific class (exclude event containers)
     const displayExams = (appState.exams || []).filter(ex => {
+        if (ex.recordType === 'EVENT') return false;
         if (!ex.classes || !Array.isArray(ex.classes) || ex.classes.length === 0) return true;
         const clsArr = ex.classes;
         if (clsArr.includes('ALL') || clsArr.includes('Semua Kelas')) return true;
@@ -2744,6 +3268,34 @@ async function renderStudentCBTList(container) {
         });
     });
 
+    // Fetch LKPDs assigned to student class & active
+    let studentLkpds = [];
+    try {
+        const storageKey = typeof window.getLkpdStorageKey === 'function' ? window.getLkpdStorageKey() : 'madrasah_lkpdList';
+        const lkpdList = typeof initLkpdState === 'function' ? initLkpdState() : (JSON.parse(localStorage.getItem(storageKey)) || []);
+        studentLkpds = (lkpdList || []).filter(lk => {
+            if (lk.status === 'inactive') return false;
+            const rawClassId = String(lk.classId || '').toLowerCase().trim();
+            const rawClassName = String(lk.className || '').toLowerCase().trim();
+            
+            if (!lk.classId || rawClassId === 'all' || rawClassName === 'semua kelas') return true;
+            if (!stClassId && !stClassName) return true;
+            
+            const sIdStr = stClassId.toLowerCase();
+            const sNameStr = (stClassName || '').toLowerCase().trim();
+
+            return rawClassId === 'all' ||
+                   rawClassId === 'semua kelas' ||
+                   rawClassId === sIdStr ||
+                   rawClassName === sIdStr ||
+                   (sNameStr && rawClassName === sNameStr) ||
+                   (sNameStr && rawClassId === sNameStr) ||
+                   (stClassObj && rawClassId === String(stClassObj.id).toLowerCase());
+        });
+    } catch(e) {
+        console.warn('Gagal memuat LKPD:', e);
+    }
+
     // Sort newest created exams first
     displayExams.sort((a, b) => {
         const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -2751,6 +3303,205 @@ async function renderStudentCBTList(container) {
         if (tA && tB && tA !== tB) return tB - tA;
         return (appState.exams.indexOf(b) - appState.exams.indexOf(a));
     });
+
+    // 1. Helper to check LKPD expiry (by date only)
+    const isLkpdExpired = (lk) => {
+        if (!lk.date) return false;
+        const now = new Date();
+        now.setHours(0,0,0,0);
+        let lkDate;
+        if (lk.date.includes('-')) {
+            const p = lk.date.split('-');
+            lkDate = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
+        } else {
+            return false;
+        }
+        lkDate.setHours(0,0,0,0);
+        return lkDate.getTime() < now.getTime();
+    };
+
+    const activeCards = [];
+    const historyCards = [];
+
+    displayExams.forEach(ex => {
+        const stId = st.id || currUser.id || '';
+        const key1 = stId + '_' + ex.id;
+        const key2 = String(stId) + '_' + String(ex.id);
+
+        const isDone = Boolean(
+            (appState.completedExams && (appState.completedExams[key1] || appState.completedExams[key2])) ||
+            (localStorage.getItem('madrasah_completed_exams') && (JSON.parse(localStorage.getItem('madrasah_completed_exams'))[key1] || JSON.parse(localStorage.getItem('madrasah_completed_exams'))[key2]))
+        );
+
+        const activeSessions = appState.activeExamSessions || JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
+        const hasActiveSession = Boolean(
+            (activeSessions[key1] && activeSessions[key1].status === 'active' && activeSessions[key1].timeLeft > 0) ||
+            (activeSessions[key2] && activeSessions[key2].status === 'active' && activeSessions[key2].timeLeft > 0)
+        );
+
+        const schedInfo = getExamScheduleInfo(ex);
+
+        const grades = appState.studentExamGrades || JSON.parse(localStorage.getItem('madrasah_student_exam_grades') || '{}') || {};
+        const gr = grades[key1] || grades[key2];
+        const scoreText = gr ? (gr.finalScore !== null && gr.finalScore !== undefined ? `Nilai: ${gr.finalScore}` : 'Nilai: Sedang Dikoreksi') : 'Selesai';
+
+        let badgeHtml = '';
+        let actionBtnHtml = '';
+        let statusNoticeHtml = '';
+
+        if (isDone) {
+            badgeHtml = `<span class="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-xl text-[10px] font-bold">Sudah Dikerjakan</span>`;
+            let downloadBtnHtml = '';
+            if (ex.allowDownloadResult) {
+                downloadBtnHtml = `
+                    <button type="button" onclick="downloadStudentExamPDF('${ex.id}')" class="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm">
+                        <i class="fa-solid fa-file-pdf"></i> Download Hasil Ujian
+                    </button>
+                `;
+            }
+            actionBtnHtml = `
+                <div class="space-y-2 w-full">
+                    <div class="p-3 bg-slate-50 rounded-2xl text-xs font-bold text-emerald-700 text-center border border-slate-100">✓ Ujian Selesai. ${scoreText}</div>
+                    <button type="button" onclick="window.openStudentExamReviewModal('${ex.id}')" class="w-full py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-extrabold rounded-2xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5 border border-emerald-200">
+                        <i class="fa-solid fa-eye"></i> Lihat & Review Soal
+                    </button>
+                    ${downloadBtnHtml}
+                </div>
+            `;
+        } else if (hasActiveSession) {
+            badgeHtml = `<span class="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-xl text-[10px] font-bold animate-pulse">Sedang Berlangsung</span>`;
+            actionBtnHtml = `<button type="button" onclick="confirmStartStudentExam('${ex.id}')" class="w-full py-3 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-play"></i> Lanjutkan Ujian</button>`;
+        } else if (!schedInfo.canStart) {
+            if (schedInfo.status === 'not_started') {
+                badgeHtml = `<span class="px-2.5 py-1 bg-sky-100 text-sky-800 rounded-xl text-[10px] font-bold">Belum Dimulai</span>`;
+                actionBtnHtml = `<button type="button" onclick="showScheduleNotStartedAlert('${ex.id}')" class="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold rounded-2xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-lock text-sky-600"></i> Belum Waktu Ujian</button>`;
+                statusNoticeHtml = `<div class="p-2.5 bg-sky-50 border border-sky-100 rounded-2xl text-[11px] text-sky-700 flex items-center gap-1.5"><i class="fa-solid fa-clock text-sky-500"></i> Dimulai tanggal <b>${ex.date || '-'}</b> pukul <b>${ex.startTime || '07:30'} WIB</b></div>`;
+            } else {
+                badgeHtml = `<span class="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-xl text-[10px] font-bold">Jadwal Berakhir</span>`;
+                actionBtnHtml = `
+                    <div class="space-y-2 w-full">
+                        <button type="button" onclick="showScheduleExpiredAlert('${ex.id}')" class="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 font-semibold rounded-2xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-calendar-xmark text-rose-500"></i> Jadwal Sudah Lewat</button>
+                        <button type="button" onclick="window.openStudentExamReviewModal('${ex.id}')" class="w-full py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-2xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5">
+                            <i class="fa-solid fa-eye"></i> Lihat Soal Ujian
+                        </button>
+                    </div>
+                `;
+                statusNoticeHtml = `<div class="p-2.5 bg-rose-50 border border-rose-100 rounded-2xl text-[11px] text-rose-700 flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation text-rose-500"></i> Batas jadwal pelaksanaan ujian ini telah berakhir</div>`;
+            }
+        } else {
+            badgeHtml = `<span class="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-xl text-[10px] font-bold">Ujian Aktif</span>`;
+            actionBtnHtml = `<button type="button" onclick="confirmStartStudentExam('${ex.id}')" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-pen-to-square"></i> Kerjakan Ujian</button>`;
+        }
+
+        const html = `
+            <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4 flex flex-col justify-between hover:border-emerald-200 transition">
+                <div>
+                    <div class="flex justify-between items-start gap-2">
+                        ${badgeHtml}
+                        <span class="text-xs font-mono text-slate-400"><i class="fa-solid fa-clock mr-1 text-slate-400"></i>${ex.duration} Menit</span>
+                    </div>
+                    <h3 class="font-bold text-slate-800 text-lg mt-2">${ex.title}</h3>
+                    <p class="text-xs text-slate-500 mt-1"><i class="fa-solid fa-calendar-days mr-1.5 text-emerald-600"></i>${ex.date || '-'} &nbsp;|&nbsp; <i class="fa-solid fa-clock mr-1 text-emerald-600"></i>${ex.startTime || '07:30'}${ex.endTime ? ' - ' + ex.endTime : ''} WIB</p>
+                    ${ex.subject ? `<p class="text-xs text-slate-400 mt-1 font-medium"><i class="fa-solid fa-book mr-1.5 text-slate-400"></i>${ex.subject}</p>` : ''}
+                    ${statusNoticeHtml ? `<div class="mt-3">${statusNoticeHtml}</div>` : ''}
+                </div>
+                ${actionBtnHtml}
+            </div>
+        `;
+
+        if (isDone || schedInfo.status === 'expired') {
+            historyCards.push(html);
+        } else {
+            activeCards.push(html);
+        }
+    });
+
+    studentLkpds.forEach(lk => {
+        const safeStId = String(st.id || currUser.id || '');
+        const safeStName = String(st.name || currUser.name || currUser.username || '').toLowerCase();
+        
+        const isLkpdDone = (lk.submissions || []).some(s => 
+            String(s.studentId) === safeStId || 
+            (safeStName && String(s.studentName || '').toLowerCase() === safeStName)
+        );
+        const sub = (lk.submissions || []).find(s => 
+            String(s.studentId) === safeStId || 
+            (safeStName && String(s.studentName || '').toLowerCase() === safeStName)
+        );
+        const scoreStr = sub && sub.score !== undefined ? `Nilai: ${sub.score}` : 'Selesai';
+        const expired = isLkpdExpired(lk);
+
+        const html = `
+            <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4 flex flex-col justify-between hover:border-teal-200 transition">
+                <div>
+                    <div class="flex justify-between items-start gap-2">
+                        <span class="px-2.5 py-1 bg-teal-100 text-teal-800 rounded-xl text-[10px] font-bold">LKPD Interaktif</span>
+                        <span class="text-xs font-mono text-slate-400"><i class="fa-solid fa-clock mr-1 text-slate-400"></i>${lk.durationMinutes || 45} Menit</span>
+                    </div>
+                    <h3 class="font-bold text-slate-800 text-lg mt-2">${lk.title}</h3>
+                    <p class="text-xs text-slate-500 mt-1"><i class="fa-solid fa-calendar-days mr-1.5 text-teal-600"></i>${lk.date || '-'} &nbsp;|&nbsp; <i class="fa-solid fa-book mr-1.5 text-teal-600"></i>${lk.subjectName || lk.subjectId || 'Mata Pelajaran'} &nbsp;|&nbsp; <i class="fa-solid fa-users mr-1 text-teal-600"></i>${lk.className || 'Kelas'}</p>
+                    <p class="text-xs text-slate-400 mt-2 line-clamp-2">${lk.description || 'Lembar kerja peserta didik interaktif.'}</p>
+                </div>
+                ${isLkpdDone ? `
+                    <div class="space-y-2 w-full">
+                        <div class="p-3 bg-slate-50 rounded-2xl text-xs font-bold text-teal-700 text-center border border-slate-100">✓ LKPD Selesai. ${scoreStr}</div>
+                        ${sub && sub.isGraded ? `
+                            <button type="button" onclick="window.downloadLkpdStudentPdf('${lk.id}', '${safeStId}')" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm">
+                                <i class="fa-solid fa-file-pdf"></i> Download Hasil LKPD
+                            </button>
+                        ` : ''}
+                        <button type="button" onclick="window.openStudentLkpdWorksheetModal('${lk.id}', '${safeStId}')" class="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5">
+                            <i class="fa-solid fa-eye"></i> Lihat Hasil Pengerjaan
+                        </button>
+                    </div>
+                ` : (expired ? `
+                     <div class="space-y-2 w-full">
+                        <div class="p-3 bg-rose-50 rounded-2xl text-xs font-bold text-rose-700 text-center border border-rose-100"><i class="fa-solid fa-calendar-xmark mr-1.5"></i> Batas Waktu Terlewati</div>
+                        <button type="button" onclick="window.openStudentLkpdWorksheetModal('${lk.id}', '${safeStId}')" class="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5">
+                            <i class="fa-solid fa-eye"></i> Lihat Soal LKPD
+                        </button>
+                    </div>
+                ` : `
+                    <button type="button" onclick="openStudentLkpdWorksheetModal('${lk.id}', '${st.id}')" class="w-full py-3 bg-teal-600 hover:bg-teal-700 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer flex items-center justify-center gap-1.5">
+                        <i class="fa-solid fa-pen-nib"></i> Kerjakan LKPD
+                    </button>
+                `)}
+            </div>
+        `;
+
+        if (isLkpdDone || expired) {
+            historyCards.push(html);
+        } else {
+            activeCards.push(html);
+        }
+    });
+
+    const activeSectionHtml = activeCards.length > 0 ? `
+        <div class="space-y-4">
+            <h2 class="text-sm font-black text-slate-800 flex items-center gap-2 uppercase tracking-wider">
+                <span class="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center"><i class="fa-solid fa-calendar-check"></i></span>
+                Jadwal Ujian & LKPD Aktif
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                ${activeCards.join('')}
+            </div>
+        </div>
+    ` : '';
+
+    const historySectionHtml = historyCards.length > 0 ? `
+        <div class="space-y-4 pt-6 border-t border-slate-100">
+            <div class="flex items-center justify-between">
+                <h2 class="text-sm font-black text-slate-500 flex items-center gap-2 uppercase tracking-wider">
+                    <span class="w-8 h-8 rounded-xl bg-slate-100 text-slate-400 flex items-center justify-center"><i class="fa-solid fa-clock-rotate-left"></i></span>
+                    Kartu Jadwal yang Sudah Dikerjakan / Selesai
+                </h2>
+                <span class="text-[10px] font-bold text-slate-400 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-100">${historyCards.length} Item Terdata</span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                ${historyCards.join('')}
+            </div>
+        </div>
+    ` : '';
 
     container.innerHTML = `
         <div class="space-y-6 pb-8">
@@ -2760,100 +3511,32 @@ async function renderStudentCBTList(container) {
                     <i class="fa-solid fa-arrow-left"></i>
                     <span>Kembali ke Dashboard Utama</span>
                 </button>
-                <span class="text-xs font-bold text-slate-400">Portal Ujian CBT</span>
+                <span class="text-xs font-bold text-slate-400">Portal Ujian CBT & LKPD</span>
             </div>
 
             <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                    <h1 class="text-xl sm:text-2xl font-bold text-slate-800">CBT / Ujian Online Murid</h1>
-                    <p class="text-xs text-slate-400 mt-0.5">Daftar ujian aktif yang siap dikerjakan untuk kelas: <span class="font-bold text-emerald-600">${stClassName || stClassId || 'Semua Kelas'}</span></p>
+                    <h1 class="text-xl sm:text-2xl font-bold text-slate-800">CBT / Ujian Online & LKPD Murid</h1>
+                    <p class="text-xs text-slate-400 mt-0.5">Daftar ujian dan LKPD aktif yang siap dikerjakan untuk kelas: <span class="font-bold text-emerald-600">${stClassName || stClassId || 'Semua Kelas'}</span></p>
                 </div>
                 <button type="button" onclick="renderStudentCBTList(document.getElementById('view-container'))" class="self-start sm:self-auto px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-2xl transition flex items-center gap-2 cursor-pointer">
                     <i class="fa-solid fa-rotate mr-1"></i> Refresh Jadwal
                 </button>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                ${displayExams.length === 0 ? `<div class="bg-white p-8 rounded-3xl text-center text-slate-400 text-sm border border-slate-100 col-span-2 space-y-2">
-                    <i class="fa-solid fa-calendar-xmark text-3xl text-slate-300"></i>
-                    <p class="font-semibold text-slate-600">Belum ada jadwal ujian aktif untuk kelas Anda.</p>
-                    <p class="text-xs text-slate-400">Jadwal yang dibuat oleh guru/admin akan muncul di sini secara otomatis.</p>
-                </div>` : displayExams.map(ex => {
-                    const stId = st.id || currUser.id || '';
-                    const key1 = stId + '_' + ex.id;
-                    const key2 = String(stId) + '_' + String(ex.id);
-
-                    const isDone = Boolean(
-                        (appState.completedExams && (appState.completedExams[key1] || appState.completedExams[key2])) ||
-                        (localStorage.getItem('madrasah_completed_exams') && (JSON.parse(localStorage.getItem('madrasah_completed_exams'))[key1] || JSON.parse(localStorage.getItem('madrasah_completed_exams'))[key2]))
-                    );
-
-                    const activeSessions = appState.activeExamSessions || JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
-                    const hasActiveSession = Boolean(
-                        (activeSessions[key1] && activeSessions[key1].status === 'active' && activeSessions[key1].timeLeft > 0) ||
-                        (activeSessions[key2] && activeSessions[key2].status === 'active' && activeSessions[key2].timeLeft > 0)
-                    );
-
-                    const schedInfo = getExamScheduleInfo(ex);
-
-                    const grades = appState.studentExamGrades || JSON.parse(localStorage.getItem('madrasah_student_exam_grades') || '{}') || {};
-                    const gr = grades[key1] || grades[key2];
-                    const scoreText = gr ? (gr.finalScore !== null && gr.finalScore !== undefined ? `Nilai: ${gr.finalScore}` : 'Nilai: Sedang Dikoreksi') : 'Selesai';
-
-                    let badgeHtml = '';
-                    let actionBtnHtml = '';
-                    let statusNoticeHtml = '';
-
-                    if (isDone) {
-                        badgeHtml = `<span class="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-xl text-[10px] font-bold">Sudah Dikerjakan</span>`;
-                        let downloadBtnHtml = '';
-                        if (ex.allowDownloadResult) {
-                            downloadBtnHtml = `
-                                <button type="button" onclick="downloadStudentExamPDF('${ex.id}')" class="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm">
-                                    <i class="fa-solid fa-file-pdf"></i> Download Hasil Ujian
-                                </button>
-                            `;
-                        }
-                        actionBtnHtml = `
-                            <div class="space-y-2 w-full">
-                                <div class="p-3 bg-slate-50 rounded-2xl text-xs font-bold text-emerald-700 text-center border border-slate-100">✓ Ujian Selesai. ${scoreText}</div>
-                                ${downloadBtnHtml}
-                            </div>
-                        `;
-                    } else if (hasActiveSession) {
-                        badgeHtml = `<span class="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-xl text-[10px] font-bold animate-pulse">Sedang Berlangsung</span>`;
-                        actionBtnHtml = `<button type="button" onclick="confirmStartStudentExam('${ex.id}')" class="w-full py-3 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-play"></i> Lanjutkan Ujian</button>`;
-                    } else if (!schedInfo.canStart) {
-                        if (schedInfo.status === 'not_started') {
-                            badgeHtml = `<span class="px-2.5 py-1 bg-sky-100 text-sky-800 rounded-xl text-[10px] font-bold">Belum Dimulai</span>`;
-                            actionBtnHtml = `<button type="button" onclick="showScheduleNotStartedAlert('${ex.id}')" class="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold rounded-2xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-lock text-sky-600"></i> Belum Waktu Ujian</button>`;
-                            statusNoticeHtml = `<div class="p-2.5 bg-sky-50 border border-sky-100 rounded-2xl text-[11px] text-sky-700 flex items-center gap-1.5"><i class="fa-solid fa-clock text-sky-500"></i> Dimulai tanggal <b>${ex.date || '-'}</b> pukul <b>${ex.startTime || '07:30'} WIB</b></div>`;
-                        } else {
-                            badgeHtml = `<span class="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-xl text-[10px] font-bold">Jadwal Berakhir</span>`;
-                            actionBtnHtml = `<button type="button" onclick="showScheduleExpiredAlert('${ex.id}')" class="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-500 font-semibold rounded-2xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-calendar-xmark text-rose-500"></i> Jadwal Sudah Lewat</button>`;
-                            statusNoticeHtml = `<div class="p-2.5 bg-rose-50 border border-rose-100 rounded-2xl text-[11px] text-rose-700 flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation text-rose-500"></i> Batas jadwal pelaksanaan ujian ini telah berakhir</div>`;
-                        }
-                    } else {
-                        badgeHtml = `<span class="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-xl text-[10px] font-bold">Ujian Aktif</span>`;
-                        actionBtnHtml = `<button type="button" onclick="confirmStartStudentExam('${ex.id}')" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-pen-to-square"></i> Kerjakan Ujian</button>`;
-                    }
-
-                    return `
-                        <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4 flex flex-col justify-between hover:border-emerald-200 transition">
-                            <div>
-                                <div class="flex justify-between items-start gap-2">
-                                    ${badgeHtml}
-                                    <span class="text-xs font-mono text-slate-400"><i class="fa-solid fa-clock mr-1 text-slate-400"></i>${ex.duration} Menit</span>
-                                </div>
-                                <h3 class="font-bold text-slate-800 text-lg mt-2">${ex.title}</h3>
-                                <p class="text-xs text-slate-500 mt-1"><i class="fa-solid fa-calendar-days mr-1.5 text-emerald-600"></i>${ex.date || '-'} &nbsp;|&nbsp; <i class="fa-solid fa-clock mr-1 text-emerald-600"></i>${ex.startTime || '07:30'}${ex.endTime ? ' - ' + ex.endTime : ''} WIB</p>
-                                ${ex.subject ? `<p class="text-xs text-slate-400 mt-1 font-medium"><i class="fa-solid fa-book mr-1.5 text-slate-400"></i>${ex.subject}</p>` : ''}
-                                ${statusNoticeHtml ? `<div class="mt-3">${statusNoticeHtml}</div>` : ''}
-                            </div>
-                            ${actionBtnHtml}
+            <div class="space-y-10">
+                ${activeCards.length === 0 && historyCards.length === 0 ? `
+                    <div class="bg-white p-12 rounded-3xl text-center text-slate-400 text-sm border border-slate-100 space-y-3">
+                        <i class="fa-solid fa-calendar-xmark text-4xl text-slate-200"></i>
+                        <div>
+                            <p class="font-bold text-slate-600">Belum ada jadwal ujian atau LKPD.</p>
+                            <p class="text-xs text-slate-400">Jadwal yang dibuat oleh guru akan muncul di sini secara otomatis.</p>
                         </div>
-                    `;
-                }).join('')}
+                    </div>
+                ` : `
+                    ${activeSectionHtml}
+                    ${historySectionHtml}
+                `}
             </div>
         </div>
     `;
@@ -2894,9 +3577,9 @@ window.confirmStartStudentExam = function(examId) {
     const modal = document.getElementById('modal-container');
     if (modal) {
         modal.innerHTML = `
-            <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4">
-                <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden">
-                    <div class="p-6 border-b border-slate-100 flex items-center space-x-4">
+            <div class="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/80 backdrop-blur-sm p-4 overflow-y-auto">
+                <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden my-8 flex flex-col max-h-[calc(100vh-4rem)]">
+                    <div class="p-6 border-b border-slate-100 flex items-center space-x-4 shrink-0">
                         <div class="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center text-xl">
                             <i class="fa-solid fa-laptop-file"></i>
                         </div>
@@ -2905,7 +3588,7 @@ window.confirmStartStudentExam = function(examId) {
                             <p class="text-xs text-slate-500">Konfirmasi kesiapan Anda</p>
                         </div>
                     </div>
-                    <div class="p-6 space-y-4 text-sm text-slate-700">
+                    <div class="p-6 space-y-4 text-sm text-slate-700 overflow-y-auto flex-1 custom-scrollbar">
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <p class="text-xs text-slate-400">Mata Pelajaran</p>
@@ -2927,7 +3610,7 @@ window.confirmStartStudentExam = function(examId) {
                         <div class="bg-rose-50 border border-rose-100 p-4 rounded-2xl text-xs text-rose-700 space-y-1">
                             <p class="font-bold"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Peraturan Ujian:</p>
                             <ul class="list-disc list-inside space-y-0.5 ml-1">
-                                <li>Kamera / webcam harus aktif.</li>
+                                <li>Dilarang berdiskusi.</li>
                                 <li>Dilarang keluar tab atau membuka aplikasi lain.</li>
                                 <li>Pelanggaran akan otomatis dilaporkan ke pengawas.</li>
                             </ul>
@@ -2967,7 +3650,7 @@ function showExamMessageModal(title, message, examId = '', studentId = '', isBro
     `;
 }
 
-function startStudentExam(examId) {
+async function startStudentExam(examId) {
     const ex = appState.exams.find(e => String(e.id) === String(examId));
     if (!ex) {
         showToast('Ujian tidak ditemukan!', 'error');
@@ -3000,14 +3683,29 @@ function startStudentExam(examId) {
         return;
     }
     
-    // 1. Ensure student exam questions are preserved and synchronized so order never changes
+    // 1. Poin 5 & 6: Fetch server-generated, server-shuffled, and sanitized questions
     if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions')) || {};
     let questions = appState.studentExamQuestions[st.id + '_' + ex.id];
     if (!questions || !Array.isArray(questions) || questions.length === 0) {
-        questions = getExamQuestions(ex, st.id);
+        try {
+            const qRes = await fetch('/api/exam/attempt/start-questions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ studentId: st.id, examId: ex.id })
+            });
+            const qData = await qRes.json();
+            if (qData.success && Array.isArray(qData.questions) && qData.questions.length > 0) {
+                questions = qData.questions;
+            }
+        } catch (err) {
+            console.warn('Network error fetching server questions, falling back to local sanitized set:', err);
+        }
+
+        if (!questions || !Array.isArray(questions) || questions.length === 0) {
+            questions = [];
+        }
         appState.studentExamQuestions[st.id + '_' + ex.id] = questions;
-        localStorage.setItem('madrasah_student_exam_questions', JSON.stringify(appState.studentExamQuestions));
-        syncExamStateToServer({ studentQuestions: { [st.id + '_' + ex.id]: questions } });
+        safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
     }
 
     // 2. Ensure active exam session & answers & timer continuation
@@ -3018,6 +3716,10 @@ function startStudentExam(examId) {
     if (!sessionData) {
         sessionData = {
             startTime: Date.now(),
+            startedAt: Date.now(),
+            endsAt: Date.now() + (durationSec * 1000),
+            durationSec: durationSec,
+            duration: ex.duration,
             status: 'active',
             answers: {},
             currentIndex: 0,
@@ -3026,8 +3728,33 @@ function startStudentExam(examId) {
             timeLeft: durationSec
         };
         appState.activeExamSessions[st.id + '_' + ex.id] = sessionData;
-        localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
-        syncExamStateToServer({ sessionKey: st.id + '_' + ex.id, sessionData: sessionData });
+        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+        
+        // Poin 10: Authoritative attempt start with answer & state recovery
+        try {
+            const startController = new AbortController();
+            const startTimeout = setTimeout(() => startController.abort(), 2500);
+            const startRes = await fetch('/api/exam/attempt/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ studentId: st.id, examId: ex.id, totalQuestions: questions.length }),
+                signal: startController.signal
+            });
+            clearTimeout(startTimeout);
+            const res = await startRes.json();
+            if (res.success && res.session) {
+                if (res.session.endsAt) sessionData.endsAt = res.session.endsAt;
+                if (typeof res.session.remainingTime === 'number') sessionData.timeLeft = res.session.remainingTime;
+                if (res.session.answers && Object.keys(res.session.answers).length > 0) {
+                    sessionData.answers = { ...sessionData.answers, ...res.session.answers };
+                    sessionData.answeredCount = Object.keys(sessionData.answers).length;
+                }
+                if (typeof res.session.currentIndex === 'number') {
+                    sessionData.currentIndex = res.session.currentIndex;
+                }
+                safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+            }
+        } catch (e) {}
     } else {
         // Continue from existing session: accurately preserve timeLeft and apply any schedule duration additions
         const oldDurSec = sessionData.durationSec || (parseInt(sessionData.duration || 60, 10) * 60);
@@ -3037,6 +3764,7 @@ function startStudentExam(examId) {
             sessionData.durationSec = durationSec;
             sessionData.duration = ex.duration;
             sessionData.extraTimeAdded = (sessionData.extraTimeAdded || 0) + addedSec;
+            if (sessionData.endsAt) sessionData.endsAt += (addedSec * 1000);
         } else if (!sessionData.durationSec) {
             sessionData.durationSec = durationSec;
             sessionData.duration = ex.duration;
@@ -3046,15 +3774,43 @@ function startStudentExam(examId) {
             sessionData.timeLeft = durationSec;
         }
 
-        // Re-align startTime so elapsed time doesn't expire session if exam date was changed
+        // Re-align startTime and endsAt
+        if (!sessionData.endsAt) {
+            sessionData.endsAt = Date.now() + (sessionData.timeLeft * 1000);
+        }
         sessionData.startTime = Date.now() - Math.max(0, (durationSec - sessionData.timeLeft) * 1000);
 
         if (!sessionData.answers) sessionData.answers = {};
         if (sessionData.currentIndex === undefined) sessionData.currentIndex = 0;
         sessionData.totalQuestions = questions.length;
         sessionData.answeredCount = Object.keys(sessionData.answers).length;
-        localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
-        syncExamStateToServer({ sessionKey: st.id + '_' + ex.id, sessionData: sessionData });
+        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+        
+        // Poin 10: Sync attempt continuation & restore answers from server
+        try {
+            const startController = new AbortController();
+            const startTimeout = setTimeout(() => startController.abort(), 2500);
+            const startRes = await fetch('/api/exam/attempt/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ studentId: st.id, examId: ex.id, totalQuestions: questions.length }),
+                signal: startController.signal
+            });
+            clearTimeout(startTimeout);
+            const res = await startRes.json();
+            if (res.success && res.session) {
+                if (res.session.endsAt) sessionData.endsAt = res.session.endsAt;
+                if (typeof res.session.remainingTime === 'number') sessionData.timeLeft = res.session.remainingTime;
+                if (res.session.answers && Object.keys(res.session.answers).length > 0) {
+                    sessionData.answers = { ...sessionData.answers, ...res.session.answers };
+                    sessionData.answeredCount = Object.keys(sessionData.answers).length;
+                }
+                if (typeof res.session.currentIndex === 'number') {
+                    sessionData.currentIndex = res.session.currentIndex;
+                }
+                safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+            }
+        } catch (e) {}
     }
 
     activeExamSession = {
@@ -3107,12 +3863,35 @@ function startStudentExam(examId) {
 
         appState.studentTabSwitches[key] = (appState.studentTabSwitches[key] || 0) + 1;
         appState.studentOutOfTab[key] = true;
-        localStorage.setItem('madrasah_student_tab_switches', JSON.stringify(appState.studentTabSwitches));
-        localStorage.setItem('madrasah_student_out_of_tab', JSON.stringify(appState.studentOutOfTab));
+        safeSetStorage('madrasah_student_tab_switches', appState.studentTabSwitches);
+        safeSetStorage('madrasah_student_out_of_tab', appState.studentOutOfTab);
 
         const count = appState.studentTabSwitches[key];
         showToast(`PERINGATAN: ${reason} (${count}x)!`, 'error');
-        syncExamStateToServer({ tabSwitches: { [key]: count }, outOfTab: { [key]: true } });
+        
+        // Structured Violation Logger API call
+        fetch('/api/exam/violation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                studentId: currentStudent.id,
+                examId: activeExamSession.exam.id,
+                reason: reason,
+                clientTimestamp: now
+            })
+        }).then(r => r.json()).then(res => {
+            if (res.success && res.autoBlocked) {
+                setStudentBlockState(activeExamSession.exam.id, currentStudent.id, true);
+                showToast('Ujian diblokir otomatis oleh sistem karena melanggar batas aturan.', 'error');
+                renderActiveExamScreen();
+            }
+        }).catch(() => {
+            fetch('/api/exam/presence', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ examId: activeExamSession.exam.id, outOfTab: true })
+            }).catch(() => {});
+        });
 
         const autoBlock = parseInt(activeExamSession.exam.autoBlock) || 0;
         if (autoBlock > 0 && count >= autoBlock) {
@@ -3159,8 +3938,12 @@ function startStudentExam(examId) {
                 const currentStudent = appState.currentUser && appState.currentUser.id ? appState.currentUser : (appState.students[0] || {});
                 const key = currentStudent.id + '_' + activeExamSession.exam.id;
                 appState.studentOutOfTab[key] = false;
-                localStorage.setItem('madrasah_student_out_of_tab', JSON.stringify(appState.studentOutOfTab));
-                syncExamStateToServer({ outOfTab: { [key]: false } });
+                safeSetStorage('madrasah_student_out_of_tab', appState.studentOutOfTab);
+                fetch('/api/exam/presence', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ examId: activeExamSession.exam.id, outOfTab: false })
+                }).catch(() => {});
                 showToast('Anda telah kembali ke tab ujian. Tetap fokus!', 'success');
             }
         });
@@ -3245,99 +4028,91 @@ function startStudentExam(examId) {
                 timerDisplay.textContent = `${m}:${s}`;
             }
 
-            // Sync session timer and poll updates every 5 seconds
+            // Synchronize server-authoritative endsAt timer and lightweight micro-heartbeat every 5 seconds
             if (activeExamSession.timeLeft % 5 === 0) {
-                if (appState.activeExamSessions[st.id + '_' + ex.id]) {
-                    appState.activeExamSessions[st.id + '_' + ex.id].timeLeft = activeExamSession.timeLeft;
-                    localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
-                    syncExamStateToServer({ sessionKey: st.id + '_' + ex.id, sessionData: appState.activeExamSessions[st.id + '_' + ex.id] });
-                }
-
-                // Poll server for block status, time extensions, and broadcast messages
-                fetch('/api/exam-monitoring-state')
+                // Micro-Heartbeat to keep session alive and sync exact server-authoritative timer
+                fetch('/api/exam/heartbeat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        studentId: st.id,
+                        examId: ex.id,
+                        currentIndex: activeExamSession.currentIndex
+                    })
+                })
                     .then(res => res.json())
                     .then(data => {
                         if (data.success) {
-                            // Check for dynamic time extension from active sessions
-                            if (data.activeExamSessions) {
-                                const serverSess = data.activeExamSessions[st.id + '_' + ex.id] || data.activeExamSessions[String(st.id) + '_' + String(ex.id)];
-                                if (serverSess && serverSess.timeLeft !== undefined && serverSess.timeLeft > activeExamSession.timeLeft + 5) {
-                                    const addedSec = serverSess.timeLeft - activeExamSession.timeLeft;
-                                    activeExamSession.timeLeft = serverSess.timeLeft;
-                                    if (appState.activeExamSessions[st.id + '_' + ex.id]) {
-                                        appState.activeExamSessions[st.id + '_' + ex.id].timeLeft = serverSess.timeLeft;
-                                        if (serverSess.duration) appState.activeExamSessions[st.id + '_' + ex.id].duration = serverSess.duration;
+                            // Server-authoritative timer synchronization
+                            if (data.remainingTime !== null && data.remainingTime !== undefined) {
+                                const diff = Math.abs(data.remainingTime - activeExamSession.timeLeft);
+                                if (diff > 4) { // Re-align if local clock drifted by > 4s or was modified
+                                    activeExamSession.timeLeft = data.remainingTime;
+                                    if (appState.activeExamSessions && appState.activeExamSessions[st.id + '_' + ex.id]) {
+                                        appState.activeExamSessions[st.id + '_' + ex.id].timeLeft = data.remainingTime;
+                                        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
                                     }
-                                    localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
                                     const m = Math.floor(activeExamSession.timeLeft / 60);
                                     const s = String(activeExamSession.timeLeft % 60).padStart(2, '0');
                                     if (timerDisplay) timerDisplay.textContent = `${m}:${s}`;
-                                    showToast(`Waktu ujian telah ditambahkan ${Math.round(addedSec / 60)} menit oleh pengawas!`, 'success');
                                 }
                             }
 
-                            // Check for exam duration modification in exams list
-                            if (data.exams && Array.isArray(data.exams)) {
-                                const upEx = data.exams.find(e => String(e.id) === String(ex.id));
-                                if (upEx) {
-                                    const currDur = parseInt(activeExamSession.exam.duration || ex.duration || 60, 10);
-                                    const newDur = parseInt(upEx.duration || 60, 10);
-                                    if (newDur > currDur) {
-                                        const diffSec = (newDur - currDur) * 60;
-                                        activeExamSession.timeLeft += diffSec;
-                                        activeExamSession.exam = { ...activeExamSession.exam, ...upEx };
-                                        ex.duration = newDur;
-                                        if (appState.activeExamSessions[st.id + '_' + ex.id]) {
-                                            appState.activeExamSessions[st.id + '_' + ex.id].timeLeft = activeExamSession.timeLeft;
-                                            appState.activeExamSessions[st.id + '_' + ex.id].duration = newDur;
-                                        }
-                                        localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
-                                        const m = Math.floor(activeExamSession.timeLeft / 60);
-                                        const s = String(activeExamSession.timeLeft % 60).padStart(2, '0');
-                                        if (timerDisplay) timerDisplay.textContent = `${m}:${s}`;
-                                        showToast(`Waktu ujian bertambah ${Math.round(diffSec / 60)} menit sesuai jadwal terbaru!`, 'success');
-                                    }
-                                }
+                            // Check blocked state
+                            const wasBlocked = isStudentBlocked(ex.id, st.id);
+                            if (!appState.blockedStudents) appState.blockedStudents = {};
+                            appState.blockedStudents[st.id + '_' + ex.id] = data.blocked;
+                            safeSetStorage('madrasah_blocked_students', appState.blockedStudents);
+
+                            if (data.blocked && !wasBlocked) {
+                                showToast('Ujian diblokir oleh pengawas.', 'error');
+                                renderActiveExamScreen();
+                                return;
+                            } else if (!data.blocked && wasBlocked) {
+                                const modalContainer = document.getElementById('modal-container');
+                                if (modalContainer) modalContainer.innerHTML = '';
+                                const msgOverlay = document.getElementById('exam-message-overlay');
+                                if (msgOverlay) msgOverlay.remove();
+                                const blockModal = document.getElementById('exam-blocked-modal');
+                                if (blockModal) blockModal.remove();
+                                showToast('Akses ujian Anda telah dibuka kembali oleh pengawas.', 'success');
+                                renderActiveExamScreen();
                             }
 
-                            if (data.blockedStudents) {
-                                localStorage.setItem('madrasah_blocked_students', JSON.stringify(data.blockedStudents));
-                                const wasBlocked = isStudentBlocked(ex.id, st.id);
-                                appState.blockedStudents = data.blockedStudents;
-                                const isBlockedNow = isStudentBlocked(ex.id, st.id);
-                                
-                                if (isBlockedNow && !wasBlocked) {
-                                    showToast('Ujian diblokir oleh pengawas.', 'error');
-                                    renderActiveExamScreen();
-                                    return;
-                                } else if (!isBlockedNow && wasBlocked) {
-                                    const modalContainer = document.getElementById('modal-container');
-                                    if (modalContainer) modalContainer.innerHTML = '';
-                                    const msgOverlay = document.getElementById('exam-message-overlay');
-                                    if (msgOverlay) msgOverlay.remove();
-                                    const blockModal = document.getElementById('exam-blocked-modal');
-                                    if (blockModal) blockModal.remove();
-                                    showToast('Akses ujian Anda telah dibuka kembali oleh pengawas.', 'success');
-                                    renderActiveExamScreen();
+                            // Check force finish state
+                            if (data.forceFinished) {
+                                showToast('Ujian diselesaikan oleh pengawas.', 'info');
+                                submitExamFinal();
+                                return;
+                            }
+
+                            // Check broadcast and personal messages
+                            const oldMessages = JSON.parse(localStorage.getItem('madrasah_exam_messages')) || {};
+                            if (!appState.examMessages) appState.examMessages = {};
+                            
+                            if (data.messageBroadcast) {
+                                const bKey = 'broadcast_' + ex.id;
+                                if (data.messageBroadcast !== oldMessages[bKey]) {
+                                    appState.examMessages[bKey] = data.messageBroadcast;
+                                    safeSetStorage('madrasah_exam_messages', appState.examMessages);
+                                    showExamMessageModal('Pengumuman Ujian', data.messageBroadcast, ex.id, st.id, true);
                                 }
                             }
-                            if (data.examMessages) {
-                                const oldMessages = JSON.parse(localStorage.getItem('madrasah_exam_messages')) || {};
-                                localStorage.setItem('madrasah_exam_messages', JSON.stringify(data.examMessages));
-                                appState.examMessages = data.examMessages;
-                                
-                                const bMsg = data.examMessages['broadcast_' + ex.id];
-                                if (bMsg && bMsg !== oldMessages['broadcast_' + ex.id]) {
-                                    showExamMessageModal('Pengumuman Ujian', bMsg, ex.id, st.id, true);
-                                }
-                                
-                                const pMsg = data.examMessages[st.id + '_' + ex.id];
-                                if (pMsg && pMsg !== oldMessages[st.id + '_' + ex.id]) {
-                                    showExamMessageModal('Pesan dari Pengawas', pMsg, ex.id, st.id, false);
+                            if (data.messagePersonal) {
+                                const pKey = st.id + '_' + ex.id;
+                                if (data.messagePersonal !== oldMessages[pKey]) {
+                                    appState.examMessages[pKey] = data.messagePersonal;
+                                    safeSetStorage('madrasah_exam_messages', appState.examMessages);
+                                    showExamMessageModal('Pesan dari Pengawas', data.messagePersonal, ex.id, st.id, false);
                                 }
                             }
                         }
-                    }).catch(e => console.warn('Student poll failed', e));
+                    })
+                    .catch(() => {});
+
+                if (window.flushPendingOfflineAnswers) {
+                    window.flushPendingOfflineAnswers();
+                }
             }
 
             // WebRTC P2P Livecam Monitoring Signaling Poller (Zero-storage fallback when WebSocket is not active and LiveKit is not configured)
@@ -3434,7 +4209,14 @@ window.sendStudentSingleSnapshot = function() {
                 const key = st.id + '_' + activeExamSession.exam.id;
                 if (!appState.runtimeLivecamFrames) appState.runtimeLivecamFrames = {};
                 appState.runtimeLivecamFrames[key] = frameData;
-                syncExamStateToServer({ livecamFrame: { key, frame: frameData } });
+                fetch('/api/exam/livecam/snapshot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        examId: activeExamSession.exam.id,
+                        livecamFrame: frameData
+                    })
+                }).catch(() => {});
                 console.log("Attendance snapshot sent successfully");
             } catch (e) {}
         }
@@ -3592,9 +4374,15 @@ function renderActiveExamScreen() {
                     <h2 class="text-xs sm:text-sm font-bold text-slate-800">${sess.exam.title}</h2>
                     <p class="text-[11px] text-slate-500 font-medium">Soal Ke-${sess.currentIndex + 1} dari ${sess.questions.length}</p>
                 </div>
-                <div class="px-3.5 py-2 bg-rose-50 text-rose-700 rounded-2xl text-xs font-mono font-bold flex items-center space-x-2 border border-rose-200">
-                    <i class="fa-solid fa-stopwatch animate-pulse"></i>
-                    <span id="exam-timer-display">${Math.floor(sess.timeLeft / 60)}:${String(sess.timeLeft % 60).padStart(2, '0')}</span>
+                <div class="flex items-center gap-2">
+                    <div id="cbt-sync-status-badge" class="px-2.5 py-1.5 bg-emerald-50 text-emerald-700 rounded-2xl text-[10px] font-bold flex items-center space-x-1.5 border border-emerald-200">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        <span id="cbt-sync-status-text">${(window._pendingOfflineAnswers && window._pendingOfflineAnswers.length > 0) ? `Offline (${window._pendingOfflineAnswers.length})` : 'Tersinkron'}</span>
+                    </div>
+                    <div class="px-3.5 py-2 bg-rose-50 text-rose-700 rounded-2xl text-xs font-mono font-bold flex items-center space-x-2 border border-rose-200">
+                        <i class="fa-solid fa-stopwatch animate-pulse"></i>
+                        <span id="exam-timer-display">${Math.floor(sess.timeLeft / 60)}:${String(sess.timeLeft % 60).padStart(2, '0')}</span>
+                    </div>
                 </div>
             </div>
 
@@ -3632,8 +4420,15 @@ function renderActiveExamScreen() {
                     ${sess.questions.map((qItem, idx) => {
                         const isCurrent = idx === sess.currentIndex;
                         const isAnswered = Boolean(sess.answers[qItem.id] && String(sess.answers[qItem.id]).trim() !== '');
+                        const navClass = isAnswered
+                            ? (isCurrent
+                                ? 'bg-emerald-800 text-white border border-emerald-900 ring-2 ring-emerald-300 shadow'
+                                : 'bg-emerald-800 hover:bg-emerald-900 text-white border border-emerald-900 shadow-sm')
+                            : (isCurrent
+                                ? 'bg-emerald-600 text-white ring-2 ring-emerald-300 shadow'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200');
                         return `
-                            <button type="button" onclick="jumpToExamQuestion(${idx})" class="w-8 h-8 rounded-xl text-xs font-bold transition flex items-center justify-center cursor-pointer ${isCurrent ? 'bg-emerald-600 text-white ring-2 ring-emerald-300 shadow' : isAnswered ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+                            <button type="button" onclick="jumpToExamQuestion(${idx})" class="w-8 h-8 rounded-xl text-xs font-bold transition flex items-center justify-center cursor-pointer ${navClass}">
                                 ${idx + 1}
                             </button>
                         `;
@@ -3655,11 +4450,92 @@ window.jumpToExamQuestion = function(idx) {
         const key = st.id + '_' + activeExamSession.exam.id;
         if (appState.activeExamSessions && appState.activeExamSessions[key]) {
             appState.activeExamSessions[key].currentIndex = idx;
-            localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
+            safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
         }
         renderActiveExamScreen();
     }
 };
+
+// Phase 6: Persistent Offline Resiliency & Queue Auto-Resync (Poin 12)
+function getPendingOfflineQueue() {
+    try {
+        return JSON.parse(localStorage.getItem('cbt_pending_offline_answers') || '[]') || [];
+    } catch(e) { return []; }
+}
+
+function setPendingOfflineQueue(q) {
+    try {
+        if (!q || q.length === 0) {
+            localStorage.removeItem('cbt_pending_offline_answers');
+        } else {
+            localStorage.setItem('cbt_pending_offline_answers', JSON.stringify(q));
+        }
+    } catch(e) {}
+}
+
+window._pendingOfflineAnswers = getPendingOfflineQueue();
+
+window.updateCbtSyncBadge = function(status) {
+    const badge = document.getElementById('cbt-sync-status-badge');
+    const text = document.getElementById('cbt-sync-status-text');
+    if (!badge || !text) return;
+    const queueLen = (window._pendingOfflineAnswers && window._pendingOfflineAnswers.length) || 0;
+    if (status === 'syncing') {
+        badge.className = 'px-2.5 py-1.5 bg-amber-50 text-amber-700 rounded-2xl text-[10px] font-bold flex items-center space-x-1.5 border border-amber-200';
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span><span id="cbt-sync-status-text">Menyinkron (${queueLen})...</span>`;
+    } else if (status === 'offline' || queueLen > 0) {
+        badge.className = 'px-2.5 py-1.5 bg-rose-50 text-rose-700 rounded-2xl text-[10px] font-bold flex items-center space-x-1.5 border border-rose-200';
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span><span id="cbt-sync-status-text">Offline (Tersimpan Lokal ${queueLen})</span>`;
+    } else {
+        badge.className = 'px-2.5 py-1.5 bg-emerald-50 text-emerald-700 rounded-2xl text-[10px] font-bold flex items-center space-x-1.5 border border-emerald-200';
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span id="cbt-sync-status-text">Tersinkron</span>`;
+    }
+};
+
+window.flushPendingOfflineAnswers = async function() {
+    const queue = getPendingOfflineQueue();
+    if (!queue || queue.length === 0) {
+        window._pendingOfflineAnswers = [];
+        window.updateCbtSyncBadge('synced');
+        return;
+    }
+    window.updateCbtSyncBadge('syncing');
+
+    const remaining = [];
+    for (const item of queue) {
+        try {
+            const res = await fetch('/api/exam/attempt/answer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(item)
+            });
+            if (!res.ok) throw new Error('Sync failed');
+        } catch(e) {
+            remaining.push(item);
+        }
+    }
+
+    setPendingOfflineQueue(remaining);
+    window._pendingOfflineAnswers = remaining;
+    if (remaining.length === 0) {
+        window.updateCbtSyncBadge('synced');
+    } else {
+        window.updateCbtSyncBadge('offline');
+    }
+};
+
+if (!window._offlineSyncListenerAdded) {
+    window._offlineSyncListenerAdded = true;
+    window.addEventListener('online', () => {
+        window.flushPendingOfflineAnswers();
+    });
+    // Check and flush any pending queue on startup
+    setTimeout(() => {
+        if (getPendingOfflineQueue().length > 0) {
+            window.flushPendingOfflineAnswers();
+        }
+    }, 1500);
+}
 
 function saveExamAnswer(qId, val) {
     if (activeExamSession) {
@@ -3675,9 +4551,49 @@ function saveExamAnswer(qId, val) {
              appState.activeExamSessions[key].totalQuestions = activeExamSession.questions.length;
              appState.activeExamSessions[key].answers = activeExamSession.answers;
              appState.activeExamSessions[key].currentIndex = activeExamSession.currentIndex;
-             localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
-             syncExamStateToServer({ sessionKey: key, sessionData: appState.activeExamSessions[key] });
+             safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
         }
+
+        const payload = {
+            studentId: st.id,
+            examId: activeExamSession.exam.id,
+            questionId: qId,
+            answer: val,
+            currentIndex: activeExamSession.currentIndex
+        };
+
+        // Instant Micro-Payload Answer Sync (<150 bytes payload) with Persistent Offline Queue Fallback
+        window.updateCbtSyncBadge('syncing');
+        fetch('/api/exam/attempt/answer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).then(r => r.json()).then(res => {
+            if (res.success && res.remainingTime !== undefined && res.remainingTime !== null) {
+                activeExamSession.timeLeft = res.remainingTime;
+            }
+            // If answer was in persistent queue, remove it
+            const curQ = getPendingOfflineQueue().filter(i => !(i.studentId === payload.studentId && i.examId === payload.examId && i.questionId === payload.questionId));
+            setPendingOfflineQueue(curQ);
+            window._pendingOfflineAnswers = curQ;
+            if (curQ.length === 0) {
+                window.updateCbtSyncBadge('synced');
+            } else {
+                window.updateCbtSyncBadge('offline');
+            }
+        }).catch(() => {
+            // Deduplicate & save in persistent offline queue
+            const curQ = getPendingOfflineQueue();
+            const existingIdx = curQ.findIndex(i => i.studentId === payload.studentId && i.examId === payload.examId && i.questionId === payload.questionId);
+            if (existingIdx >= 0) {
+                curQ[existingIdx] = payload;
+            } else {
+                curQ.push(payload);
+            }
+            setPendingOfflineQueue(curQ);
+            window._pendingOfflineAnswers = curQ;
+            window.updateCbtSyncBadge('offline');
+        });
         
         renderActiveExamScreen();
     }
@@ -3715,55 +4631,60 @@ function submitExamFinal() {
 
     if (!appState.completedExams) appState.completedExams = {};
     appState.completedExams[st.id + '_' + ex.id] = true;
-    localStorage.setItem('madrasah_completed_exams', JSON.stringify(appState.completedExams));
+    safeSetStorage('madrasah_completed_exams', appState.completedExams);
 
     const answers = activeExamSession.answers || {};
     if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers')) || {};
     appState.studentExamAnswers[st.id + '_' + ex.id] = answers;
-    localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(appState.studentExamAnswers));
+    safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
 
-    let questions = (activeExamSession && activeExamSession.questions) ? activeExamSession.questions : getExamQuestions(ex, st.id);
+    let questions = (activeExamSession && activeExamSession.questions) ? activeExamSession.questions : (appState.studentExamQuestions ? appState.studentExamQuestions[st.id + '_' + ex.id] : []);
     if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions')) || {};
     appState.studentExamQuestions[st.id + '_' + ex.id] = questions;
-    localStorage.setItem('madrasah_student_exam_questions', JSON.stringify(appState.studentExamQuestions));
+    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
     let pgQuestions = questions.filter(q => q.type !== 'esay' && q.type !== 'essay');
     let essayQuestions = questions.filter(q => q.type === 'esay' || q.type === 'essay');
 
-    let correctPGCount = 0;
-    pgQuestions.forEach(q => {
-        const userAns = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
-        if (isCorrectAnswer(q, userAns)) correctPGCount++;
-    });
-
-    let pgScore = pgQuestions.length > 0 ? (correctPGCount / pgQuestions.length) * 100 : 100;
-    
+    // Server is the single source of truth for answer key and grading (Poin 5 & 6)
     if (!appState.studentExamGrades) appState.studentExamGrades = JSON.parse(localStorage.getItem('madrasah_student_exam_grades')) || {};
     appState.studentExamGrades[st.id + '_' + ex.id] = {
-        pgScore: Math.round(pgScore),
+        pgScore: null,
         essayScore: 0,
-        finalScore: essayQuestions.length === 0 ? Math.round(pgScore) : null,
-        isGraded: essayQuestions.length === 0,
-        correctPGCount,
+        finalScore: null,
+        isGraded: false,
+        correctPGCount: 0,
         totalPGCount: pgQuestions.length,
         essayGrades: {}
     };
-    localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades));
+    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
 
     if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
     delete appState.activeExamSessions[st.id + '_' + ex.id];
-    localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
+    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
 
-    syncExamStateToServer({
-        completed: { [st.id + '_' + ex.id]: true },
-        answers: { [st.id + '_' + ex.id]: answers },
-        sessionKey: st.id + '_' + ex.id,
-        sessionData: null,
-        gradesObj: { [st.id + '_' + ex.id]: appState.studentExamGrades[st.id + '_' + ex.id] }
+    // Phase 4: Server-Authoritative Exam Finalization & Scoring
+    fetch('/api/exam/attempt/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            studentId: st.id,
+            examId: ex.id,
+            answers: answers
+        })
+    }).then(r => r.json()).then(res => {
+        if (res.success && res.grade) {
+            appState.studentExamGrades[st.id + '_' + ex.id] = res.grade;
+            safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
+        }
+    }).catch(() => {
+        syncExamStateToServer({
+            completed: { [st.id + '_' + ex.id]: true },
+            answers: { [st.id + '_' + ex.id]: answers },
+            sessionKey: st.id + '_' + ex.id,
+            sessionData: null,
+            gradesObj: { [st.id + '_' + ex.id]: appState.studentExamGrades[st.id + '_' + ex.id] }
+        });
     });
-
-    // We also need to send grades to the server?
-    // Wait, the backend doesn't accept `grades` inside `/api/exam-monitoring-state` in server.ts!
-    // That's fine, the backend has no `studentExamGrades` sync. Let me check if `server.ts` handles grades updates.
 
     if (window.__studentWebcamStream) {
         if (window.stopCameraStreamTrack) {
@@ -4039,9 +4960,9 @@ function setStudentBlockState(examId, studentId, blockState) {
         delete appState.studentOutOfTab[k2];
         appState.studentOutOfTab[k1] = false;
         appState.studentOutOfTab[k2] = false;
-        localStorage.setItem('madrasah_student_out_of_tab', JSON.stringify(appState.studentOutOfTab));
+        safeSetStorage('madrasah_student_out_of_tab', appState.studentOutOfTab);
     }
-    localStorage.setItem('madrasah_blocked_students', JSON.stringify(appState.blockedStudents));
+    safeSetStorage('madrasah_blocked_students', appState.blockedStudents);
 }
 
 function toggleBlockStudent(examId, studentId) {
@@ -4056,7 +4977,7 @@ function toggleBlockStudent(examId, studentId) {
         if (!appState.examMessages) appState.examMessages = JSON.parse(localStorage.getItem('madrasah_exam_messages')) || {};
         delete appState.examMessages[k1];
         delete appState.examMessages[k2];
-        localStorage.setItem('madrasah_exam_messages', JSON.stringify(appState.examMessages));
+        safeSetStorage('madrasah_exam_messages', appState.examMessages);
     }
 
     syncExamStateToServer({ 
@@ -4099,7 +5020,7 @@ function sendStudentExamMessage(e, examId, studentId) {
     if (!text) return;
     if (!appState.examMessages) appState.examMessages = {};
     appState.examMessages[studentId + '_' + examId] = text;
-    localStorage.setItem('madrasah_exam_messages', JSON.stringify(appState.examMessages));
+    safeSetStorage('madrasah_exam_messages', appState.examMessages);
     syncExamStateToServer({ messages: { [studentId + '_' + examId]: text } });
     closeModal();
     showToast('Pesan berhasil dikirim ke siswa!', 'success');
@@ -4132,7 +5053,7 @@ function sendBroadcastExamMessage(e, examId) {
     if (!text) return;
     if (!appState.examMessages) appState.examMessages = {};
     appState.examMessages['broadcast_' + examId] = text;
-    localStorage.setItem('madrasah_exam_messages', JSON.stringify(appState.examMessages));
+    safeSetStorage('madrasah_exam_messages', appState.examMessages);
     syncExamStateToServer({ messages: { ['broadcast_' + examId]: text } });
     closeModal();
     showToast('Pesan broadcast berhasil dikirim ke semua siswa!', 'success');
@@ -4148,7 +5069,7 @@ function dismissStudentExamMessage(examId, studentId, isBroadcast) {
             delete appState.examMessages[examId + '_' + studentId];
         }
     }
-    localStorage.setItem('madrasah_exam_messages', JSON.stringify(appState.examMessages));
+    safeSetStorage('madrasah_exam_messages', appState.examMessages);
     syncExamStateToServer({ messages: appState.examMessages, replaceMessages: true });
     
     const overlay = document.getElementById('exam-message-overlay');
@@ -4156,14 +5077,126 @@ function dismissStudentExamMessage(examId, studentId, isBroadcast) {
     renderActiveExamScreen();
 }
 
+// Phase 5: Interactive Real-time Violation Audit Modal
+window.openViolationsLogModal = async function(examId) {
+    const modal = document.getElementById('modal-container');
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+            <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-6 space-y-4 max-h-[85vh] flex flex-col border border-slate-100">
+                <div class="flex justify-between items-center pb-3 border-b border-slate-100">
+                    <div>
+                        <h3 class="font-bold text-slate-800 text-base flex items-center gap-2">
+                            <i class="fa-solid fa-triangle-exclamation text-rose-600"></i>
+                            Log Pelanggaran Anti-Cheat Peserta
+                        </h3>
+                        <p class="text-xs text-slate-500">Catatan riwayat keluar tab, multi-window, dan tindakan pengamanan otomatis.</p>
+                    </div>
+                    <button type="button" onclick="closeModal()" class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition cursor-pointer">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                    <div class="relative flex-1">
+                        <i class="fa-solid fa-search absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                        <input type="text" id="violation-search-input" onkeyup="filterViolationsTable()" placeholder="Cari nama siswa atau alasan..." class="w-full pl-8 pr-4 py-2 bg-slate-50 border rounded-2xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-rose-500 transition"/>
+                    </div>
+                    <button type="button" onclick="openViolationsLogModal('${examId}')" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-2xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm">
+                        <i class="fa-solid fa-arrows-rotate text-[10px]"></i>
+                        <span>Refresh</span>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-y-auto space-y-2 pr-1" id="violations-log-list">
+                    <div class="text-center py-10 text-slate-400 text-xs">
+                        <i class="fa-solid fa-spinner animate-spin text-lg mb-2"></i>
+                        <p>Memuat riwayat pelanggaran...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    try {
+        const res = await fetch(`/api/exams/${encodeURIComponent(examId)}/violations`);
+        const data = await res.json();
+        const container = document.getElementById('violations-log-list');
+        if (!container) return;
+
+        window.__currentViolationsList = (data.success && Array.isArray(data.violations)) ? data.violations : [];
+        renderViolationsListUI(window.__currentViolationsList);
+    } catch(e) {
+        const container = document.getElementById('violations-log-list');
+        if (container) container.innerHTML = `<div class="text-center py-8 text-rose-500 text-xs">Gagal memuat log pelanggaran.</div>`;
+    }
+};
+
+window.renderViolationsListUI = function(list) {
+    const container = document.getElementById('violations-log-list');
+    if (!container) return;
+    if (!list || list.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-12 text-slate-400 text-xs space-y-2">
+                <i class="fa-solid fa-shield-halved text-emerald-500 text-3xl"></i>
+                <p class="font-bold text-slate-600">Belum ada pelanggaran yang terdeteksi.</p>
+                <p class="text-[11px]">Seluruh peserta ujian masih disiplin berada dalam tab ujian.</p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = list.map((v, i) => {
+        const d = new Date(v.timestamp);
+        const timeStr = d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        return `
+            <div class="violation-row-item p-3 rounded-2xl border ${v.autoBlocked ? 'bg-rose-50/80 border-rose-200' : 'bg-slate-50 hover:bg-slate-100 border-slate-200/80'} flex items-center justify-between gap-3 text-xs transition">
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-xl ${v.autoBlocked ? 'bg-rose-600 text-white' : 'bg-amber-100 text-amber-700'} flex items-center justify-center text-xs font-bold shrink-0">
+                        ${v.autoBlocked ? '<i class="fa-solid fa-lock text-[11px]"></i>' : (v.tabSwitches || i + 1)}
+                    </div>
+                    <div>
+                        <div class="font-bold text-slate-800 flex items-center gap-1.5">
+                            <span>${v.studentName || 'Peserta Ujian'}</span>
+                            ${v.className ? `<span class="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-lg text-[10px]">${v.className}</span>` : ''}
+                            ${v.autoBlocked ? `<span class="px-2 py-0.5 bg-rose-600 text-white rounded-lg text-[9px] font-bold">DIBLOKIR OTOMATIS</span>` : ''}
+                        </div>
+                        <p class="text-[11px] text-slate-500 mt-0.5">
+                            <i class="fa-solid fa-triangle-exclamation text-amber-500 mr-1"></i>
+                            ${v.reason || 'Keluar Tab / Aplikasi Ujian'} &bull; Pelanggaran ke-${v.tabSwitches || 1}
+                        </p>
+                    </div>
+                </div>
+                <div class="text-right shrink-0">
+                    <span class="px-2.5 py-1 bg-white border rounded-xl text-[10px] font-mono text-slate-600 shadow-sm">${timeStr}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+};
+
+window.filterViolationsTable = function() {
+    const query = (document.getElementById('violation-search-input')?.value || '').toLowerCase();
+    if (!window.__currentViolationsList) return;
+    const filtered = window.__currentViolationsList.filter(v => 
+        (v.studentName || '').toLowerCase().includes(query) || 
+        (v.reason || '').toLowerCase().includes(query) ||
+        (v.className || '').toLowerCase().includes(query)
+    );
+    window.renderViolationsListUI(filtered);
+};
+
 async function deductTokenForVideo() {
+    const role = String(appState.role || '').toLowerCase().trim();
+    const isTeacher = role === 'teacher' || role === 'guru';
+    const teacherId = isTeacher ? appState.currentUser?.id : null;
+
     const tokenBalance = (typeof window.getActiveMadrasahTokenBalance === 'function')
         ? window.getActiveMadrasahTokenBalance()
         : ((appState.currentUser && appState.currentUser.cbtTokenBalance) || 0);
 
     if (tokenBalance <= 0) {
         if (window.showToast) {
-            window.showToast('Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda untuk menggunakan fitur Video Live.', 'error');
+            window.showToast(isTeacher 
+                ? 'Saldo Token Ujian Guru habis (0 Token)! Harap isi ulang token Anda dengan Kode Aktivasi Token dari Bos.' 
+                : 'Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda untuk menggunakan fitur Video Live.', 'error');
         } else {
             alert('Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda.');
         }
@@ -4177,7 +5210,7 @@ async function deductTokenForVideo() {
         const deductRes = await fetch('/api/deduct-cbt-token', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ madrasahId })
+            body: JSON.stringify({ madrasahId, teacherId })
         });
         const deductData = await deductRes.json();
         if (!deductData.success) {
@@ -4189,18 +5222,30 @@ async function deductTokenForVideo() {
             return false;
         }
         const remaining = typeof deductData.remainingTokens === 'number' ? deductData.remainingTokens : (typeof deductData.cbtTokenBalance === 'number' ? deductData.cbtTokenBalance : 0);
-        if (currentMadrasah) currentMadrasah.cbtTokenBalance = remaining;
-        if (appState.madrasah) appState.madrasah.cbtTokenBalance = remaining;
-        if (appState.currentUser) appState.currentUser.cbtTokenBalance = remaining;
-        if (window.updateHeaderTokenBadge) window.updateHeaderTokenBadge();
         
-        // Find other places in appState.madrasahs and update them
-        if (appState.madrasahs) {
-            const fm = appState.madrasahs.find(m => String(m.id) === String(madrasahId));
-            if (fm) fm.cbtTokenBalance = remaining;
+        if (isTeacher) {
+            if (appState.currentUser) {
+                appState.currentUser.cbtTokenBalance = remaining;
+                if (window.safeSetLocalStorage) window.safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+            }
+            if (appState.teachers && appState.currentUser) {
+                const tchIdx = appState.teachers.findIndex(t => String(t.id) === String(appState.currentUser.id));
+                if (tchIdx >= 0) {
+                    appState.teachers[tchIdx].cbtTokenBalance = remaining;
+                }
+            }
+        } else {
+            if (currentMadrasah) currentMadrasah.cbtTokenBalance = remaining;
+            if (appState.madrasah) appState.madrasah.cbtTokenBalance = remaining;
+            if (appState.currentUser) appState.currentUser.cbtTokenBalance = remaining;
+            if (appState.madrasahs) {
+                const fm = appState.madrasahs.find(m => String(m.id) === String(madrasahId));
+                if (fm) fm.cbtTokenBalance = remaining;
+            }
         }
 
-        // Re-render other components showing token balance if necessary
+        if (window.updateHeaderTokenBadge) window.updateHeaderTokenBadge();
+
         const tokenDisplay = document.getElementById('token-balance-display-card');
         if (tokenDisplay) {
             tokenDisplay.innerHTML = `<span class="text-2xl sm:text-3xl font-black text-white">${remaining} Token</span>`;
@@ -4220,6 +5265,172 @@ async function deductTokenForVideo() {
         return false;
     }
 }
+
+
+window.promptVideoDurationAndDeductTokens = function(onSuccess) {
+    const role = String(appState.role || '').toLowerCase().trim();
+    const isTeacher = role === 'teacher' || role === 'guru';
+    const tokenBalance = (typeof window.getActiveMadrasahTokenBalance === 'function')
+        ? window.getActiveMadrasahTokenBalance()
+        : ((appState.currentUser && appState.currentUser.cbtTokenBalance) || 0);
+
+    if (tokenBalance <= 0) {
+        if (window.showToast) {
+            window.showToast('Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda untuk menggunakan fitur Video Live (1 Token = 1 Menit).', 'error');
+        } else {
+            alert('Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda.');
+        }
+        return;
+    }
+
+    const modal = document.getElementById('modal-container');
+    if (!modal) {
+        if (onSuccess) onSuccess(1);
+        return;
+    }
+    if (modal.classList.contains('hidden')) {
+        modal.classList.remove('hidden');
+    }
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-[999] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4 animate-fade-in">
+            <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-4 border border-slate-100 text-slate-800">
+                <div class="w-12 h-12 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center mx-auto text-xl shadow-inner">
+                    <i class="fa-solid fa-video"></i>
+                </div>
+                <div class="text-center space-y-1">
+                    <h3 class="font-black text-lg">Konfirmasi Mode Video Live</h3>
+                    <p class="text-xs text-slate-500">Ketentuan: <strong>1 Token = 1 Menit Video Live</strong> (Bisa Custom)</p>
+                </div>
+                <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+                    <div class="flex justify-between items-center text-xs font-bold text-slate-600 pb-1 border-b border-slate-200/80">
+                        <span>Saldo Token Anda:</span>
+                        <span class="text-amber-600 font-black bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200/80">${tokenBalance} Token</span>
+                    </div>
+
+                    <div class="space-y-1.5">
+                        <label class="block text-xs font-black text-slate-700">Durasi Video Live (Menit):</label>
+                        <div class="relative flex items-center">
+                            <input type="number" id="video-duration-minutes-input" min="1" max="${tokenBalance}" value="1" placeholder="Tulis durasi menit..." class="w-full pl-4 pr-24 py-2.5 bg-white border border-slate-300 rounded-xl font-black text-sm text-slate-800 focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-sm">
+                            <span class="absolute right-3 text-xs font-bold text-slate-500 pointer-events-none">Menit / Token</span>
+                        </div>
+                    </div>
+
+                    <div class="p-2.5 bg-amber-50/80 rounded-xl border border-amber-200/60 text-[11px] text-amber-900 flex justify-between items-center font-medium">
+                        <span>Total Pemotongan Token:</span>
+                        <strong class="text-amber-700 font-black text-xs"><span id="total-tokens-preview">1</span> Token (<span id="total-minutes-preview">1</span> Menit)</strong>
+                    </div>
+                </div>
+
+                <div class="flex space-x-3 pt-1">
+                    <button type="button" onclick="closeModal()" class="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl text-xs transition cursor-pointer">
+                        Batal
+                    </button>
+                    <button type="button" id="confirm-video-token-btn" class="flex-1 py-3 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-2xl text-xs shadow-md transition cursor-pointer flex items-center justify-center gap-1.5">
+                        <i class="fa-solid fa-check"></i> <span>Konfirmasi & Potong Token</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const inputEl = document.getElementById('video-duration-minutes-input');
+    const previewEl = document.getElementById('total-tokens-preview');
+    const minPreviewEl = document.getElementById('total-minutes-preview');
+
+    const updateUI = (val) => {
+        let num = parseInt(val) || 1;
+        if (num < 1) num = 1;
+        if (num > tokenBalance) num = tokenBalance;
+        if (inputEl) inputEl.value = num;
+        if (previewEl) previewEl.textContent = num;
+        if (minPreviewEl) minPreviewEl.textContent = num;
+
+        // Highlight active preset button
+        const presetBtns = document.querySelectorAll('.preset-token-btn');
+        presetBtns.forEach(btn => {
+            btn.className = "preset-token-btn px-2.5 py-2 bg-white text-slate-700 border border-slate-200 hover:border-amber-400 rounded-xl font-bold text-xs transition cursor-pointer";
+        });
+
+        const activePreset = document.getElementById(`preset-token-btn-${num}`);
+        if (activePreset) {
+            activePreset.className = "preset-token-btn px-2.5 py-2 bg-amber-500 text-white border border-amber-500 rounded-xl font-bold text-xs shadow-sm transition cursor-pointer";
+        } else {
+            const customBtn = document.getElementById('preset-token-btn-custom');
+            if (customBtn) customBtn.className = "preset-token-btn px-2.5 py-2 bg-amber-500 text-white border border-amber-500 rounded-xl font-bold text-xs shadow-sm transition cursor-pointer";
+        }
+    };
+
+    window._setPresetVideoToken = (preset) => {
+        if (preset === 'custom') {
+            if (inputEl) {
+                inputEl.focus();
+                inputEl.select();
+            }
+            updateUI(inputEl ? inputEl.value : 1);
+        } else {
+            updateUI(preset);
+        }
+    };
+
+    if (inputEl) {
+        inputEl.oninput = () => {
+            updateUI(inputEl.value);
+        };
+    }
+
+    // Default selection: 1 Menit (1 Token)
+    updateUI(1);
+
+    const btn = document.getElementById('confirm-video-token-btn');
+    if (btn) {
+        btn.onclick = async () => {
+            const minutes = parseInt(inputEl?.value) || 1;
+            if (minutes > tokenBalance) {
+                if (window.showToast) window.showToast('Durasi melebihi saldo token Anda!', 'error');
+                return;
+            }
+            closeModal();
+
+            let successCount = 0;
+            for (let i = 0; i < minutes; i++) {
+                const res = await deductTokenForVideo();
+                if (res) {
+                    successCount++;
+                } else {
+                    break;
+                }
+            }
+
+            if (successCount > 0) {
+                if (window.showToast) window.showToast(`${successCount} Token berhasil dipotong untuk durasi video ${successCount} menit.`, 'success');
+                if (onSuccess) onSuccess(successCount);
+
+                // Set automatic revert timer to photo mode when duration expires
+                if (window._videoModeTimer) clearTimeout(window._videoModeTimer);
+                window._videoModeTimer = setTimeout(() => {
+                    appState.livecamMode = 'gambar';
+                    appState.gameMonitoringLivecamMode = 'gambar';
+                    appState.lkpdLivecamMode = 'gambar';
+                    if (appState.livecamModes) appState.livecamModes = {};
+                    if (appState.gameMonitoringStudentModes) appState.gameMonitoringStudentModes = {};
+                    if (appState.lkpdLivecamModes) appState.lkpdLivecamModes = {};
+
+                    if (typeof renderAssessmentModule === 'function' && document.getElementById('view-container')) {
+                        const activeExam = appState.activeExamId || (appState.exams && appState.exams[0]?.id);
+                        if (activeExam) renderAssessmentModule(document.getElementById('view-container'), 'monitoring', activeExam);
+                    }
+                    if (typeof renderGameMonitoringDashboard === 'function') renderGameMonitoringDashboard();
+                    if (typeof window.renderLkpdMonitoringSection === 'function' && document.getElementById('lkpd-monitoring-container')) {
+                        window.renderLkpdMonitoringSection(document.getElementById('lkpd-monitoring-container'), appState.activeMonitoringLkpdId);
+                    }
+                    if (window.showToast) {
+                        window.showToast(`Waktu video live (${successCount} menit) telah habis. Kamera otomatis dikembalikan ke mode foto absen.`, 'info');
+                    }
+                }, successCount * 60 * 1000);
+            }
+        };
+    }
+};
 
 function showTokenDeductionConfirmModal(message, onConfirm) {
     const modal = document.getElementById('modal-container');
@@ -4263,30 +5474,15 @@ async function toggleLivecamMode(examId) {
     const targetMode = currentMode === 'gambar' ? 'video' : 'gambar';
     
     if (targetMode === 'video') {
-        // Quick balance check first to prevent showing popup when user has 0 tokens
-        const tokenBalance = (typeof window.getActiveMadrasahTokenBalance === 'function')
-            ? window.getActiveMadrasahTokenBalance()
-            : ((appState.currentUser && appState.currentUser.cbtTokenBalance) || 0);
-
-        if (tokenBalance <= 0) {
-            if (window.showToast) {
-                window.showToast('Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda untuk menggunakan fitur Video Live.', 'error');
-            } else {
-                alert('Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda.');
-            }
-            return;
+        if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
+            window.promptVideoDurationAndDeductTokens((minutes) => {
+                appState.livecamMode = 'video';
+                renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
+            });
+        } else {
+            appState.livecamMode = 'video';
+            renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
         }
-
-        showTokenDeductionConfirmModal(
-            'Mengaktifkan Video Live secara massal untuk semua siswa akan mengonsumsi <strong>1 Token Ujian</strong> dari saldo madrasah Anda. Apakah Anda yakin ingin melanjutkan?',
-            async () => {
-                const success = await deductTokenForVideo();
-                if (success) {
-                    appState.livecamMode = 'video';
-                    renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
-                }
-            }
-        );
     } else {
         appState.livecamMode = 'gambar';
         renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
@@ -4299,30 +5495,15 @@ async function toggleStudentLivecamMode(examId, studentId) {
     const targetMode = currentMode === 'gambar' ? 'video' : 'gambar';
     
     if (targetMode === 'video') {
-        // Quick balance check first to prevent showing popup when user has 0 tokens
-        const tokenBalance = (typeof window.getActiveMadrasahTokenBalance === 'function')
-            ? window.getActiveMadrasahTokenBalance()
-            : ((appState.currentUser && appState.currentUser.cbtTokenBalance) || 0);
-
-        if (tokenBalance <= 0) {
-            if (window.showToast) {
-                window.showToast('Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda untuk menggunakan fitur Video Live.', 'error');
-            } else {
-                alert('Saldo Token Ujian habis (0 Token)! Harap isi ulang token Anda.');
-            }
-            return;
+        if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
+            window.promptVideoDurationAndDeductTokens((minutes) => {
+                appState.livecamModes[studentId] = 'video';
+                renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
+            });
+        } else {
+            appState.livecamModes[studentId] = 'video';
+            renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
         }
-
-        showTokenDeductionConfirmModal(
-            'Mengaktifkan Video Live untuk siswa ini akan mengonsumsi <strong>1 Token Ujian</strong> dari saldo madrasah Anda. Apakah Anda yakin ingin melanjutkan?',
-            async () => {
-                const success = await deductTokenForVideo();
-                if (success) {
-                    appState.livecamModes[studentId] = 'video';
-                    renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
-                }
-            }
-        );
     } else {
         appState.livecamModes[studentId] = 'gambar';
         renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
@@ -4620,13 +5801,29 @@ function getKartuPesertaHtml(st, className, roomName, isPrintMode) {
                   <td style="text-align: center; font-weight: bold; vertical-align: top;">:</td>
                   <td style="font-weight: 900; font-family: monospace; font-size: 8.5pt; vertical-align: top; word-break: break-all;">${st.username}</td>
                </tr>
-               ${window.kartuPesertaConfig.showPassword !== false ? `
-               <tr>
-                  <td style="white-space: nowrap; font-weight: bold; vertical-align: top;">Password</td>
-                  <td style="text-align: center; font-weight: bold; vertical-align: top;">:</td>
-                  <td style="font-weight: 900; font-family: monospace; font-size: 8.5pt; vertical-align: top; word-break: break-all;">${st.password}</td>
-               </tr>
-               ` : ''}
+               ${(() => {
+                  if (window.kartuPesertaConfig.showPassword === false) return '';
+                  let displayPassword = st.password || '';
+                  try {
+                      const storedCreds = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
+                      if (Array.isArray(storedCreds)) {
+                          const match = storedCreds.find(c => String(c.studentId) === String(st.id));
+                          if (match && match.temporaryPassword) {
+                              displayPassword = match.temporaryPassword;
+                          }
+                      }
+                  } catch(e) {}
+                  if (displayPassword && (displayPassword.startsWith('scrypt$') || displayPassword.startsWith('sha256$'))) {
+                      displayPassword = "Sandi Terenkripsi";
+                  }
+                  return `
+                  <tr>
+                     <td style="white-space: nowrap; font-weight: bold; vertical-align: top;">Password</td>
+                     <td style="text-align: center; font-weight: bold; vertical-align: top;">:</td>
+                     <td style="font-weight: 900; font-family: monospace; font-size: 8.5pt; vertical-align: top; word-break: break-all;">${displayPassword}</td>
+                  </tr>
+                  `;
+               })()}
                <tr>
                   <td style="white-space: nowrap; font-weight: bold; vertical-align: top;">Ruang</td>
                   <td style="text-align: center; font-weight: bold; vertical-align: top;">:</td>
@@ -5342,11 +6539,11 @@ function resetStudentExam(studentId) {
             if (appState.studentLivecamFrames) delete appState.studentLivecamFrames[key];
         });
 
-        localStorage.setItem('madrasah_completed_exams', JSON.stringify(appState.completedExams || {}));
-        localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(appState.studentExamAnswers || {}));
-        localStorage.setItem('madrasah_student_exam_questions', JSON.stringify(appState.studentExamQuestions || {}));
-        localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades || {}));
-        localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions || {}));
+        safeSetStorage('madrasah_completed_exams', appState.completedExams || {});
+        safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers || {});
+        safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions || {});
+        safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades || {});
+        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions || {});
 
         fetch('/api/reset-student-exam', {
             method: 'POST',
@@ -5395,19 +6592,19 @@ async function adminForceSubmitExam(studentId, explicitExamId = null) {
         if (monData && monData.success) {
             if (monData.studentExamAnswers) {
                 appState.studentExamAnswers = { ...(appState.studentExamAnswers || {}), ...monData.studentExamAnswers };
-                localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(appState.studentExamAnswers));
+                safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
             }
             if (monData.activeExamSessions) {
                 appState.activeExamSessions = { ...(appState.activeExamSessions || {}), ...monData.activeExamSessions };
-                localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
+                safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
             }
             if (monData.studentExamGrades) {
                 appState.studentExamGrades = { ...(appState.studentExamGrades || {}), ...monData.studentExamGrades };
-                localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades));
+                safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
             }
         }
     } catch (e) {
-        console.error("Failed to fetch latest exam state before force submit:", e);
+        console.warn("Could not fetch latest exam state before force submit (network/offline):", e.message || e);
     }
 
     if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers')) || {};
@@ -5425,23 +6622,23 @@ async function adminForceSubmitExam(studentId, explicitExamId = null) {
 
     appState.studentExamAnswers[key1] = answers;
     appState.studentExamAnswers[key2] = answers;
-    localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(appState.studentExamAnswers));
+    safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
 
     if (!appState.completedExams) appState.completedExams = JSON.parse(localStorage.getItem('madrasah_completed_exams')) || {};
     appState.completedExams[key1] = 'force_finish';
     appState.completedExams[key2] = 'force_finish';
-    localStorage.setItem('madrasah_completed_exams', JSON.stringify(appState.completedExams));
+    safeSetStorage('madrasah_completed_exams', appState.completedExams);
 
     if (!appState.forceFinishedExams) appState.forceFinishedExams = JSON.parse(localStorage.getItem('madrasah_force_finished_exams')) || {};
     appState.forceFinishedExams[key1] = true;
     appState.forceFinishedExams[key2] = true;
-    localStorage.setItem('madrasah_force_finished_exams', JSON.stringify(appState.forceFinishedExams));
+    safeSetStorage('madrasah_force_finished_exams', appState.forceFinishedExams);
 
     const questions = getExamQuestions(ex, studentId);
     if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions')) || {};
     appState.studentExamQuestions[key1] = questions;
     appState.studentExamQuestions[key2] = questions;
-    localStorage.setItem('madrasah_student_exam_questions', JSON.stringify(appState.studentExamQuestions));
+    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
 
     const pgQuestions = questions.filter(q => q.type !== 'esay' && q.type !== 'essay');
     const essayQuestions = questions.filter(q => q.type === 'esay' || q.type === 'essay');
@@ -5471,12 +6668,12 @@ async function adminForceSubmitExam(studentId, explicitExamId = null) {
 
     appState.studentExamGrades[key1] = gradeObj;
     appState.studentExamGrades[key2] = gradeObj;
-    localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades));
+    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
 
     if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
     delete appState.activeExamSessions[key1];
     delete appState.activeExamSessions[key2];
-    localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions));
+    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
 
     syncExamStateToServer({
         completed: { [key1]: 'force_finish', [key2]: 'force_finish' },
@@ -5748,7 +6945,7 @@ function saveKoreksi(e, studentId) {
     appState.studentExamGrades[key1] = gradeObj;
     appState.studentExamGrades[key2] = gradeObj;
 
-    localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades));
+    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
     syncExamStateToServer({ gradesObj: { [key1]: gradeObj, [key2]: gradeObj } });
 
     closeModal();
@@ -5901,11 +7098,11 @@ async function refreshEvaluasiData(classId, examId) {
             if (monRes.studentExamAnswers) appState.studentExamAnswers = { ...(appState.studentExamAnswers || {}), ...monRes.studentExamAnswers };
             if (monRes.activeExamSessions) appState.activeExamSessions = { ...(appState.activeExamSessions || {}), ...monRes.activeExamSessions };
             if (monRes.studentQuestions) appState.studentExamQuestions = { ...(appState.studentExamQuestions || {}), ...monRes.studentQuestions };
-            localStorage.setItem('madrasah_completed_exams', JSON.stringify(appState.completedExams || {}));
-            localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades || {}));
-            localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(appState.studentExamAnswers || {}));
-            localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(appState.activeExamSessions || {}));
-            localStorage.setItem('madrasah_student_exam_questions', JSON.stringify(appState.studentExamQuestions || {}));
+            safeSetStorage('madrasah_completed_exams', appState.completedExams || {});
+            safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades || {});
+            safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers || {});
+            safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions || {});
+            safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions || {});
         }
     } catch (e) {
         console.warn('Refresh error:', e);
@@ -6101,9 +7298,9 @@ function generateNilaiEvaluasi() {
         });
 
         if (changed) {
-            localStorage.setItem('madrasah_completed_exams', JSON.stringify(appState.completedExams));
-            localStorage.setItem('madrasah_student_exam_answers', JSON.stringify(appState.studentExamAnswers));
-            localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades));
+            safeSetStorage('madrasah_completed_exams', appState.completedExams);
+            safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+            safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
             syncExamStateToServer({
                 completed: appState.completedExams,
                 answers: appState.studentExamAnswers,
@@ -6149,7 +7346,7 @@ function generateNilaiEvaluasi() {
         });
 
         if (changed) {
-            localStorage.setItem('madrasah_student_exam_grades', JSON.stringify(appState.studentExamGrades));
+            safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
             syncExamStateToServer({
                 gradesObj: appState.studentExamGrades
             });
@@ -7056,6 +8253,10 @@ window.initSignalingWebSocket = function(clientId, onSignalReceived) {
                 const data = JSON.parse(event.data);
                 if (data.type === 'signal') {
                     onSignalReceived(data.senderId, data.signal);
+                } else if (data.type === 'exam_progress' || data.type === 'student_heartbeat' || data.type === 'exam_violation' || data.type === 'exam_finish' || data.type === 'exam_started' || data.type === 'exam_presence') {
+                    if (typeof window.__onExamMonitoringEvent === 'function') {
+                        window.__onExamMonitoringEvent(data);
+                    }
                 }
             } catch (e) {
                 console.warn("WebSocket message parse error:", e);
@@ -7152,6 +8353,55 @@ async function monitorAndAdaptBandwidth(pc) {
     }
 }
 
+window.applyMonitoringSnapshot = function(item) {
+  if (!item || !item.studentId) return;
+  const stId = String(item.studentId);
+
+  const isForce = item.status === 'force_finished' || item.forceFinished === true || item.forceFinished === 'true';
+  const isCompleted = item.status === 'completed' || isForce;
+
+  // progress or finish
+  window.updateStudentMonitoringCard({
+    type: isCompleted
+      ? 'exam_finish'
+      : item.status === 'in_progress'
+        ? 'exam_started'
+        : 'monitor_snapshot',
+
+    studentId: stId,
+    answered: item.answeredCount !== undefined ? item.answeredCount : (item.answered || 0),
+    total: item.totalQuestions !== undefined ? item.totalQuestions : (item.total || 0),
+    forceFinished: isForce,
+    isCompleted: !isForce && item.status === 'completed'
+  });
+
+  // manual blocked or auto blocked state restoration
+  if (item.blocked === true || item.blocked === 'true') {
+    window.updateStudentMonitoringCard({
+      type: 'exam_violation',
+      studentId: stId,
+      tabSwitches: item.tabSwitches || 0,
+      autoBlocked: true
+    });
+  } else if ((item.tabSwitches || 0) > 0) {
+    window.updateStudentMonitoringCard({
+      type: 'exam_violation',
+      studentId: stId,
+      tabSwitches: item.tabSwitches,
+      autoBlocked: false
+    });
+  }
+
+  // current tab state
+  if (item.outOfTab !== undefined) {
+    window.updateStudentMonitoringCard({
+      type: 'exam_presence',
+      studentId: stId,
+      outOfTab: item.outOfTab === true || item.outOfTab === 'true'
+    });
+  }
+};
+
 // Manual pull & sync for monitoring state
 window.refreshMonitoringState = async function(examId, buttonEl) {
     let originalHtml = "";
@@ -7161,16 +8411,16 @@ window.refreshMonitoringState = async function(examId, buttonEl) {
         buttonEl.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i><span>Menyinkronkan...</span>`;
     }
     try {
-        const res = await fetch('/api/exam-monitoring-state');
+        const url = examId ? `/api/exams/${encodeURIComponent(examId)}/monitor` : '/api/exam-monitoring-state';
+        const res = await fetch(url);
         const data = await res.json();
         if (data.success) {
-            if (data.activeExamSessions) localStorage.setItem('madrasah_active_exam_sessions', JSON.stringify(data.activeExamSessions));
-            if (data.completedExams) localStorage.setItem('madrasah_completed_exams', JSON.stringify(data.completedExams));
-            if (data.studentTabSwitches) localStorage.setItem('madrasah_student_tab_switches', JSON.stringify(data.studentTabSwitches));
-            if (data.studentOutOfTab) localStorage.setItem('madrasah_student_out_of_tab', JSON.stringify(data.studentOutOfTab));
-            if (data.blockedStudents) localStorage.setItem('madrasah_blocked_students', JSON.stringify(data.blockedStudents));
-            if (data.studentLivecamFrames) appState.runtimeLivecamFrames = data.studentLivecamFrames;
-            
+            const students = Array.isArray(data.students) ? data.students : (Array.isArray(data) ? data : []);
+            if (students.length > 0 && typeof window.updateStudentMonitoringCard === 'function') {
+                students.forEach(item => {
+                    window.applyMonitoringSnapshot(item);
+                });
+            }
             if (typeof showToast !== 'undefined') {
                 showToast('Data monitoring berhasil disinkronkan!', 'success');
             } else if (window.showToast) {
@@ -7188,10 +8438,6 @@ window.refreshMonitoringState = async function(examId, buttonEl) {
         if (buttonEl) {
             buttonEl.disabled = false;
             buttonEl.innerHTML = originalHtml;
-        }
-        const containerEl = document.getElementById('view-container');
-        if (containerEl) {
-            renderAssessmentModule(containerEl, 'monitoring', examId);
         }
     }
 };
@@ -7216,6 +8462,16 @@ window.triggerAdminCameraPermissionBypass = function() {
 
 // Requirement 3: Spotlight HD Livecam Modal Controls
 window.focusStudentLivecam = function(studentId) {
+    if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
+        window.promptVideoDurationAndDeductTokens((minutes) => {
+            _executeFocusStudentLivecam(studentId);
+        });
+    } else {
+        _executeFocusStudentLivecam(studentId);
+    }
+};
+
+function _executeFocusStudentLivecam(studentId) {
     const student = appState.students.find(s => String(s.id) === String(studentId));
     if (!student) return;
     
@@ -7410,9 +8666,12 @@ window.closeStudentLivecamFocus = function() {
                 });
             }
         } else {
-            // Teardown P2P WebRTC focused stream to save bandwidth and resources on modal close
+            // Teardown P2P WebRTC focused stream to save bandwidth and resources on modal close (Poin 13: On-demand)
             if (window._adminPeerConnections && window._adminPeerConnections[studentId]) {
-                try { window._adminPeerConnections[studentId].close(); } catch(e){}
+                try {
+                    sendSignalingMessage(String(studentId), 'admin', { type: 'stop_stream' });
+                    window._adminPeerConnections[studentId].close();
+                } catch(e){}
                 delete window._adminPeerConnections[studentId];
                 console.log(`Successfully torn down P2P connection for student: ${studentId}`);
             }
@@ -7446,6 +8705,17 @@ window.handleSingleIncomingSignalForAdmin = async function(studentId, pc, signal
 };
 
 window.handleSingleIncomingSignalForStudent = async function(senderId, signal, studentId) {
+    // Poin 13: On-Demand Livecam - handle stop_stream when teacher closes spotlight
+    if (signal && signal.type === 'stop_stream') {
+        if (window._studentPeerConnections && window._studentPeerConnections[senderId]) {
+            try { window._studentPeerConnections[senderId].close(); } catch(e){}
+            delete window._studentPeerConnections[senderId];
+        }
+        window.stopStudentSnapshots();
+        console.log("Spotlight modal closed by teacher: Video stream stopped on-demand.");
+        return;
+    }
+
     window._studentPeerConnections = window._studentPeerConnections || {};
     window._studentPendingCandidates = window._studentPendingCandidates || {};
     let pc = window._studentPeerConnections[senderId];
@@ -8509,10 +9779,7 @@ function saveAttendanceSettingsFromUI() {
         cityDate: document.getElementById('att-city-date')?.value || ''
     };
     
-    try {
-        localStorage.setItem('madrasah_attendance_settings', JSON.stringify(config));
-    } catch(e) {}
-    
+    safeSetStorage('madrasah_attendance_settings', config);
     return config;
 }
 
@@ -8948,3 +10215,246 @@ window.handleAttendanceLogoUpload = handleAttendanceLogoUpload;
 window.saveAttendanceSettingsFromUI = saveAttendanceSettingsFromUI;
 window.printAttendanceSheet = printAttendanceSheet;
 window.downloadAttendanceDocx = downloadAttendanceDocx;
+
+// Poin 11: Event-Driven Real-Time Surgical Monitoring Card Updates
+window.updateStudentMonitoringCard = function(event) {
+    if (!event || !event.studentId) return;
+    const stId = String(event.studentId);
+    const cardEl = document.getElementById(`monitor-card-${stId}`);
+    if (!cardEl) return;
+
+    if (event.type === 'exam_started') {
+        const answered = Number(event.answered || 0);
+        const total = Number(event.total || 0);
+        const pct = total > 0 ? Math.min(100, Math.round((answered / total) * 100)) : 0;
+        const progressContainer = document.getElementById(`monitor-progress-${stId}`);
+        if (progressContainer) {
+            progressContainer.innerHTML = `
+                <div class="w-full">
+                    <div class="w-full bg-slate-950/80 border border-white/10 h-1.5 rounded-full overflow-hidden">
+                        <div class="bg-emerald-400 h-full transition-all duration-300" style="width: ${pct}%"></div>
+                    </div>
+                    <div class="text-[9px] text-slate-300 mt-1 flex justify-between font-mono">
+                        <span>${pct}%</span>
+                        <span>Terjawab: ${answered}/${total}</span>
+                    </div>
+                </div>
+            `;
+        }
+        const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+        if (statusBadge) {
+            statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-500 text-slate-900 font-bold animate-pulse border border-emerald-300';
+            statusBadge.innerHTML = '<i class="fa-solid fa-circle-dot"></i>';
+            statusBadge.title = 'Aktif Mengerjakan';
+        }
+        const hbDot = document.getElementById(`monitor-hb-${stId}`);
+        if (hbDot) {
+            hbDot.classList.remove('opacity-30');
+            hbDot.classList.add('opacity-100');
+        }
+    } else if (event.type === 'exam_progress') {
+        const answered = Number(event.answered || 0);
+        const total = Number(event.total || 1);
+        const pct = Math.min(100, Math.round((answered / total) * 100));
+
+        const progressContainer = document.getElementById(`monitor-progress-${stId}`);
+        if (progressContainer) {
+            progressContainer.innerHTML = `
+                <div class="w-full">
+                    <div class="w-full bg-slate-950/80 border border-white/10 h-1.5 rounded-full overflow-hidden">
+                        <div class="bg-emerald-400 h-full transition-all duration-300" style="width: ${pct}%"></div>
+                    </div>
+                    <div class="text-[9px] text-slate-300 mt-1 flex justify-between font-mono">
+                        <span>${pct}%</span>
+                        <span>Terjawab: ${answered}/${total}</span>
+                    </div>
+                </div>
+            `;
+        }
+        const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+        if (statusBadge) {
+            statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-500 text-slate-900 font-bold animate-pulse border border-emerald-300';
+            statusBadge.innerHTML = '<i class="fa-solid fa-circle-dot"></i>';
+            statusBadge.title = 'Aktif Mengerjakan';
+        }
+    } else if (event.type === 'monitor_snapshot') {
+        const answered = Number(event.answered || 0);
+        const total = Number(event.total || 0);
+        const pct = total > 0 ? Math.min(100, Math.round((answered / total) * 100)) : 0;
+
+        const progressContainer = document.getElementById(`monitor-progress-${stId}`);
+        if (progressContainer) {
+            progressContainer.innerHTML = `
+                <div class="w-full">
+                    <div class="w-full bg-slate-950/80 border border-white/10 h-1.5 rounded-full overflow-hidden">
+                        <div class="bg-emerald-400 h-full transition-all duration-300" style="width: ${pct}%"></div>
+                    </div>
+                    <div class="text-[9px] text-slate-300 mt-1 flex justify-between font-mono">
+                        <span>${pct}%</span>
+                        <span>Terjawab: ${answered}/${total}</span>
+                    </div>
+                </div>
+            `;
+        }
+        const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+        if (statusBadge) {
+            statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-slate-800 text-slate-400 border border-slate-700';
+            statusBadge.innerHTML = '<i class="fa-solid fa-hourglass-start"></i>';
+            statusBadge.title = 'Belum Mulai';
+        }
+    } else if (event.type === 'student_heartbeat') {
+        const hbDot = document.getElementById(`monitor-hb-${stId}`);
+        if (hbDot) {
+            hbDot.classList.remove('opacity-30');
+            hbDot.classList.add('opacity-100', 'scale-125');
+            setTimeout(() => {
+                if (hbDot) hbDot.classList.remove('scale-125');
+            }, 300);
+        }
+        const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+        if (statusBadge) {
+            const isFinished = statusBadge.classList.contains('bg-emerald-800') || statusBadge.innerHTML.includes('fa-check') || statusBadge.innerHTML.includes('fa-flag-checkered');
+            const isBlocked = statusBadge.classList.contains('bg-rose-600') || statusBadge.innerHTML.includes('fa-ban') || cardEl.classList.contains('border-rose-500');
+            if (!isFinished && !isBlocked) {
+                statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-500 text-slate-900 font-bold animate-pulse border border-emerald-300';
+                statusBadge.innerHTML = '<i class="fa-solid fa-circle-dot"></i>';
+                statusBadge.title = 'Aktif Mengerjakan';
+            }
+        }
+    } else if (event.type === 'exam_presence') {
+        if (event.outOfTab === false) {
+            if (!cardEl.classList.contains('border-rose-500')) {
+                cardEl.classList.remove('border-amber-500', 'ring-2', 'ring-amber-500/30');
+                cardEl.classList.add('border-slate-800');
+            }
+            const tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+            if (tabBadge) {
+                tabBadge.className = 'w-7 h-7 rounded-full bg-slate-950/80 text-amber-300 flex items-center justify-center text-xs shadow backdrop-blur-md border border-amber-500/40';
+            }
+        } else if (event.outOfTab === true) {
+            if (!cardEl.classList.contains('border-rose-500')) {
+                cardEl.classList.remove('border-slate-800');
+                cardEl.classList.add('border-amber-500', 'ring-2', 'ring-amber-500/30');
+            }
+            const cornerBadges = document.getElementById(`monitor-corner-${stId}`);
+            if (cornerBadges) {
+                let tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+                if (!tabBadge) {
+                    tabBadge = document.createElement('span');
+                    tabBadge.id = `monitor-tab-badge-${stId}`;
+                    cornerBadges.insertBefore(tabBadge, cornerBadges.firstChild);
+                }
+                tabBadge.className = 'w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs shadow-lg animate-pulse backdrop-blur-md border border-rose-400';
+                tabBadge.title = 'Keluar Tab';
+                tabBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+            }
+        }
+    } else if (event.type === 'exam_violation') {
+        const tabSwitches = Number(event.tabSwitches || 1);
+        const cornerBadges = document.getElementById(`monitor-corner-${stId}`);
+        if (cornerBadges) {
+            let tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+            if (!tabBadge) {
+                tabBadge = document.createElement('span');
+                tabBadge.id = `monitor-tab-badge-${stId}`;
+                cornerBadges.insertBefore(tabBadge, cornerBadges.firstChild);
+            }
+            tabBadge.className = 'w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs shadow-lg animate-pulse backdrop-blur-md border border-rose-400';
+            tabBadge.title = `Keluar Tab (${tabSwitches}x)`;
+            tabBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+        }
+        if (event.autoBlocked) {
+            cardEl.classList.remove('border-slate-800', 'border-amber-500', 'ring-amber-500/30');
+            cardEl.classList.add('border-rose-500', 'ring-2', 'ring-rose-500/30');
+            const filler = document.getElementById(`monitor-blocked-filler-${stId}`);
+            if (filler) {
+                filler.innerHTML = '<span class="px-2.5 py-1 bg-rose-600 text-white text-[10px] font-bold rounded-full shadow-lg border border-rose-400">Diblokir</span>';
+            }
+            const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+            if (statusBadge) {
+                statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-rose-600 text-white border border-rose-400';
+                statusBadge.innerHTML = '<i class="fa-solid fa-ban"></i>';
+                statusBadge.title = 'Diblokir';
+            }
+        }
+    } else if (event.type === 'exam_finish') {
+        const isForce = event.forceFinished === true || event.forceFinished === 'true';
+        const progressContainer = document.getElementById(`monitor-progress-${stId}`);
+        if (progressContainer) {
+            progressContainer.innerHTML = `
+                <div class="w-full">
+                    <div class="w-full bg-slate-950/80 border border-white/10 h-1.5 rounded-full overflow-hidden">
+                        <div class="${isForce ? 'bg-amber-500' : 'bg-emerald-500'} h-full w-full"></div>
+                    </div>
+                    <div class="text-[9px] ${isForce ? 'text-amber-400' : 'text-emerald-400'} mt-1 text-center font-bold">${isForce ? 'Force Finish' : '100% Selesai'}</div>
+                </div>
+            `;
+        }
+        const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+        if (statusBadge) {
+            statusBadge.className = isForce
+                ? 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-amber-800 text-amber-200'
+                : 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-emerald-800 text-emerald-200';
+            statusBadge.innerHTML = isForce ? '<i class="fa-solid fa-flag-checkered"></i>' : '<i class="fa-solid fa-check"></i>';
+            statusBadge.title = isForce ? 'Force Finish' : 'Selesai';
+        }
+        const actions = document.getElementById(`monitor-actions-${stId}`);
+        if (actions) {
+            const ffBtn = actions.querySelector('button[title*="Force Finish"]');
+            if (ffBtn) ffBtn.remove();
+        }
+    }
+
+    // Restore and enforce blocked / tab switches / out of tab states dynamically
+    if (event.type !== 'exam_finish') {
+        if (event.autoBlocked || event.blocked) {
+            cardEl.classList.remove('border-slate-800', 'border-amber-500', 'ring-amber-500/30');
+            cardEl.classList.add('border-rose-500', 'ring-2', 'ring-rose-500/30');
+            const filler = document.getElementById(`monitor-blocked-filler-${stId}`);
+            if (filler) {
+                filler.innerHTML = '<span class="px-2.5 py-1 bg-rose-600 text-white text-[10px] font-bold rounded-full shadow-lg border border-rose-400">Diblokir</span>';
+            }
+            const statusBadge = document.getElementById(`monitor-status-icon-${stId}`);
+            if (statusBadge) {
+                statusBadge.className = 'monitor-status-badge w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md bg-rose-600 text-white border border-rose-400';
+                statusBadge.innerHTML = '<i class="fa-solid fa-ban"></i>';
+                statusBadge.title = 'Diblokir';
+            }
+        } else {
+            const tabSwitches = Number(event.tabSwitches || 0);
+            const isOutOfTab = event.outOfTab === true || event.outOfTab === 'true';
+            if (isOutOfTab) {
+                if (!cardEl.classList.contains('border-rose-500')) {
+                    cardEl.classList.remove('border-slate-800');
+                    cardEl.classList.add('border-amber-500', 'ring-2', 'ring-amber-500/30');
+                }
+                const cornerBadges = document.getElementById(`monitor-corner-${stId}`);
+                if (cornerBadges) {
+                    let tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+                    if (!tabBadge) {
+                        tabBadge = document.createElement('span');
+                        tabBadge.id = `monitor-tab-badge-${stId}`;
+                        cornerBadges.insertBefore(tabBadge, cornerBadges.firstChild);
+                    }
+                    tabBadge.className = 'w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs shadow-lg animate-pulse backdrop-blur-md border border-rose-400';
+                    tabBadge.title = `Keluar Tab (${tabSwitches}x)`;
+                    tabBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+                }
+            } else if (tabSwitches > 0) {
+                const cornerBadges = document.getElementById(`monitor-corner-${stId}`);
+                if (cornerBadges) {
+                    let tabBadge = document.getElementById(`monitor-tab-badge-${stId}`);
+                    if (!tabBadge) {
+                        tabBadge = document.createElement('span');
+                        tabBadge.id = `monitor-tab-badge-${stId}`;
+                        cornerBadges.insertBefore(tabBadge, cornerBadges.firstChild);
+                    }
+                    tabBadge.className = 'w-7 h-7 rounded-full bg-slate-950/80 text-amber-300 flex items-center justify-center text-xs shadow backdrop-blur-md border border-amber-500/40';
+                    tabBadge.title = `Total Keluar Tab: ${tabSwitches}x`;
+                    tabBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+                }
+            }
+        }
+    }
+};
+

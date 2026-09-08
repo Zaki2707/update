@@ -236,6 +236,29 @@ export const SAMPLE_SEED_GAME_MODES = [
     }
 ];
 
+export function getActiveStudentId() {
+    const currUser = appState.currentUser || {};
+    return String(currUser.id || currUser.nisn || currUser.username || currUser.nis || 'default_student');
+}
+
+export function getStudentProgressForMode(modeId) {
+    if (!appState.studentGameProgress) {
+        try {
+            appState.studentGameProgress = JSON.parse(localStorage.getItem('madrasah_student_game_progress')) || {};
+        } catch(e) {
+            appState.studentGameProgress = {};
+        }
+    }
+    const studentId = getActiveStudentId();
+    if (!appState.studentGameProgress[studentId]) {
+        appState.studentGameProgress[studentId] = {};
+    }
+    if (!appState.studentGameProgress[studentId][modeId]) {
+        appState.studentGameProgress[studentId][modeId] = { completedLocations: [], completedFloors: [], completedCatalogGames: [] };
+    }
+    return appState.studentGameProgress[studentId][modeId];
+}
+
 export function getGameModes() {
     if (!Array.isArray(appState.gameModes) || appState.gameModes.length === 0) {
         appState.gameModes = [...SAMPLE_SEED_GAME_MODES];
@@ -269,8 +292,37 @@ let activeGameTimer = null;
 // ============================================================================
 // ADMIN & GURU VIEW: RENDER GAME MANAGEMENT
 // ============================================================================
+window.toggleGameVisibilityForStudent = async function(isActive) {
+    if (!appState.settings) appState.settings = {};
+    appState.settings.isGameMenuVisibleForStudent = isActive;
+    
+    try {
+        if (typeof window.saveSettingsToServer === 'function') {
+            await window.saveSettingsToServer();
+        } else {
+            await fetch('/api/sync-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: 'settings', data: appState.settings })
+            });
+        }
+        showToast(`Menu Game Edukasi kini ${isActive ? 'Aktif' : 'Nonaktif'} di akun siswa.`, isActive ? 'success' : 'info');
+    } catch (e) {
+        console.warn("Gagal simpan status visibilitas game:", e);
+    }
+};
+
 export function renderGameAdminModule(container) {
     if (!container) return;
+
+    const activeSubTab = window.__adminGameSubTab || 'kelola';
+
+    if (!appState.gameMonitoringClassId) appState.gameMonitoringClassId = 'all';
+    if (!appState.gameMonitoringGameId) appState.gameMonitoringGameId = 'all';
+    if (!appState.gameMonitoringStatus) appState.gameMonitoringStatus = 'all';
+    if (!appState.gameMonitoringSearch) appState.gameMonitoringSearch = '';
+    if (!appState.gameMonitoringLivecamMode) appState.gameMonitoringLivecamMode = 'gambar';
+    if (!appState.gameMonitoringStudentModes) appState.gameMonitoringStudentModes = {};
 
     const games = Array.isArray(appState.eduGames) && appState.eduGames.length > 0 ? appState.eduGames : SAMPLE_SEED_GAMES;
     if (!Array.isArray(appState.eduGames) || appState.eduGames.length === 0) {
@@ -296,8 +348,94 @@ export function renderGameAdminModule(container) {
     const totalAttempts = attempts.length;
     const isGameModuleEnabled = appState.settings?.gameModuleEnabled !== false;
 
+    if (activeSubTab === 'monitoring') {
+        container.innerHTML = `
+            <div class="space-y-6 pb-12 animate-fade-in">
+                <!-- Sub-tab Navigation Header -->
+                <div class="flex items-center gap-2 border-b border-slate-200 pb-3 overflow-x-auto">
+                    <button type="button" onclick="window.__adminGameSubTab = 'kelola'; renderGameAdminModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-black transition flex items-center gap-2 cursor-pointer bg-white text-slate-600 hover:bg-slate-100 border border-slate-200 shadow-sm">
+                        <i class="fa-solid fa-gamepad text-sm"></i>
+                        <span>Kelola Game & Mode</span>
+                    </button>
+                    <button type="button" onclick="window.__adminGameSubTab = 'monitoring'; renderGameAdminModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-black transition flex items-center gap-2 cursor-pointer bg-purple-600 text-white shadow-md">
+                        <i class="fa-solid fa-desktop text-sm"></i>
+                        <span>Dashboard Monitoring Game</span>
+                        <span class="px-2 py-0.5 bg-emerald-500 text-white font-extrabold text-[9px] rounded-full animate-pulse ml-1">LIVE</span>
+                    </button>
+                </div>
+
+                <!-- Dedicated Monitoring Banner -->
+                <div class="bg-slate-950 border border-slate-800 text-white rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-12 h-12 bg-gradient-to-tr from-indigo-600 to-violet-500 rounded-2xl flex items-center justify-center text-white text-2xl font-black shadow-lg shadow-indigo-600/30">
+                            <i class="fa-solid fa-gamepad"></i>
+                        </div>
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <h2 class="font-extrabold text-lg sm:text-xl text-white">Dashboard Live Monitoring Game Edukasi</h2>
+                                <span class="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-full text-[10px] font-black uppercase tracking-wider animate-pulse">
+                                    LIVE AKTIF
+                                </span>
+                            </div>
+                            <p class="text-xs text-slate-400">Pantau login aplikasi, aktivitas permainan, perolehan XP, dan foto/kamera live peserta secara terpisah.</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <button type="button" onclick="openBroadcastGameMessageModal()" class="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-extrabold shadow transition cursor-pointer flex items-center gap-2">
+                            <i class="fa-solid fa-bullhorn"></i>
+                            <span>Kirim Siaran (Broadcast)</span>
+                        </button>
+                        <button type="button" onclick="toggleGameMonitoringLivecamMode()" class="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-extrabold border border-slate-700 shadow transition cursor-pointer flex items-center gap-2">
+                            <i class="fa-solid ${appState.gameMonitoringLivecamMode === 'video' ? 'fa-video text-amber-400' : 'fa-image text-indigo-400'}"></i>
+                            <span>Mode: ${appState.gameMonitoringLivecamMode === 'video' ? 'Video Live' : 'Foto Absen'}</span>
+                        </button>
+                        <button type="button" onclick="refreshGameMonitoringData()" class="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-sm transition cursor-pointer border border-slate-700" title="Refresh Data">
+                            <i class="fa-solid fa-arrows-rotate"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Main Monitoring Body -->
+                <div class="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 space-y-5" id="game-monitoring-content">
+                    <div class="p-8 text-center text-slate-400 font-bold">
+                        <i class="fa-solid fa-circle-notch fa-spin text-2xl mb-2 text-indigo-400 block"></i>
+                        Menyiapkan dashboard monitoring game...
+                    </div>
+                </div>
+            </div>
+        `;
+
+        renderGameMonitoringDashboard();
+
+        // Start auto polling interval
+        if (gameMonitoringPollTimer) clearInterval(gameMonitoringPollTimer);
+        gameMonitoringPollTimer = setInterval(() => {
+            refreshGameMonitoringData(false);
+        }, 2500);
+        return;
+    }
+
+    if (gameMonitoringPollTimer) {
+        clearInterval(gameMonitoringPollTimer);
+        gameMonitoringPollTimer = null;
+    }
+
     container.innerHTML = `
         <div class="space-y-6 pb-12 animate-fade-in">
+            <!-- Sub-tab Navigation Header -->
+            <div class="flex items-center gap-2 border-b border-slate-200 pb-3 overflow-x-auto">
+                <button type="button" onclick="window.__adminGameSubTab = 'kelola'; renderGameAdminModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-black transition flex items-center gap-2 cursor-pointer bg-slate-900 text-white shadow-md">
+                    <i class="fa-solid fa-gamepad text-sm"></i>
+                    <span>Kelola Game & Mode</span>
+                </button>
+                <button type="button" onclick="window.__adminGameSubTab = 'monitoring'; renderGameAdminModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-black transition flex items-center gap-2 cursor-pointer bg-white text-slate-600 hover:bg-slate-100 border border-slate-200 shadow-sm">
+                    <i class="fa-solid fa-desktop text-sm"></i>
+                    <span>Dashboard Monitoring Game</span>
+                    <span class="px-2 py-0.5 bg-emerald-500 text-white font-extrabold text-[9px] rounded-full animate-pulse ml-1">LIVE</span>
+                </button>
+            </div>
+
             <!-- Header Banner -->
             <div class="bg-gradient-to-r from-emerald-800 via-emerald-700 to-teal-800 rounded-3xl p-6 sm:p-8 text-white shadow-xl relative overflow-hidden">
                 <div class="absolute -right-10 -bottom-10 w-60 h-60 bg-emerald-500/20 rounded-full blur-3xl pointer-events-none"></div>
@@ -327,9 +465,6 @@ export function renderGameAdminModule(container) {
                     
                     <!-- Action Buttons -->
                     <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0 w-full sm:w-auto">
-                        <button type="button" onclick="openGameMonitoringDashboardModal()" class="px-5 py-3 bg-purple-600 hover:bg-purple-700 active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-lg shadow-purple-600/20 transition flex items-center justify-center gap-2 cursor-pointer" title="Buka Dashboard Live Monitoring Game Siswa">
-                            <i class="fa-solid fa-desktop text-sm"></i> <span>Dashboard Monitoring Game</span>
-                        </button>
                         <button type="button" onclick="openCreateGameModal()" class="px-5 py-3 bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 font-extrabold text-xs rounded-2xl shadow-lg shadow-amber-500/20 transition flex items-center justify-center gap-2 cursor-pointer">
                             <i class="fa-solid fa-plus text-sm"></i> <span>Buat Game Baru</span>
                         </button>
@@ -388,14 +523,17 @@ export function renderGameAdminModule(container) {
                             <i class="fa-solid fa-map-location-dot"></i> Mode Pembelajaran Berurutan
                         </span>
                         <h2 class="text-xl sm:text-2xl font-black text-slate-100">Pilihan Mode Game (Adventure Roadmap & Quest Tower)</h2>
-                        <p class="text-xs text-slate-300">
-                            Pilih dan kelola alur permainan petualangan roadmap atau quest menara bertingkat untuk dimainkan oleh siswa.
-                        </p>
+                        <div class="flex items-center mt-1">
+                            <p class="text-xs text-slate-300">
+                                Pilih dan kelola alur permainan petualangan roadmap atau quest menara bertingkat untuk dimainkan oleh siswa.
+                            </p>
+                            <label class="flex items-center gap-2 cursor-pointer ml-4 bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl border border-white/10 transition group">
+                                <input type="checkbox" onchange="window.toggleGameVisibilityForStudent(this.checked)" ${(appState.settings.isGameMenuVisibleForStudent !== false) ? 'checked' : ''} class="w-4 h-4 accent-emerald-500 cursor-pointer">
+                                <span class="text-[10px] font-black uppercase tracking-wider text-slate-100 group-hover:text-emerald-400">Aktif di Siswa</span>
+                            </label>
+                        </div>
                     </div>
                     <div class="flex items-center gap-2.5 flex-wrap shrink-0">
-                        <button type="button" onclick="openGameMonitoringDashboardModal()" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl shadow transition flex items-center gap-2 cursor-pointer">
-                            <i class="fa-solid fa-desktop text-amber-300"></i> <span>Dashboard Monitoring Game</span>
-                        </button>
                         <button type="button" onclick="openCreateGameModeModal()" class="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl shadow transition flex items-center gap-2 cursor-pointer">
                             <i class="fa-solid fa-plus"></i> <span>Tambah Mode Baru</span>
                         </button>
@@ -452,7 +590,7 @@ export function renderGameAdminModule(container) {
                                     <button type="button" onclick="previewGameMode('${m.id}')" class="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-xl text-xs shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer" title="Pratinjau Mode Siswa">
                                         <i class="fa-solid fa-eye"></i> <span>Pratinjau</span>
                                     </button>
-                                    <button type="button" onclick="openCreateGameModeModal(getGameModes().find(x=>x.id==='${m.id}'))" class="p-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl transition cursor-pointer" title="Edit Metadata Mode">
+                                    <button type="button" onclick="openCreateGameModeModal('${m.id}')" class="p-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl transition cursor-pointer" title="Edit Metadata Mode">
                                         <i class="fa-solid fa-pen-to-square text-xs"></i>
                                     </button>
                                     <button type="button" onclick="deleteGameModeEntry('${m.id}')" class="p-2.5 bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800/50 rounded-xl transition cursor-pointer" title="Hapus Mode">
@@ -564,6 +702,10 @@ window.renderGameAdminModule = renderGameAdminModule;
 // GAME MODE MANAGEMENT MODALS (ADVENTURE & TOWER)
 // ============================================================================
 window.openCreateGameModeModal = function(existingMode = null) {
+    if (typeof existingMode === 'string') {
+        const modes = getGameModes();
+        existingMode = modes.find(m => m.id === existingMode) || null;
+    }
     const isEdit = !!existingMode;
     const mode = existingMode || {
         id: 'MODE_' + Date.now(),
@@ -578,9 +720,9 @@ window.openCreateGameModeModal = function(existingMode = null) {
     };
 
     const modalHtml = `
-        <div id="game-mode-modal-bg" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
-            <div class="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-lg w-full overflow-hidden my-8">
-                <div class="bg-gradient-to-r from-indigo-800 to-purple-900 p-6 text-white flex items-center justify-between">
+        <div id="game-mode-modal-bg" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-start justify-center p-4 overflow-y-auto animate-fade-in">
+            <div class="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-lg w-full overflow-hidden my-4 sm:my-8 flex flex-col max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-4rem)]">
+                <div class="bg-gradient-to-r from-indigo-800 to-purple-900 p-6 text-white flex items-center justify-between shrink-0">
                     <div class="flex items-center space-x-3">
                         <div class="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-xl shadow-md">
                             <i class="fa-solid fa-map-location-dot"></i>
@@ -1083,8 +1225,8 @@ export function renderTreasureMapComponent(mode, options = {}) {
 
                 <!-- THE DASHED TREASURE TRAIL PATH -->
                 ${pathD ? `
-                    <path d="${pathD}" fill="none" stroke="${trailShadow}" stroke-width="7" stroke-dasharray="12 10" stroke-linecap="round" opacity="0.4" transform="translate(1, 2)" />
-                    <path d="${pathD}" fill="none" stroke="${trailStroke}" stroke-width="5" stroke-dasharray="12 10" stroke-linecap="round" />
+                    <path class="adventure-trail-path" d="${pathD}" fill="none" stroke="${trailShadow}" stroke-width="7" stroke-dasharray="12 10" stroke-linecap="round" opacity="0.4" transform="translate(1, 2)" />
+                    <path class="adventure-trail-path" d="${pathD}" fill="none" stroke="${trailStroke}" stroke-width="5" stroke-dasharray="12 10" stroke-linecap="round" />
                 ` : ''}
 
                 <!-- "X" Marks the Spot on Final Destination -->
@@ -1106,24 +1248,32 @@ export function renderTreasureMapComponent(mode, options = {}) {
                     const isDone = completedLocations.includes(loc.id);
                     const isUnlocked = isFirst || completedLocations.includes(mappedLocs[idx - 1]?.id);
 
+                    const isCustomImage = loc.icon && (loc.icon.startsWith('http') || loc.icon.startsWith('data:'));
+                    const iconHtml = isCustomImage 
+                        ? `<img src="${loc.icon}" class="w-8 h-8 rounded-lg object-cover pointer-events-none" referrerPolicy="no-referrer" />` 
+                        : `<i class="fa-solid ${loc.icon || (isLast ? 'fa-vault' : 'fa-compass')} ${isEditable ? '' : 'animate-bounce'} pointer-events-none"></i>`;
+
                     if (isEditable) {
-                        // ADMIN / EDITOR MODE PIN: Clickable to edit location & assign game
+                        // ADMIN / EDITOR MODE PIN: Draggable and Clickable to edit
                         return `
-                            <div style="left: ${loc.x}%; top: ${loc.y}%; transform: translate(-50%, -50%);" class="absolute group">
-                                <button type="button" onclick="openAddLocationModal('${mode.id}', ${idx})" class="relative flex flex-col items-center justify-center p-1 cursor-pointer transition transform hover:scale-115 active:scale-95">
+                            <div style="left: ${loc.x}%; top: ${loc.y}%; transform: translate(-50%, -50%);" 
+                                 onmousedown="window.startDraggingMapPin(event, '${mode.id}', ${idx})" 
+                                 ontouchstart="window.startDraggingMapPin(event, '${mode.id}', ${idx})" 
+                                 class="adventure-map-pin absolute group cursor-move select-none z-40">
+                                <div class="relative flex flex-col items-center justify-center p-1 transition transform hover:scale-115">
                                     <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-600 via-amber-500 to-yellow-600 text-white font-black shadow-2xl border-2 border-white flex items-center justify-center text-xl hover:ring-4 hover:ring-amber-400/50">
-                                        <i class="fa-solid ${loc.icon || 'fa-location-dot'}"></i>
+                                        ${iconHtml}
                                     </div>
                                     <span class="absolute -top-2 -right-2 w-6 h-6 bg-slate-950 text-amber-300 font-black text-[10px] rounded-full border border-amber-400 flex items-center justify-center shadow-lg">
                                         #${idx + 1}
                                     </span>
-                                </button>
+                                </div>
 
                                 <!-- Tooltip / Badge Info Card -->
                                 <div class="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 whitespace-nowrap bg-slate-950/95 text-white p-2.5 rounded-xl text-[11px] shadow-2xl border border-amber-500/40 pointer-events-none transition z-40 text-center">
                                     <strong class="text-amber-400 block font-extrabold">${loc.name || `Lokasi #${idx + 1}`}</strong>
                                     <span class="text-slate-300 text-[10px] block">Game: ${assignedGame.title}</span>
-                                    <span class="text-[9px] text-emerald-400 font-bold block mt-0.5">✏️ Klik untuk Ganti Game / Ubah Posisi</span>
+                                    <span class="text-[9px] text-emerald-400 font-bold block mt-0.5">🖱️ Tahan untuk Seret / Klik untuk Atur Game</span>
                                 </div>
                             </div>
                         `;
@@ -1148,7 +1298,7 @@ export function renderTreasureMapComponent(mode, options = {}) {
                                     <div class="relative">
                                         <div class="absolute -inset-2 bg-amber-400/50 rounded-full blur-sm animate-ping"></div>
                                         <button type="button" onclick="launchInteractiveGameModal('${assignedGame.id}', ${isPreview}, { modeId: '${mode.id}', locationId: '${loc.id}' })" class="relative w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-600 text-slate-950 font-black shadow-2xl border-3 border-white flex items-center justify-center text-2xl cursor-pointer hover:scale-115 active:scale-95 transition">
-                                            <i class="fa-solid ${loc.icon || (isLast ? 'fa-vault' : 'fa-compass')} animate-bounce"></i>
+                                            ${iconHtml}
                                         </button>
                                         <span class="absolute -top-2.5 -right-2.5 px-2 py-0.5 bg-rose-600 text-white font-black text-[10px] rounded-full border border-white shadow animate-pulse">
                                             ${isLast ? 'Peti Harta' : 'Buka!'}
@@ -1178,6 +1328,102 @@ export function renderTreasureMapComponent(mode, options = {}) {
     `;
 }
 
+// DRAG AND DROP HANDLER FOR ADVENTURE MAP PINS
+window.startDraggingMapPin = function(event, modeId, locIndex) {
+    if (event.type === 'mousedown' && event.button !== 0) return;
+    
+    event.preventDefault();
+    event.stopPropagation();
+
+    const isTouch = event.type.startsWith('touch');
+    const startX = isTouch ? event.touches[0].clientX : event.clientX;
+    const startY = isTouch ? event.touches[0].clientY : event.clientY;
+    
+    const pinEl = event.currentTarget;
+    const mapWrapper = pinEl.closest('.relative.w-full');
+    if (!mapWrapper) return;
+    
+    let hasMoved = false;
+    let finalX = parseFloat(pinEl.style.left) || 50;
+    let finalY = parseFloat(pinEl.style.top) || 50;
+    
+    const moveEvent = isTouch ? 'touchmove' : 'mousemove';
+    const endEvent = isTouch ? 'touchend' : 'mouseup';
+    
+    const onMove = function(e) {
+        const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+        const clientY = isTouch ? e.touches[0].clientY : e.clientY;
+        
+        if (Math.abs(clientX - startX) > 6 || Math.abs(clientY - startY) > 6) {
+            hasMoved = true;
+        }
+        
+        const rect = mapWrapper.getBoundingClientRect();
+        let xPercent = ((clientX - rect.left) / rect.width) * 100;
+        let yPercent = ((clientY - rect.top) / rect.height) * 100;
+        
+        xPercent = Math.max(3, Math.min(97, xPercent));
+        yPercent = Math.max(3, Math.min(97, yPercent));
+        
+        pinEl.style.left = `${xPercent}%`;
+        pinEl.style.top = `${yPercent}%`;
+        
+        finalX = xPercent;
+        finalY = yPercent;
+
+        // Live update adventure trail path d attribute
+        const allPins = mapWrapper.querySelectorAll('.adventure-map-pin');
+        let pts = [];
+        allPins.forEach(p => {
+            const lPx = parseFloat(p.style.left) / 100 * rect.width;
+            const tPx = parseFloat(p.style.top) / 100 * rect.height;
+            pts.push({
+                x: (lPx / rect.width) * 1000,
+                y: (tPx / rect.height) * 650
+            });
+        });
+        if (pts.length > 1) {
+            let newPathD = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+            for (let i = 1; i < pts.length; i++) {
+                const prev = pts[i - 1];
+                const curr = pts[i];
+                const dx = curr.x - prev.x;
+                const dy = curr.y - prev.y;
+                const cx1 = prev.x + dx * 0.3 - dy * 0.25;
+                const cy1 = prev.y + dy * 0.3 + dx * 0.25;
+                const cx2 = curr.x - dx * 0.3 - dy * 0.25;
+                const cy2 = curr.y - dy * 0.3 + dx * 0.25;
+                newPathD += ` C ${cx1.toFixed(1)} ${cy1.toFixed(1)}, ${cx2.toFixed(1)} ${cy2.toFixed(1)}, ${curr.x.toFixed(1)} ${curr.y.toFixed(1)}`;
+            }
+            const paths = mapWrapper.querySelectorAll('.adventure-trail-path');
+            paths.forEach(pathEl => pathEl.setAttribute('d', newPathD));
+        }
+    };
+    
+    const onEnd = async function(e) {
+        document.removeEventListener(moveEvent, onMove);
+        document.removeEventListener(endEvent, onEnd);
+        
+        if (!hasMoved) {
+            openAddLocationModal(modeId, locIndex);
+            return;
+        }
+        
+        const modes = getGameModes();
+        const mode = modes.find(m => m.id === modeId);
+        if (mode && mode.locations && mode.locations[locIndex]) {
+            mode.locations[locIndex].x = parseFloat(finalX.toFixed(1));
+            mode.locations[locIndex].y = parseFloat(finalY.toFixed(1));
+            await saveGameModesToBackend();
+            showToast(`Posisi "${mode.locations[locIndex].name}" berhasil dipindahkan ke (${mode.locations[locIndex].x}%, ${mode.locations[locIndex].y}%)`, "success");
+            renderGameAdminModule(document.getElementById('view-container'));
+        }
+    };
+    
+    document.addEventListener(moveEvent, onMove, { passive: false });
+    document.addEventListener(endEvent, onEnd);
+};
+
 // ============================================================================
 // PREVIEW GAME MODE MODAL (ADVENTURE & TOWER FOR TEACHERS)
 // ============================================================================
@@ -1190,10 +1436,10 @@ window.previewGameMode = function(modeId) {
     const isAdventure = mode.modeType === 'adventure';
 
     const modalHtml = `
-        <div id="mode-preview-modal-bg" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fade-in">
-            <div class="bg-slate-900 border-2 ${isAdventure ? 'border-amber-500/50' : 'border-indigo-500/50'} rounded-3xl shadow-2xl max-w-4xl w-full overflow-hidden my-4 text-white relative">
+        <div id="mode-preview-modal-bg" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-start justify-center p-3 sm:p-6 overflow-y-auto animate-fade-in">
+            <div class="bg-slate-900 border-2 ${isAdventure ? 'border-amber-500/50' : 'border-indigo-500/50'} rounded-3xl shadow-2xl max-w-4xl w-full overflow-hidden my-4 sm:my-8 flex flex-col max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-4rem)]">
                 <!-- Header Banner -->
-                <div class="bg-gradient-to-r ${isAdventure ? 'from-amber-900 via-yellow-900 to-amber-950' : 'from-indigo-950 via-slate-900 to-purple-950'} p-5 flex items-center justify-between border-b border-slate-800">
+                <div class="bg-gradient-to-r ${isAdventure ? 'from-amber-900 via-yellow-900 to-amber-950' : 'from-indigo-950 via-slate-900 to-purple-950'} p-5 flex items-center justify-between border-b border-slate-800 shrink-0">
                     <div class="flex items-center space-x-3">
                         <div class="w-11 h-11 ${isAdventure ? 'bg-amber-500 text-slate-950' : 'bg-indigo-600 text-white'} rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg">
                             ${isAdventure ? '🗺️' : '🏰'}
@@ -1240,10 +1486,10 @@ window.openManageAdventureRoadmapModal = function(modeId) {
     const currentTheme = mode.theme || (mode.customMapImage ? 'custom' : 'pirate');
 
     const modalHtml = `
-        <div id="manage-roadmap-modal-bg" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-fade-in">
-            <div class="bg-amber-50 border-2 border-amber-300 rounded-3xl shadow-2xl max-w-4xl w-full overflow-hidden my-6 relative">
+        <div id="manage-roadmap-modal-bg" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-start justify-center p-3 sm:p-5 overflow-y-auto animate-fade-in">
+            <div class="bg-amber-50 border-2 border-amber-300 rounded-3xl shadow-2xl max-w-4xl w-full overflow-hidden my-4 sm:my-8 flex flex-col max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-4rem)] relative">
                 <!-- Header Banner -->
-                <div class="bg-gradient-to-r from-amber-900 via-amber-800 to-yellow-900 p-5 sm:p-6 text-amber-100 flex items-center justify-between shadow-md relative overflow-hidden">
+                <div class="bg-gradient-to-r from-amber-900 via-amber-800 to-yellow-900 p-5 sm:p-6 text-amber-100 flex items-center justify-between shadow-md relative overflow-hidden shrink-0">
                     <div class="absolute right-2 -bottom-6 text-7xl opacity-15 pointer-events-none">🏴‍☠️</div>
                     <div class="flex items-center space-x-3 relative z-10">
                         <div class="w-12 h-12 bg-amber-500 text-slate-950 rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg">
@@ -1507,7 +1753,7 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
     const loc = isEdit ? mode.locations[locIndex] : {
         id: 'loc_' + Date.now(),
         name: `Lokasi #${mode.locations.length + 1}`,
-        gameId: appState.eduGames[0]?.id || '',
+        gameId: '',
         icon: 'fa-island-tropical',
         desc: '',
         x: defCoord.x,
@@ -1517,83 +1763,163 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
     const posX = typeof loc.x === 'number' ? loc.x : defCoord.x;
     const posY = typeof loc.y === 'number' ? loc.y : defCoord.y;
 
-    const games = Array.isArray(appState.eduGames) && appState.eduGames.length > 0 ? appState.eduGames : SAMPLE_SEED_GAMES;
+    // Load or initialize direct game content
+    if (!Array.isArray(appState.eduGames)) {
+        appState.eduGames = [];
+    }
+    const actualGameId = loc.gameId || 'GAME_LOC_' + loc.id;
+    let game = appState.eduGames.find(g => g.id === actualGameId);
+    if (!game) {
+        game = {
+            id: actualGameId,
+            title: `Game ${loc.name}`,
+            gameType: 'tebak_kata',
+            subjectId: mode.subjectId || 'Semua Subject',
+            classId: mode.classId || 'Semua Kelas',
+            difficulty: 'Mudah',
+            timeLimit: 120,
+            rewardXp: 100,
+            status: 'active',
+            prompt: 'Selesaikan tantangan berikut dengan cermat!',
+            answerKey: 'KOMPUTER',
+            hints: ['Perangkat komputasi utama'],
+            wordsToFind: ['MONITOR', 'MOUSE', 'MODEM'],
+            pairs: [
+                { term: 'RAM', match: 'Memori Sementara' }
+            ],
+            crosswordData: {
+                gridSize: { rows: 8, cols: 8 },
+                clues: [
+                    { number: 1, direction: 'across', row: 1, col: 1, clue: 'Pertanyaan mendatar', answer: 'JAWAB' }
+                ]
+            }
+        };
+    }
+
+    // Keep deep copy in temp editing state
+    window._tempEditingGame = JSON.parse(JSON.stringify(game));
+    window._customIconBase64 = loc.icon && (loc.icon.startsWith('data:') || loc.icon.startsWith('http')) ? loc.icon : '';
+
+    const isCustomIcon = !!window._customIconBase64;
+    const presetIconOptions = [
+        { val: 'fa-island-tropical', label: '🏝️ Pulau Utama' },
+        { val: 'fa-tree', label: '🌴 Hutan Rimba' },
+        { val: 'fa-mountain', label: '🏔️ Gurun Pasir' },
+        { val: 'fa-vault', label: '🏴‍☠️ Peti Harta Karun' },
+        { val: 'fa-chess-castle', label: '🏰 Kastil Tua' },
+        { val: 'fa-skull', label: '☠️ Gua Rahasia' },
+        { val: 'fa-anchor', label: '⚓ Pelabuhan Kapal' },
+        { val: 'fa-gem', label: '💎 Permata Ajaib' }
+    ];
+
+    const iconOptionsHtml = presetIconOptions.map(opt => `
+        <option value="${opt.val}" ${loc.icon === opt.val ? 'selected' : ''}>${opt.label}</option>
+    `).join('');
 
     const modalHtml = `
-        <div id="add-loc-modal-bg" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-60 flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
-            <div class="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-md w-full overflow-hidden my-8">
-                <div class="bg-amber-700 p-5 text-white flex items-center justify-between">
-                    <h4 class="font-black text-base">${isEdit ? 'Edit Titik Lokasi Peta Harta' : 'Tambah Titik Lokasi Baru'}</h4>
-                    <button type="button" onclick="document.getElementById('add-loc-modal-bg').remove()" class="text-white hover:text-amber-200 transition cursor-pointer">
+        <div id="add-loc-modal-bg" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-60 flex items-center justify-center p-3 overflow-y-auto animate-fade-in">
+            <div class="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-4xl w-full overflow-hidden my-4 flex flex-col max-h-[92vh]">
+                <!-- Modal Header -->
+                <div class="bg-amber-700 p-5 text-white flex items-center justify-between shrink-0">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 bg-amber-600/80 rounded-xl flex items-center justify-center text-white text-lg">
+                            <i class="fa-solid fa-map-location-dot"></i>
+                        </div>
+                        <div>
+                            <h4 class="font-black text-sm">${isEdit ? 'Ubah Titik Lokasi & Buat Game Langsung' : 'Tambah Titik Lokasi & Buat Game Langsung'}</h4>
+                            <p class="text-[10px] text-amber-100 font-semibold">Konfigurasikan lokasi peta di panel kiri dan buat gamenya langsung di panel kanan.</p>
+                        </div>
+                    </div>
+                    <button type="button" onclick="document.getElementById('add-loc-modal-bg').remove()" class="text-white hover:text-amber-200 transition cursor-pointer p-1">
                         <i class="fa-solid fa-xmark text-lg"></i>
                     </button>
                 </div>
 
-                <form onsubmit="handleSaveLocationForm(event, '${mode.id}', ${locIndex})" class="p-6 space-y-4 text-xs font-medium text-slate-700">
-                    <div>
-                        <label class="block font-bold text-slate-800 mb-1">Nama Lokasi <span class="text-rose-500">*</span></label>
-                        <input type="text" id="loc-name" value="${loc.name}" required placeholder="Contoh: Hutan Kosakata TIK" class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 font-bold">
-                    </div>
-
-                    <div>
-                        <label class="block font-bold text-slate-800 mb-1">Pilih Game Edukasi Terhubung <span class="text-rose-500">*</span></label>
-                        <select id="loc-game" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 font-bold">
-                            ${games.map(g => `
-                                <option value="${g.id}" ${loc.gameId === g.id ? 'selected' : ''}>[${g.gameType}] ${g.title}</option>
-                            `).join('')}
-                        </select>
-                    </div>
-
-                    <div class="grid grid-cols-2 gap-3">
-                        <div>
-                            <label class="block font-bold text-slate-800 mb-1">Ikon Lokasi</label>
-                            <select id="loc-icon" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white">
-                                <option value="fa-island-tropical" ${loc.icon === 'fa-island-tropical' ? 'selected' : ''}>🏝️ Pulau Utama</option>
-                                <option value="fa-tree" ${loc.icon === 'fa-tree' ? 'selected' : ''}>🌴 Hutan Rimba</option>
-                                <option value="fa-mountain" ${loc.icon === 'fa-mountain' ? 'selected' : ''}>🏔️ Gurun Pasir</option>
-                                <option value="fa-vault" ${loc.icon === 'fa-vault' ? 'selected' : ''}>🏴‍☠️ Peti Harta Karun</option>
-                                <option value="fa-chess-castle" ${loc.icon === 'fa-chess-castle' ? 'selected' : ''}>🏰 Kastil Tua</option>
-                                <option value="fa-skull" ${loc.icon === 'fa-skull' ? 'selected' : ''}>☠️ Gua Rahasia</option>
-                                <option value="fa-anchor" ${loc.icon === 'fa-anchor' ? 'selected' : ''}>⚓ Pelabuhan Kapal</option>
-                                <option value="fa-gem" ${loc.icon === 'fa-gem' ? 'selected' : ''}>💎 Permata Ajaib</option>
-                            </select>
+                <!-- Dual Column Form -->
+                <form onsubmit="window.handleSaveLocationForm(event, '${mode.id}', ${locIndex})" class="p-6 overflow-y-auto flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 text-xs font-medium text-slate-700">
+                    
+                    <!-- Left Panel: Location Settings -->
+                    <div class="space-y-4 border-r border-slate-100 pr-0 md:pr-6">
+                        <div class="bg-amber-50 p-3 rounded-2xl border border-amber-100 flex items-center gap-2 text-amber-950 mb-2">
+                            <i class="fa-solid fa-circle-info text-amber-600 text-lg"></i>
+                            <div>
+                                <h5 class="font-extrabold text-[12px]">Pengaturan Titik Peta</h5>
+                                <p class="text-[10px] text-amber-800">Tentukan nama, deskripsi petunjuk, serta ikon penanda untuk titik lokasi harta ini.</p>
+                            </div>
                         </div>
+
                         <div>
-                            <label class="block font-bold text-slate-800 mb-1">Posisi di Peta (Preset)</label>
-                            <select onchange="applyLocationCoordPreset(this.value)" class="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white text-[11px]">
-                                <option value="">Pilih Posisi Peta...</option>
-                                <option value="18,78">Pantai Kiri Bawah</option>
-                                <option value="34,48">Rimba Tengah</option>
-                                <option value="74,30">Bukit Kanan Atas</option>
-                                <option value="50,62">Pusat Harta Karun</option>
-                                <option value="22,26">Puncak Barat Laut</option>
-                                <option value="78,72">Laguna Tenggara</option>
-                            </select>
+                            <label class="block font-bold text-slate-800 mb-1">Nama Titik Lokasi <span class="text-rose-500">*</span></label>
+                            <input type="text" id="loc-name" value="${loc.name}" required placeholder="Contoh: Hutan Kosakata TIK" oninput="if(document.getElementById('game-title')){document.getElementById('game-title').value = 'Game ' + this.value}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 font-bold">
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                                <label class="block font-bold text-slate-800 mb-1">Ikon Titik Lokasi</label>
+                                <select id="loc-icon" onchange="window.handleLocIconChange(this.value)" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white text-xs">
+                                    ${iconOptionsHtml}
+                                    <option value="custom" ${isCustomIcon ? 'selected' : ''}>🖼️ Upload Gambar Custom...</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center gap-2 pt-5">
+                                <div id="custom-icon-preview-container" class="${isCustomIcon ? '' : 'hidden'} shrink-0">
+                                    ${isCustomIcon ? `<img src="${window._customIconBase64}" class="w-10 h-10 rounded-xl border border-amber-300 object-cover shadow-sm" />` : ''}
+                                </div>
+                                <div id="custom-icon-upload-div" class="${isCustomIcon ? '' : 'hidden'} flex-1">
+                                    <input type="file" id="custom-icon-file" accept="image/*" onchange="window.uploadCustomIconImage(this)" class="w-full text-[10px] text-slate-500 file:mr-2 file:py-1 file:px-2.5 file:rounded-xl file:border-0 file:text-[10px] file:font-bold file:bg-amber-100 file:text-amber-700 hover:file:bg-amber-200 cursor-pointer" />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block font-bold text-slate-800 mb-1">Posisi di Peta (Preset)</label>
+                                <select onchange="window.applyLocationCoordPreset(this.value)" class="w-full px-2 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white text-[11px]">
+                                    <option value="">Pilih Posisi Preset...</option>
+                                    <option value="18,78">Pantai Kiri Bawah</option>
+                                    <option value="34,48">Rimba Tengah</option>
+                                    <option value="74,30">Bukit Kanan Atas</option>
+                                    <option value="50,62">Pusat Harta Karun</option>
+                                    <option value="22,26">Puncak Barat Laut</option>
+                                    <option value="78,72">Laguna Tenggara</option>
+                                </select>
+                            </div>
+                            <div class="p-1 bg-slate-50 border border-slate-100 rounded-2xl text-[10px] text-slate-500 flex flex-col justify-center text-center">
+                                <span class="font-bold text-amber-700">💡 Tips Seret-Drop</span>
+                                <span>Kamu juga bisa menyeret langsung titik lokasi ini di peta tanpa menyetel manual koordinat!</span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-3 bg-amber-50/70 p-3 rounded-xl border border-amber-200/50">
+                            <div>
+                                <label class="block font-bold text-amber-950 mb-1">Posisi X (% Kiri): <span id="val-loc-x" class="font-extrabold text-amber-700">${posX}%</span></label>
+                                <input type="range" id="loc-x" min="3" max="97" value="${posX}" oninput="document.getElementById('val-loc-x').innerText = this.value + '%'" class="w-full accent-amber-600">
+                            </div>
+                            <div>
+                                <label class="block font-bold text-amber-950 mb-1">Posisi Y (% Atas): <span id="val-loc-y" class="font-extrabold text-amber-700">${posY}%</span></label>
+                                <input type="range" id="loc-y" min="3" max="97" value="${posY}" oninput="document.getElementById('val-loc-y').innerText = this.value + '%'" class="w-full accent-amber-600">
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block font-bold text-slate-800 mb-1">Deskripsi / Petunjuk Penjelajah</label>
+                            <textarea id="loc-desc" rows="2" placeholder="Petunjuk khusus atau pesan rintangan bagi siswa ketika mengklik lokasi ini..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white">${loc.desc || ''}</textarea>
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-2 gap-3 bg-amber-50/70 p-3 rounded-xl border border-amber-200">
-                        <div>
-                            <label class="block font-bold text-amber-950 mb-1">Posisi X (% Kiri): <span id="val-loc-x" class="font-extrabold text-amber-700">${posX}%</span></label>
-                            <input type="range" id="loc-x" min="10" max="90" value="${posX}" oninput="document.getElementById('val-loc-x').innerText = this.value + '%'" class="w-full accent-amber-600">
-                        </div>
-                        <div>
-                            <label class="block font-bold text-amber-950 mb-1">Posisi Y (% Atas): <span id="val-loc-y" class="font-extrabold text-amber-700">${posY}%</span></label>
-                            <input type="range" id="loc-y" min="12" max="88" value="${posY}" oninput="document.getElementById('val-loc-y').innerText = this.value + '%'" class="w-full accent-amber-600">
-                        </div>
+                    <!-- Right Panel: Direct Game Creator / Editor (Langkah ke-2) -->
+                    <div id="loc-game-editor-container" class="space-y-4">
+                        <!-- Rendered Reactively via renderLocGameFields -->
                     </div>
 
-                    <div>
-                        <label class="block font-bold text-slate-800 mb-1">Deskripsi / Petunjuk Lokasi</label>
-                        <textarea id="loc-desc" rows="2" placeholder="Petunjuk tantangan di lokasi ini..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl">${loc.desc || ''}</textarea>
-                    </div>
-
-                    <div class="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
-                        <button type="button" onclick="document.getElementById('add-loc-modal-bg').remove()" class="px-4 py-2 bg-slate-100 text-slate-700 font-bold rounded-xl cursor-pointer">
+                    <!-- Footer Options -->
+                    <div class="col-span-1 md:col-span-2 pt-4 border-t border-slate-100 flex items-center justify-end gap-3 shrink-0">
+                        <button type="button" onclick="document.getElementById('add-loc-modal-bg').remove()" class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl cursor-pointer text-xs">
                             Batal
                         </button>
-                        <button type="submit" class="px-5 py-2 bg-amber-700 hover:bg-amber-800 text-white font-extrabold rounded-xl shadow cursor-pointer">
-                            Simpan Titik Lokasi
+                        <button type="submit" class="px-6 py-2.5 bg-amber-700 hover:bg-amber-800 text-white font-extrabold rounded-xl shadow-md transition cursor-pointer text-xs flex items-center gap-1.5">
+                            <i class="fa-solid fa-floppy-disk"></i>
+                            <span>Simpan Titik & Konten Game</span>
                         </button>
                     </div>
                 </form>
@@ -1604,6 +1930,128 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
     const oldModal = document.getElementById('add-loc-modal-bg');
     if (oldModal) oldModal.remove();
     document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    // Initial render of Game Fields
+    window.renderLocGameFields();
+};
+
+window.handleLocIconChange = function(val) {
+    const uploadDiv = document.getElementById('custom-icon-upload-div');
+    const previewDiv = document.getElementById('custom-icon-preview-container');
+    if (val === 'custom') {
+        if (uploadDiv) uploadDiv.classList.remove('hidden');
+        if (previewDiv) previewDiv.classList.remove('hidden');
+    } else {
+        if (uploadDiv) uploadDiv.classList.add('hidden');
+        if (previewDiv) previewDiv.classList.add('hidden');
+        window._customIconBase64 = '';
+        if (previewDiv) previewDiv.innerHTML = '';
+    }
+};
+
+window.uploadCustomIconImage = function(input) {
+    if (input.files && input.files[0]) {
+        const file = input.files[0];
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const base64 = e.target.result;
+            window._customIconBase64 = base64;
+            const previewDiv = document.getElementById('custom-icon-preview-container');
+            if (previewDiv) {
+                previewDiv.innerHTML = `<img src="${base64}" class="w-10 h-10 rounded-xl border border-amber-300 object-cover shadow-sm animate-pulse" />`;
+            }
+        };
+        reader.readAsDataURL(file);
+    }
+};
+
+window.renderLocGameFields = function() {
+    const game = window._tempEditingGame;
+    const container = document.getElementById('loc-game-editor-container');
+    if (!container || !game) return;
+
+    const gameTypesHtml = GAME_TYPES.map(t => `
+        <option value="${t.id}" ${game.gameType === t.id ? 'selected' : ''}>${t.name}</option>
+    `).join('');
+
+    container.innerHTML = `
+        <div class="space-y-4 text-slate-700">
+            <div class="bg-emerald-50 p-3.5 rounded-2xl border border-emerald-100/60 flex items-center gap-2.5 text-emerald-950">
+                <div class="w-9 h-9 rounded-xl bg-emerald-600/10 text-emerald-700 flex items-center justify-center text-base shrink-0 font-bold">
+                    <i class="fa-solid fa-gamepad"></i>
+                </div>
+                <div>
+                    <h5 class="font-extrabold text-[12px]">Konfigurasi Game Langsung (Instan)</h5>
+                    <p class="text-[10px] text-emerald-800 leading-normal">Buat & atur konten pertanyaan game langsung pada titik ini, tanpa terikat katalog eksternal.</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Judul Game <span class="text-rose-500">*</span></label>
+                    <input type="text" id="game-title" value="${game.title || ''}" required placeholder="Contoh: Game Tebak Hardware" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:bg-white text-xs">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Jenis Game <span class="text-rose-500">*</span></label>
+                    <select id="game-type" onchange="window.handleLocGameTypeChange(this.value)" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-semibold text-emerald-800 focus:bg-white text-xs">
+                        ${gameTypesHtml}
+                    </select>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-2">
+                <div>
+                    <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Kesulitan</label>
+                    <select id="game-difficulty" class="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] focus:bg-white">
+                        <option value="Mudah" ${game.difficulty === 'Mudah' ? 'selected' : ''}>Mudah</option>
+                        <option value="Sedang" ${game.difficulty === 'Sedang' ? 'selected' : ''}>Sedang</option>
+                        <option value="Sulit" ${game.difficulty === 'Sulit' ? 'selected' : ''}>Sulit</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Waktu (Detik)</label>
+                    <input type="number" id="game-timelimit" value="${game.timeLimit || 120}" min="10" class="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-center font-bold">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Reward XP</label>
+                    <input type="number" id="game-xp" value="${game.rewardXp || 100}" min="10" class="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-center font-black text-amber-700">
+                </div>
+            </div>
+
+            <div>
+                <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Instruksi / Soal Utama Game <span class="text-rose-500">*</span></label>
+                <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:bg-white text-xs">${game.prompt || ''}</textarea>
+            </div>
+
+            <!-- Dynamic Question Content Area -->
+            <div id="loc-specialized-editor-body" class="max-h-[35vh] overflow-y-auto pr-1 space-y-4">
+                ${renderSpecializedGameEditor(game)}
+            </div>
+        </div>
+    `;
+};
+
+window.handleLocGameTypeChange = function(newType) {
+    if (!window._tempEditingGame) return;
+    window._tempEditingGame.gameType = newType;
+    
+    const typeInfo = GAME_TYPES.find(t => t.id === newType) || { name: 'Game' };
+    window._tempEditingGame.prompt = `Selesaikan tantangan ${typeInfo.name} berikut dengan cermat!`;
+    
+    if (newType === 'word_search') {
+        window._tempEditingGame.wordsToFind = ['MONITOR', 'MOUSE', 'MODEM'];
+    } else if (newType === 'memory_match' || newType === 'labirin') {
+        window._tempEditingGame.pairs = [{ term: 'A', match: 'B' }];
+    } else if (newType === 'crossword') {
+        window._tempEditingGame.crosswordData = {
+            gridSize: { rows: 8, cols: 8 },
+            clues: [
+                { number: 1, direction: 'across', row: 1, col: 1, clue: 'Pertanyaan mendatar', answer: 'JAWAB' }
+            ]
+        };
+    }
+    
+    window.renderLocGameFields();
 };
 
 window.applyLocationCoordPreset = function(val) {
@@ -1630,16 +2078,155 @@ window.handleSaveLocationForm = async function(e, modeId, locIndex) {
     if (!mode) return;
 
     const name = (document.getElementById('loc-name')?.value || '').trim();
-    const gameId = document.getElementById('loc-game')?.value;
-    const icon = document.getElementById('loc-icon')?.value || 'fa-island-tropical';
     const desc = (document.getElementById('loc-desc')?.value || '').trim();
     const x = parseInt(document.getElementById('loc-x')?.value || '50', 10);
     const y = parseInt(document.getElementById('loc-y')?.value || '50', 10);
 
+    let icon = document.getElementById('loc-icon')?.value || 'fa-island-tropical';
+    if (icon === 'custom' && window._customIconBase64) {
+        icon = window._customIconBase64;
+    }
+
+    // Save direct game
+    const game = window._tempEditingGame;
+    if (game) {
+        game.title = (document.getElementById('game-title')?.value || '').trim() || `Game ${name}`;
+        game.difficulty = document.getElementById('game-difficulty')?.value || 'Mudah';
+        game.timeLimit = parseInt(document.getElementById('game-timelimit')?.value, 10) || 120;
+        game.rewardXp = parseInt(document.getElementById('game-xp')?.value, 10) || 100;
+        
+        const promptEl = document.getElementById('edit-content-prompt');
+        if (promptEl) game.prompt = promptEl.value.trim();
+
+        // Read specific type fields
+        const type = game.gameType;
+        if (type === 'tebak_gambar') {
+            const h1 = document.getElementById('edit-tg-hint-1')?.value.trim();
+            const h2 = document.getElementById('edit-tg-hint-2')?.value.trim();
+            const h3 = document.getElementById('edit-tg-hint-3')?.value.trim();
+            const h4 = document.getElementById('edit-tg-hint-4')?.value.trim();
+            game.hints = [
+                h1 || 'Clue 1: Perhatikan bentuk awal gambar',
+                h2 || 'Clue 2: Perhatikan fungsi utama objek ini',
+                h3 || 'Clue 3: Perhatikan warna dan karakteristiknya',
+                h4 || 'Clue 4: Nama objek ini sangat populer'
+            ];
+            
+            const imgEl = document.getElementById('edit-content-image');
+            if (imgEl) game.imageUrl = imgEl.value.trim();
+            const answerEl = document.getElementById('edit-content-answer');
+            if (answerEl) game.answerKey = answerEl.value.trim().toUpperCase();
+        } else if (type === 'tebak_kata' || type === 'susun_kata') {
+            const answerEl = document.getElementById('edit-content-answer');
+            if (answerEl) game.answerKey = answerEl.value.trim().toUpperCase();
+            const imgEl = document.getElementById('edit-content-image');
+            if (imgEl) game.imageUrl = imgEl.value.trim();
+            const hintEl = document.getElementById('edit-content-hint');
+            if (hintEl && hintEl.value.trim()) game.hints = [hintEl.value.trim()];
+        } else if (type === 'true_false') {
+            const tfEl = document.getElementById('edit-content-tf-correct');
+            if (tfEl) game.correctAnswer = tfEl.value;
+            const expEl = document.getElementById('edit-content-explanation');
+            if (expEl) game.explanation = expEl.value.trim();
+            const imgEl = document.getElementById('edit-content-image');
+            if (imgEl) game.imageUrl = imgEl.value.trim();
+        } else if (type === 'word_search') {
+            const wordTagsContainer = document.getElementById('word-search-tags');
+            if (wordTagsContainer) {
+                const wordSpans = wordTagsContainer.querySelectorAll('span');
+                if (wordSpans.length > 0) {
+                    game.wordsToFind = [];
+                    wordSpans.forEach(span => {
+                        let text = span.innerText || span.textContent || '';
+                        text = text.replace(/×/g, '').trim().toUpperCase();
+                        if (text) game.wordsToFind.push(text);
+                    });
+                }
+            }
+        } else if (type === 'labirin') {
+            const labirinOptInputs = document.querySelectorAll('.labirin-opt-text');
+            if (labirinOptInputs.length > 0) {
+                const options = [];
+                let correctKey = '';
+                labirinOptInputs.forEach((optInput) => {
+                    const val = optInput.value.trim();
+                    if (val) {
+                        options.push(val);
+                        const parent = optInput.closest('div');
+                        const radio = parent ? parent.querySelector('.labirin-opt-radio') : null;
+                        if (radio && radio.checked) {
+                            correctKey = val;
+                        }
+                    }
+                });
+                if (options.length > 0) {
+                    game.options = options;
+                    if (correctKey) game.answerKey = correctKey;
+                    else if (!game.answerKey) game.answerKey = options[0];
+                }
+            }
+        } else if (type === 'memory_match') {
+            const pairTermInputs = document.querySelectorAll('.pair-term-input');
+            const pairMatchInputs = document.querySelectorAll('.pair-match-input');
+            if (pairTermInputs.length > 0) {
+                game.pairs = [];
+                pairTermInputs.forEach((tInput, idx) => {
+                    const term = tInput.value.trim();
+                    const match = pairMatchInputs[idx] ? pairMatchInputs[idx].value.trim() : '';
+                    if (term && match) game.pairs.push({ term, match });
+                });
+            }
+        } else if (type === 'crossword') {
+            const cwRows = document.querySelectorAll('.cw-clue-row');
+            if (cwRows.length > 0) {
+                const clues = [];
+                cwRows.forEach((row, idx) => {
+                    const num = parseInt(row.querySelector('.cw-no')?.value, 10) || (idx + 1);
+                    const dir = row.querySelector('.cw-dir')?.value || 'across';
+                    const r = parseInt(row.querySelector('.cw-row')?.value, 10) || 1;
+                    const c = parseInt(row.querySelector('.cw-col')?.value, 10) || 1;
+                    const clue = row.querySelector('.cw-clue')?.value.trim() || '';
+                    const answer = row.querySelector('.cw-answer')?.value.trim().toUpperCase() || '';
+                    const points = parseInt(row.querySelector('.cw-points')?.value, 10) || 20;
+                    const initialHint = row.querySelector('.cw-hint-check')?.checked !== false;
+
+                    if (clue && answer) {
+                        clues.push({ number: num, direction: dir, row: r, col: c, clue, answer, points, initialHint });
+                    }
+                });
+                if (clues.length > 0) {
+                    game.crosswordData = { gridSize: { rows: 8, cols: 8 }, clues };
+                }
+            }
+        }
+
+        // Add or update to appState.eduGames
+        if (!Array.isArray(appState.eduGames)) {
+            appState.eduGames = [];
+        }
+        const existingIdx = appState.eduGames.findIndex(g => g.id === game.id);
+        if (existingIdx !== -1) {
+            appState.eduGames[existingIdx] = game;
+        } else {
+            appState.eduGames.push(game);
+        }
+
+        // Try putting to server
+        try {
+            await fetch(`/api/games/${game.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(game)
+            });
+        } catch (err) {
+            console.error("Local save only for direct game");
+        }
+    }
+
     const newLoc = {
         id: locIndex !== null && mode.locations[locIndex] ? mode.locations[locIndex].id : 'loc_' + Date.now(),
         name,
-        gameId,
+        gameId: game ? game.id : (locIndex !== null && mode.locations[locIndex] ? mode.locations[locIndex].gameId : ''),
         icon,
         desc,
         x,
@@ -1654,7 +2241,7 @@ window.handleSaveLocationForm = async function(e, modeId, locIndex) {
 
     await saveGameModesToBackend();
     document.getElementById('add-loc-modal-bg')?.remove();
-    showToast("Titik lokasi peta tersimpan!", "success");
+    showToast("Titik lokasi peta & Konten Game berhasil disimpan!", "success");
     openManageAdventureRoadmapModal(modeId);
 };
 
@@ -1706,9 +2293,9 @@ window.openManageTowerQuestModal = function(modeId) {
     const games = Array.isArray(appState.eduGames) && appState.eduGames.length > 0 ? appState.eduGames : SAMPLE_SEED_GAMES;
 
     const modalHtml = `
-        <div id="manage-tower-modal-bg" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
-            <div class="bg-slate-900 border-2 border-indigo-500/40 rounded-3xl shadow-2xl max-w-3xl w-full overflow-hidden my-8 relative text-white">
-                <div class="bg-gradient-to-r from-indigo-950 via-slate-900 to-purple-950 p-6 text-white flex items-center justify-between shadow-md border-b border-indigo-800/60">
+        <div id="manage-tower-modal-bg" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-start justify-center p-4 overflow-y-auto animate-fade-in">
+            <div class="bg-slate-900 border-2 border-indigo-500/40 rounded-3xl shadow-2xl max-w-3xl w-full overflow-hidden my-4 sm:my-8 flex flex-col max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-4rem)] relative text-white">
+                <div class="bg-gradient-to-r from-indigo-950 via-slate-900 to-purple-950 p-6 text-white flex items-center justify-between shadow-md border-b border-indigo-800/60 shrink-0">
                     <div class="flex items-center space-x-3">
                         <div class="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg">
                             🏰
@@ -3086,6 +3673,27 @@ window.removeWordSearchTag = function(idx) {
 export function renderGameStudentModule(container) {
     if (!container) return;
 
+    // Visibility Check
+    if (appState.settings.isGameMenuVisibleForStudent === false) {
+        container.innerHTML = `
+            <div class="flex flex-col items-center justify-center py-20 px-6 text-center space-y-6 animate-fade-in">
+                <div class="w-24 h-24 bg-slate-100 text-slate-300 rounded-full flex items-center justify-center text-5xl">
+                    <i class="fa-solid fa-gamepad"></i>
+                </div>
+                <div>
+                    <h2 class="text-xl font-black text-slate-800">Menu Game Sedang Nonaktif</h2>
+                    <p class="text-xs text-slate-500 max-w-md mx-auto mt-2 leading-relaxed">
+                        Mohon maaf, menu Game Edukasi saat ini sedang dinonaktifkan oleh Bapak/Ibu Guru. Silakan fokus pada pengerjaan tugas atau materi lainnya.
+                    </p>
+                </div>
+                <button type="button" onclick="window.studentGoBackToDashboard && window.studentGoBackToDashboard()" class="px-6 py-3 bg-slate-900 text-white font-extrabold text-xs rounded-2xl shadow-lg transition active:scale-95">
+                    Kembali ke Dashboard
+                </button>
+            </div>
+        `;
+        return;
+    }
+
     const currentStudent = appState.currentUser || {};
     const xp = currentStudent.gameXp || 0;
     const progress = getXpProgress(xp);
@@ -3204,11 +3812,14 @@ window.renderGameStudentModule = renderGameStudentModule;
 
 function renderStudentKatalogTab(games) {
     const activeGames = games.filter(g => g.status === 'active');
+    const catProg = getStudentProgressForMode('CATALOG');
+    const completedCatalog = catProg.completedCatalogGames || [];
 
     return `
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 animate-fade-in">
             ${activeGames.map(g => {
                 const typeInfo = GAME_TYPES.find(t => t.id === g.gameType) || { name: g.gameType, icon: 'fa-gamepad' };
+                const isDone = completedCatalog.includes(g.id);
 
                 return `
                     <div class="bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl transition-all duration-300 p-6 flex flex-col justify-between space-y-4 group">
@@ -3217,12 +3828,7 @@ function renderStudentKatalogTab(games) {
                                 <span class="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5">
                                     <i class="fa-solid ${typeInfo.icon}"></i> ${typeInfo.name}
                                 </span>
-                                <span class="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                                    g.difficulty === 'Mudah' ? 'bg-emerald-100 text-emerald-800' :
-                                    g.difficulty === 'Sedang' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
-                                }">
-                                    ${g.difficulty || 'Mudah'}
-                                </span>
+                                ${isDone ? '<span class="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-black uppercase">🏆 Quest Selesai</span>' : '<span class="px-2.5 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold uppercase">Belum Selesai</span>'}
                             </div>
 
                             <h3 class="font-extrabold text-lg text-slate-850 group-hover:text-indigo-600 transition leading-snug">${g.title}</h3>
@@ -3233,8 +3839,8 @@ function renderStudentKatalogTab(games) {
                             <div class="text-xs font-bold text-amber-600 flex items-center gap-1">
                                 <i class="fa-solid fa-star"></i> +${g.rewardXp || 100} XP
                             </div>
-                            <button type="button" onclick="launchInteractiveGameModal('${g.id}')" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-md shadow-indigo-600/20 transition flex items-center gap-2 cursor-pointer">
-                                <span>Mainkan</span> <i class="fa-solid fa-play text-xs"></i>
+                            <button type="button" onclick="launchInteractiveGameModal('${g.id}')" class="px-5 py-2.5 ${isDone ? 'bg-slate-900 hover:bg-slate-800 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white'} active:scale-95 font-extrabold text-xs rounded-2xl shadow-md transition flex items-center gap-2 cursor-pointer">
+                                <span>${isDone ? 'Main Lagi' : 'Mainkan'}</span> <i class="fa-solid fa-play text-xs"></i>
                             </button>
                         </div>
                     </div>
@@ -3259,8 +3865,7 @@ function renderStudentAdventureTab(games) {
     const selectedModeId = window.__studentActiveAdventureModeId || activeModes[0].id;
     const mode = activeModes.find(m => m.id === selectedModeId) || activeModes[0];
 
-    if (!appState.studentGameProgress) appState.studentGameProgress = {};
-    const progressObj = appState.studentGameProgress[mode.id] || { completedLocations: [], completedFloors: [] };
+    const progressObj = getStudentProgressForMode(mode.id);
     const completedLocs = progressObj.completedLocations || [];
 
     const locations = Array.isArray(mode.locations) ? mode.locations : [];
@@ -3341,8 +3946,7 @@ function renderStudentTowerTab(games, forceModeId = null, isPreview = false) {
     const selectedModeId = forceModeId || window.__studentActiveTowerModeId || modes[0].id;
     const mode = modes.find(m => m.id === selectedModeId) || modes[0];
 
-    if (!appState.studentGameProgress) appState.studentGameProgress = {};
-    const progressObj = appState.studentGameProgress[mode.id] || { completedLocations: [], completedFloors: [] };
+    const progressObj = getStudentProgressForMode(mode.id);
     const completedFloors = progressObj.completedFloors || [];
 
     const floors = Array.isArray(mode.floors) ? mode.floors : [];
@@ -4127,14 +4731,10 @@ window.submitGameSessionAnswer = async function(overrideAns = null, overridePass
                 safeSetLocalStorage('madrasah_current_user', appState.currentUser);
             }
 
-            // Record Mode progression if played from Adventure or Tower mode
+            // Record Mode progression if played from Adventure or Tower mode or Catalog
             if (activeGameSession.modeOptions && activeGameSession.modeOptions.modeId) {
                 const modeId = activeGameSession.modeOptions.modeId;
-                if (!appState.studentGameProgress) appState.studentGameProgress = {};
-                if (!appState.studentGameProgress[modeId]) {
-                    appState.studentGameProgress[modeId] = { completedLocations: [], completedFloors: [] };
-                }
-                const prog = appState.studentGameProgress[modeId];
+                const prog = getStudentProgressForMode(modeId);
                 if (activeGameSession.modeOptions.locationId) {
                     if (!prog.completedLocations.includes(activeGameSession.modeOptions.locationId)) {
                         prog.completedLocations.push(activeGameSession.modeOptions.locationId);
@@ -4144,6 +4744,13 @@ window.submitGameSessionAnswer = async function(overrideAns = null, overridePass
                     if (!prog.completedFloors.includes(activeGameSession.modeOptions.floorId)) {
                         prog.completedFloors.push(activeGameSession.modeOptions.floorId);
                     }
+                }
+                safeSetLocalStorage('madrasah_student_game_progress', appState.studentGameProgress);
+            } else if (activeGameSession.gameId) {
+                const catProg = getStudentProgressForMode('CATALOG');
+                if (!catProg.completedCatalogGames) catProg.completedCatalogGames = [];
+                if (!catProg.completedCatalogGames.includes(activeGameSession.gameId)) {
+                    catProg.completedCatalogGames.push(activeGameSession.gameId);
                 }
                 safeSetLocalStorage('madrasah_student_game_progress', appState.studentGameProgress);
             }
@@ -6002,8 +6609,7 @@ window.handleLabirinStartClick = function(startIdx) {
 let gameMonitoringPollTimer = null;
 
 window.openGameMonitoringDashboardModal = function() {
-    const modalContainer = document.getElementById('modal-container');
-    if (!modalContainer) return;
+    window.__adminGameSubTab = 'monitoring';
 
     if (!appState.gameMonitoringClassId) appState.gameMonitoringClassId = 'all';
     if (!appState.gameMonitoringGameId) appState.gameMonitoringGameId = 'all';
@@ -6012,62 +6618,12 @@ window.openGameMonitoringDashboardModal = function() {
     if (!appState.gameMonitoringLivecamMode) appState.gameMonitoringLivecamMode = 'gambar';
     if (!appState.gameMonitoringStudentModes) appState.gameMonitoringStudentModes = {};
 
-    modalContainer.innerHTML = `
-        <div id="game-monitoring-backdrop" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 z-50 animate-fade-in">
-            <div class="bg-slate-900 border border-slate-800 text-white w-full max-w-7xl h-[94vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden">
-                <!-- Top Header -->
-                <div class="p-4 sm:p-5 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-4 flex-wrap">
-                    <div class="flex items-center space-x-3">
-                        <div class="w-11 h-11 bg-gradient-to-tr from-indigo-600 to-violet-500 rounded-2xl flex items-center justify-center text-white text-xl font-black shadow-lg shadow-indigo-600/30">
-                            <i class="fa-solid fa-gamepad"></i>
-                        </div>
-                        <div>
-                            <div class="flex items-center gap-2">
-                                <h3 class="font-extrabold text-base sm:text-lg text-white">Live Monitoring Game Edukasi</h3>
-                                <span class="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-full text-[10px] font-black uppercase tracking-wider animate-pulse">
-                                    LIVE AKTIF
-                                </span>
-                            </div>
-                            <p class="text-xs text-slate-400">Pantau login aplikasi, aktivitas permainan, perolehan XP, dan foto/kamera live peserta.</p>
-                        </div>
-                    </div>
-
-                    <div class="flex items-center gap-2 flex-wrap">
-                        <button type="button" onclick="openBroadcastGameMessageModal()" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow transition cursor-pointer flex items-center gap-1.5">
-                            <i class="fa-solid fa-bullhorn text-xs"></i>
-                            <span>Kirim Siaran (Broadcast)</span>
-                        </button>
-                        <button type="button" onclick="toggleGameMonitoringLivecamMode()" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold border border-slate-700 shadow transition cursor-pointer flex items-center gap-1.5">
-                            <i class="fa-solid ${appState.gameMonitoringLivecamMode === 'video' ? 'fa-video text-amber-400' : 'fa-image text-indigo-400'} text-xs"></i>
-                            <span>Mode: ${appState.gameMonitoringLivecamMode === 'video' ? 'Video Live' : 'Foto Absen'}</span>
-                        </button>
-                        <button type="button" onclick="refreshGameMonitoringData()" class="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-sm transition cursor-pointer border border-slate-700" title="Refresh Data">
-                            <i class="fa-solid fa-arrows-rotate"></i>
-                        </button>
-                        <button type="button" onclick="closeGameMonitoringDashboardModal()" class="p-2 bg-slate-800 hover:bg-rose-600 text-slate-400 hover:text-white rounded-xl text-sm transition cursor-pointer" title="Tutup Monitoring">
-                            <i class="fa-solid fa-xmark"></i>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Main Monitoring Body -->
-                <div class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5 bg-slate-900/60 custom-scrollbar" id="game-monitoring-content">
-                    <div class="p-8 text-center text-slate-400 font-bold">
-                        <i class="fa-solid fa-circle-notch fa-spin text-2xl mb-2 text-indigo-400 block"></i>
-                        Menyiapkan dashboard monitoring game...
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-
-    renderGameMonitoringDashboard();
-
-    // Start auto polling interval (2.5s)
-    if (gameMonitoringPollTimer) clearInterval(gameMonitoringPollTimer);
-    gameMonitoringPollTimer = setInterval(() => {
-        refreshGameMonitoringData(false);
-    }, 2500);
+    const viewContainer = document.getElementById('view-container');
+    if (viewContainer) {
+        renderGameAdminModule(viewContainer);
+    } else {
+        renderGameMonitoringDashboard();
+    }
 };
 
 window.closeGameMonitoringDashboardModal = function() {
@@ -6075,21 +6631,61 @@ window.closeGameMonitoringDashboardModal = function() {
         clearInterval(gameMonitoringPollTimer);
         gameMonitoringPollTimer = null;
     }
-    const modalContainer = document.getElementById('modal-container');
-    if (modalContainer) modalContainer.innerHTML = '';
+    window.__adminGameSubTab = 'kelola';
+    const viewContainer = document.getElementById('view-container');
+    if (viewContainer) {
+        renderGameAdminModule(viewContainer);
+    } else {
+        const modalContainer = document.getElementById('modal-container');
+        if (modalContainer) modalContainer.innerHTML = '';
+    }
 };
 
 window.toggleGameMonitoringLivecamMode = function() {
-    appState.gameMonitoringLivecamMode = appState.gameMonitoringLivecamMode === 'video' ? 'gambar' : 'video';
-    renderGameMonitoringDashboard();
-    showToast(`Mode kamera diubah ke: ${appState.gameMonitoringLivecamMode === 'video' ? 'Video Live' : 'Foto Absen'}`, 'info');
+    const targetMode = (appState.gameMonitoringLivecamMode || 'gambar') === 'gambar' ? 'video' : 'gambar';
+    if (targetMode === 'video') {
+        if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
+            window.promptVideoDurationAndDeductTokens((minutes) => {
+                appState.gameMonitoringLivecamMode = 'video';
+                if (typeof window.openGameMonitoringDashboardModal === 'function') {
+                    window.openGameMonitoringDashboardModal();
+                } else {
+                    renderGameMonitoringDashboard();
+                }
+            });
+        } else {
+            appState.gameMonitoringLivecamMode = 'video';
+            renderGameMonitoringDashboard();
+        }
+    } else {
+        appState.gameMonitoringLivecamMode = 'gambar';
+        renderGameMonitoringDashboard();
+        showToast("Mode kamera diubah ke: Foto Absen", "info");
+    }
 };
 
 window.toggleStudentGameLivecamMode = function(studentId) {
     if (!appState.gameMonitoringStudentModes) appState.gameMonitoringStudentModes = {};
     const cur = appState.gameMonitoringStudentModes[studentId] || appState.gameMonitoringLivecamMode || 'gambar';
-    appState.gameMonitoringStudentModes[studentId] = cur === 'video' ? 'gambar' : 'video';
-    renderGameMonitoringDashboard();
+    const targetMode = cur === 'video' ? 'gambar' : 'video';
+    if (targetMode === 'video') {
+        if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
+            window.promptVideoDurationAndDeductTokens((minutes) => {
+                appState.gameMonitoringStudentModes[studentId] = 'video';
+                if (typeof window.openGameMonitoringDashboardModal === 'function') {
+                    window.openGameMonitoringDashboardModal();
+                } else {
+                    renderGameMonitoringDashboard();
+                }
+            });
+        } else {
+            appState.gameMonitoringStudentModes[studentId] = 'video';
+            renderGameMonitoringDashboard();
+        }
+    } else {
+        appState.gameMonitoringStudentModes[studentId] = 'gambar';
+        renderGameMonitoringDashboard();
+    }
 };
 
 window.refreshGameMonitoringData = async function(showToastNotice = true) {
@@ -6569,6 +7165,16 @@ window.sendBroadcastGameMessage = async function() {
 // MODAL: FOCUS / ZOOM STUDENT LIVECAM
 // ============================================================================
 window.focusGameStudentLivecam = function(studentId) {
+    if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
+        window.promptVideoDurationAndDeductTokens((minutes) => {
+            _executeFocusGameStudentLivecam(studentId);
+        });
+    } else {
+        _executeFocusGameStudentLivecam(studentId);
+    }
+};
+
+function _executeFocusGameStudentLivecam(studentId) {
     const students = Array.isArray(appState.students) ? appState.students : [];
     const st = students.find(s => String(s.id) === String(studentId));
     if (!st) return;

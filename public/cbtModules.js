@@ -537,10 +537,10 @@ function downloadWordTemplate(code) {
 
 function openPreviewQuestionBankModal(code) {
     const activeCode = code || appState.activeBankGroupCode || '';
-    const group = appState.questionBankGroups.find(bg => String(bg.code) === String(activeCode));
-    const subObj = appState.subjects.find(s => String(s.id) === String(group?.subjectId));
-    const clsObj = appState.classes.find(c => String(c.id) === String(group?.classId));
-    const questions = appState.questionBank.filter(q => q && String(q.code) === String(activeCode));
+    const group = (appState.questionBankGroups || []).find(bg => String(bg.code) === String(activeCode));
+    const subObj = (appState.subjects || []).find(s => String(s.id) === String(group?.subjectId));
+    const clsObj = (appState.classes || []).find(c => String(c.id) === String(group?.classId));
+    const questions = (appState.questionBank || []).filter(q => q && String(q.code) === String(activeCode));
 
     const madrasahName = (appState.madrasahInfo && appState.madrasahInfo.name) ? appState.madrasahInfo.name : 'MADRASAH ALIYAH / TSANAWIYAH / IBTIDAIYAH';
     const madrasahAddress = (appState.madrasahInfo && appState.madrasahInfo.address) ? appState.madrasahInfo.address : 'Jl. Pendidikan No. 1 - Kemenag RI';
@@ -1103,8 +1103,8 @@ function executeExportCbtTableWord(e, code) {
         `;
     }).join('');
 
-    const group = appState.questionBankGroups.find(bg => String(bg.code) === String(activeCode));
-    const subObj = appState.subjects.find(s => String(s.id) === String(group?.subjectId));
+    const group = (appState.questionBankGroups || []).find(bg => String(bg.code) === String(activeCode));
+    const subObj = (appState.subjects || []).find(s => String(s.id) === String(group?.subjectId));
 
     const fullDocHtml = `
         <html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns:m="http://schemas.microsoft.com/office/2004/12/omml" xmlns="http://www.w3.org/TR/REC-html40">
@@ -2316,13 +2316,13 @@ function saveJournal(e) {
 function downloadJournalAsWord() {
     const currentSub = appState.activeJournalSubjectId || (appState.subjects[0]?.id || '');
     const currentClass = appState.activeJournalClassId || '';
-    const subObj = appState.subjects.find(s => String(s.id) === String(currentSub));
-    const classObj = appState.classes.find(c => String(c.id) === String(currentClass));
+    const subObj = (appState.subjects || []).find(s => String(s.id) === String(currentSub));
+    const classObj = (appState.classes || []).find(c => String(c.id) === String(currentClass));
     if (!subObj) {
         showToast('Mata pelajaran tidak ditemukan.', 'error');
         return;
     }
-    const filteredJournals = appState.journals.filter(j => String(j.subjectId) === String(currentSub) && String(j.classId) === String(currentClass));
+    const filteredJournals = (appState.journals || []).filter(j => String(j.subjectId) === String(currentSub) && String(j.classId) === String(currentClass));
     if (filteredJournals.length === 0) {
         showToast('Tidak ada data jurnal untuk diunduh.', 'error');
         return;
@@ -2544,7 +2544,7 @@ function handleSingleQImageUpload(e) {
 }
 
 function openEditSingleQuestionModal(qId) {
-    const q = appState.questionBank.find(item => String(item.id) === String(qId));
+    const q = (appState.questionBank || []).find(item => String(item.id) === String(qId));
     if (!q) return;
 
     openAddSingleQuestionModal(q.code);
@@ -2617,7 +2617,7 @@ function saveSingleQuestion(e, code, editQId = null) {
         if (options.length === 0) options = ['A', 'B', 'C', 'D', 'E'];
     }
 
-    let answerKey = document.getElementById('single-q-answer').value.trim();
+    let answerKey = (document.getElementById('single-q-answer')?.value || '').trim();
     // Normalize A/B/C/D/E to option text if matching option index
     if (type === 'mc') {
         const keyUpper = answerKey.toUpperCase();
@@ -2627,10 +2627,11 @@ function saveSingleQuestion(e, code, editQId = null) {
         }
     }
 
-    const explanation = document.getElementById('single-q-explanation').value.trim();
-    const group = appState.questionBankGroups.find(bg => String(bg.code) === String(code));
+    const explanation = (document.getElementById('single-q-explanation')?.value || '').trim();
+    const group = (appState.questionBankGroups || []).find(bg => String(bg.code) === String(code));
 
     if (editQId) {
+        if (!Array.isArray(appState.questionBank)) appState.questionBank = [];
         const idx = appState.questionBank.findIndex(item => String(item.id) === String(editQId));
         if (idx !== -1) {
             appState.questionBank[idx] = {
@@ -4796,12 +4797,12 @@ function parseQuestionsFromTextOrHtml(rawContent, code) {
         if (!currentQ || !currentQ.question) return;
 
         const qTextLower = currentQ.question.toLowerCase();
-        const ansLower = currentAnswer.toLowerCase();
+        const ansLower = String(currentAnswer || '').toLowerCase();
         const isEssay = currentTS.includes('ESY') || currentTS.includes('ESSAY') || currentOptions.length === 0 || qTextLower.includes('esay') || qTextLower.includes('essay') || ansLower.includes('esay') || ansLower.includes('essay');
 
-        let answerKey = currentAnswer.replace(/\s*\((essay|esay)\)/i, '').trim();
+        let answerKey = String(currentAnswer || '').replace(/\s*\((essay|esay)\)/i, '').trim();
         if (!isEssay) {
-            const keyUpper = answerKey.toUpperCase();
+            const keyUpper = String(answerKey || '').toUpperCase();
             if (['A', 'B', 'C', 'D', 'E'].includes(keyUpper)) {
                 const idx = keyUpper.charCodeAt(0) - 65;
                 if (currentOptions[idx]) answerKey = currentOptions[idx];

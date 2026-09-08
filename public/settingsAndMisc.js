@@ -663,6 +663,14 @@ function renderSettingModule(container) {
                             <i class="fa-solid fa-cloud-arrow-down"></i>
                             <span>Tarik & Sinkronkan Data Cloud</span>
                         </button>
+                        <button type="button" onclick="forceSyncCloudinaryPhotos()" class="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-xl shadow transition flex items-center gap-2 cursor-pointer" title="Bangun ulang mapping dari aset yang benar-benar ada di Cloudinary dan buang mapping foto yang sudah basi">
+                            <i class="fa-solid fa-images"></i>
+                            <span>Sinkronkan Foto Cloudinary</span>
+                        </button>
+                        <button type="button" id="repair-cloudinary-missing-btn" onclick="repairMissingCloudinaryPhotos()" class="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow transition flex items-center gap-2 cursor-pointer" title="Audit foto profil, riwayat foto, absensi siswa/guru, dan gambar soal; upload sumber lokal yang belum ada di Cloudinary">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                            <span>Periksa & Upload Foto Hilang</span>
+                        </button>
                     </div>
                 </div>
                 <div id="db-connection-test-result">
@@ -3230,12 +3238,21 @@ async function submitClassAttendance() {
 // Data Server Loader
 async function loadDataFromServer() {
     try {
-        let url = '/api/all-data';
+        const queryParams = new URLSearchParams();
         const activeMId = (appState.currentUser && (appState.currentUser.madrasahId || appState.currentUser.madrasahSlug)) || window.__activeTenant?.id || window.__activeTenant?.slug;
         if (activeMId && activeMId !== 'default' && activeMId !== 'BOSS') {
-            url += `?madrasahId=${encodeURIComponent(activeMId)}`;
+            queryParams.set('madrasahId', activeMId);
         }
-        const response = await fetch(url);
+        if (appState.role) {
+            queryParams.set('role', appState.role);
+        }
+        const queryString = queryParams.toString();
+        const url = '/api/all-data' + (queryString ? `?${queryString}` : '');
+        const response = await fetch(url, {
+            headers: {
+                'x-user-role': appState.role || ''
+            }
+        });
         if (!response.ok) throw new Error('Bulk API response failed');
         const res = await response.json();
         
@@ -3280,6 +3297,11 @@ async function loadDataFromServer() {
                 safeSetLocalStorage('madrasah_kbmDuration', appState.kbmDuration);
             }
             if (res.exams) appState.exams = res.exams;
+            if (res.lkpdList) {
+                appState.lkpdList = res.lkpdList;
+                const storageKey = typeof window.getLkpdStorageKey === 'function' ? window.getLkpdStorageKey() : 'madrasah_lkpdList';
+                safeSetLocalStorage(storageKey, appState.lkpdList);
+            }
             if (res.rooms) appState.rooms = res.rooms;
             if (res.journals) appState.journals = res.journals;
             if (res.gradeCategories && Array.isArray(res.gradeCategories)) {
@@ -3305,12 +3327,25 @@ async function loadDataFromServer() {
                 safeSetLocalStorage('madrasah_teacher_attendance', appState.teacherAttendance);
             }
             if (res.madrasahs) {
-                appState.madrasahs = res.madrasahs;
+                const incomingMadrasahs = Array.isArray(res.madrasahs) ? res.madrasahs : [];
+                appState.madrasahs = incomingMadrasahs.map(m => {
+                    const existingM = (appState.madrasahs || []).find(oldM =>
+                        String(oldM.id) === String(m.id) ||
+                        (m.slug && String(oldM.slug) === String(m.slug))
+                    );
+                    if (typeof m.cbtTokenBalance !== 'number' && existingM && typeof existingM.cbtTokenBalance === 'number') {
+                        return { ...m, cbtTokenBalance: existingM.cbtTokenBalance };
+                    }
+                    return m;
+                });
                 safeSetLocalStorage('madrasah_madrasahs', appState.madrasahs);
                 if (appState.currentUser && (appState.role === 'admin' || appState.role === 'administrator')) {
                     const currentMId = appState.currentUser.madrasahId || appState.currentUser.madrasahSlug || 'default';
-                    const matchedM = (res.madrasahs || []).find(m => String(m.id) === String(currentMId));
-                    if (matchedM) {
+                    const matchedM = appState.madrasahs.find(m =>
+                        String(m.id) === String(currentMId) ||
+                        String(m.slug) === String(currentMId)
+                    );
+                    if (matchedM && typeof matchedM.cbtTokenBalance === 'number') {
                         appState.currentUser.cbtTokenBalance = matchedM.cbtTokenBalance;
                         safeSetLocalStorage('madrasah_current_user', appState.currentUser);
                     }
@@ -3581,25 +3616,12 @@ async function checkDatabaseConnection() {
                             </div>
                         </div>
 
-                        <!-- 2. FIREBASE FIRESTORE -->
-                        <div class="flex items-start gap-3 p-3 rounded-xl hover:bg-slate-50/50 transition duration-150 border border-slate-50">
-                            <div class="mt-0.5">${renderIcon(firebaseObj.connected)}</div>
-                            <div class="flex-1 space-y-0.5 min-w-0">
-                                <div class="flex items-center justify-between gap-2">
-                                    <span class="font-bold text-slate-800 text-xs">2. Media Storage (Firebase Firestore)</span>
-                                    ${renderBadge(firebaseObj.connected)}
-                                </div>
-                                <p class="text-[11px] text-slate-600 truncate">${firebaseObj.message}</p>
-                                ${firebaseObj.details ? `<p class="text-[10px] text-slate-400 font-mono bg-slate-50 p-1.5 rounded border border-slate-100/60 overflow-x-auto whitespace-pre-wrap">${firebaseObj.details}</p>` : ''}
-                            </div>
-                        </div>
-
-                        <!-- 3. LOCAL JSON BACKUP -->
+                        <!-- 2. LOCAL JSON BACKUP -->
                         <div class="flex items-start gap-3 p-3 rounded-xl hover:bg-slate-50/50 transition duration-150 border border-slate-50">
                             <div class="mt-0.5">${renderIcon(jsonObj.connected)}</div>
                             <div class="flex-1 space-y-0.5 min-w-0">
                                 <div class="flex items-center justify-between gap-2">
-                                    <span class="font-bold text-slate-800 text-xs">3. Local File System (JSON Backup)</span>
+                                    <span class="font-bold text-slate-800 text-xs">2. Local File System (JSON Backup)</span>
                                     ${renderBadge(jsonObj.connected)}
                                 </div>
                                 <p class="text-[11px] text-slate-600 truncate">${jsonObj.message}</p>
@@ -3607,12 +3629,12 @@ async function checkDatabaseConnection() {
                             </div>
                         </div>
 
-                        <!-- 4. CLOUDINARY -->
+                        <!-- 3. CLOUDINARY -->
                         <div class="flex items-start gap-3 p-3 rounded-xl hover:bg-slate-50/50 transition duration-150 border border-slate-50">
                             <div class="mt-0.5">${renderIcon(data.cloudinary.connected)}</div>
                             <div class="flex-1 space-y-0.5 min-w-0">
                                 <div class="flex items-center justify-between gap-2">
-                                    <span class="font-bold text-slate-800 text-xs">4. Cloudinary (Image Storage)</span>
+                                    <span class="font-bold text-slate-800 text-xs">3. Cloudinary (Image Storage)</span>
                                     ${renderBadge(data.cloudinary.connected)}
                                 </div>
                                 <p class="text-[11px] text-slate-600 truncate">${data.cloudinary.message}</p>
@@ -3702,6 +3724,120 @@ async function forceSyncCloudToLocal() {
         }
     }
 }
+
+async function forceSyncCloudinaryPhotos() {
+    const statusResultEl = document.getElementById('db-connection-test-result');
+    if (statusResultEl) {
+        statusResultEl.innerHTML = `<div class="p-4 bg-sky-50 border border-sky-200 text-sky-800 rounded-2xl text-xs flex flex-col gap-2 animate-pulse">
+            <div class="font-bold flex items-center gap-2">
+                <i class="fa-solid fa-spinner fa-spin text-sm"></i>
+                <span>Sedang Menghubungkan & Memindai Foto di Cloudinary...</span>
+            </div>
+            <p class="text-slate-600 text-[11px]">Sistem sedang mengunduh daftar lengkap aset gambar di Cloudinary, memetakan kembali foto profil seluruh siswa dan guru, serta menyimpannya secara permanen ke database PostgreSQL...</p>
+        </div>`;
+    }
+    try {
+        const res = await fetch('/api/cloudinary/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (statusResultEl) {
+                statusResultEl.innerHTML = `
+                    <div class="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl text-xs space-y-1 animate-in fade-in">
+                        <div class="font-bold flex items-center gap-2"><i class="fa-solid fa-circle-check text-emerald-600 text-sm"></i><span>Sinkronisasi Foto Cloudinary Berhasil!</span></div>
+                        <p class="text-slate-600">${data.message}</p>
+                        <div class="mt-2 text-slate-500 bg-emerald-100/40 p-2 rounded-xl text-[11px]">
+                            <span>• Total foto terpetakan di Cloudinary & Database: <strong>${data.result.mapped} foto</strong></span>
+                        </div>
+                        <p class="text-[11px] text-emerald-700 font-semibold mt-1">💡 Tips: Foto profil siswa dan guru kini sudah aktif kembali dan dapat ditampilkan tanpa kendala.</p>
+                    </div>
+                `;
+            }
+            if (window.showToast) {
+                window.showToast('Foto profil Cloudinary berhasil disinkronkan!', 'success');
+            }
+        } else {
+            if (statusResultEl) {
+                statusResultEl.innerHTML = `
+                    <div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs space-y-1">
+                        <div class="font-bold flex items-center gap-2"><i class="fa-solid fa-circle-xmark text-rose-600 text-sm"></i><span>Sinkronisasi Cloudinary Gagal</span></div>
+                        <p class="text-slate-700"><strong>Penyebab:</strong> ${data.message || 'Gagal memproses aset Cloudinary.'}</p>
+                    </div>
+                `;
+            }
+        }
+    } catch (err) {
+        if (statusResultEl) {
+            statusResultEl.innerHTML = `
+                <div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs space-y-1">
+                    <div class="font-bold flex items-center gap-2"><i class="fa-solid fa-circle-xmark text-rose-600 text-sm"></i><span>Gagal Menghubungi Server</span></div>
+                    <p class="text-slate-700">${err.message || String(err)}</p>
+                </div>
+            `;
+        }
+    }
+}
+window.forceSyncCloudinaryPhotos = forceSyncCloudinaryPhotos;
+
+
+async function repairMissingCloudinaryPhotos() {
+    const statusResultEl = document.getElementById('db-connection-test-result');
+    const button = document.getElementById('repair-cloudinary-missing-btn');
+    if (button) button.disabled = true;
+
+    if (statusResultEl) {
+        statusResultEl.innerHTML = `<div class="p-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-2xl text-xs flex flex-col gap-2 animate-pulse">
+            <div class="font-bold flex items-center gap-2">
+                <i class="fa-solid fa-spinner fa-spin text-sm"></i>
+                <span>Memeriksa aset Cloudinary & mencari foto yang belum ter-backup...</span>
+            </div>
+            <p class="text-slate-600 text-[11px]">Foto yang sudah benar-benar ada di Cloudinary akan dilewati. Foto yang belum ada akan di-upload dari penyimpanan lokal bila sumber filenya masih tersedia.</p>
+        </div>`;
+    }
+
+    try {
+        const res = await fetch('/api/cloudinary/repair-missing', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error(data.message || 'Gagal memeriksa foto Cloudinary.');
+        }
+
+        const result = data.result || {};
+        const missingWarning = Number(result.missingSource || 0) > 0
+            ? `<p class="text-[11px] text-amber-700 font-semibold mt-2">⚠ ${result.missingSource} foto tidak ada di Cloudinary dan sumber file lokalnya juga tidak tersedia, sehingga tidak dapat di-upload ulang.</p>`
+            : `<p class="text-[11px] text-emerald-700 font-semibold mt-2">✓ Semua foto yang dapat diperiksa memiliki backup Cloudinary atau berhasil di-upload.</p>`;
+
+        if (statusResultEl) {
+            statusResultEl.innerHTML = `<div class="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl text-xs space-y-2">
+                <div class="font-bold flex items-center gap-2"><i class="fa-solid fa-circle-check text-emerald-600"></i><span>Pemeriksaan & Backup Foto Selesai</span></div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-slate-600">
+                    <div class="bg-white/70 border rounded-xl p-2">Diperiksa: <strong>${result.checked || 0}</strong></div>
+                    <div class="bg-white/70 border rounded-xl p-2">Sudah ada: <strong>${result.alreadyExists || 0}</strong></div>
+                    <div class="bg-white/70 border rounded-xl p-2">Di-upload: <strong>${result.uploaded || 0}</strong></div>
+                    <div class="bg-white/70 border rounded-xl p-2">Gagal: <strong>${result.failed || 0}</strong></div>
+                </div>
+                ${missingWarning}
+            </div>`;
+        }
+
+        if (window.showToast) {
+            window.showToast(`Cloudinary diperiksa: ${result.uploaded || 0} foto baru di-upload.`, 'success');
+        }
+    } catch (err) {
+        if (statusResultEl) {
+            statusResultEl.innerHTML = `<div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs">
+                <div class="font-bold mb-1"><i class="fa-solid fa-circle-xmark mr-1"></i>Pemeriksaan Cloudinary Gagal</div>
+                <p class="text-slate-700">${err?.message || String(err)}</p>
+            </div>`;
+        }
+        if (window.showToast) window.showToast(err?.message || 'Pemeriksaan Cloudinary gagal.', 'error');
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+window.repairMissingCloudinaryPhotos = repairMissingCloudinaryPhotos;
 
 function toggleAllBackupCheckboxes() {
     const container = document.getElementById('backup-checkbox-container');

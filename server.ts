@@ -55,12 +55,17 @@ if (process.env.CLOUDINARY_CLOUD_NAME) {
     console.log("Cloudinary initialized.");
 }
 
-const LICENSE_PUBLIC_KEY = `-----BEGIN RSA PUBLIC KEY-----
-MIGJAoGBALjkKYSmuOeVR1SPY4NtxQI9wWS43T8URRqlcPo3qJqqCQa9IGJt
-pnqnUAB+eZz4W6y2WN+wSlg/Qtqi/kRcAafe/VT0f8FSy8RC0Jv/iEJYZoFw
-E/MALQdmputpWUfuppq/iuKDuuOKZJWpNORQMuH3UJ1RBCVLVv2S2CdGYLK/
-AgMBAAE=
------END RSA PUBLIC KEY-----`;
+const LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAkC2mnT3XDQyfAtZcZsC3
+rvhVo2GprD62ChrbHoerkteg6FomXN3Q+TOgUE21uCVK2x95IBPqe/+1nWEx/njN
+WJcKPZW2e/GeZXtJyOQPzDQ1YnkleNa7Oqc2wP0R5/KJSf4tv1GuRkb/+5+WY510
+6sqlU8IsVaOZOsG9D5jTwfdcnRTUdBJsV8emwZZjFiFWA1jgbtTKBwmaPuYPrO1j
+voBA6IjuzuM+WL2BafqWYrWYrLGBhXk5pKZMwo/mp+oA92L2VUYmAfjp1eTFR6aa
+uAJ6LamIeKcWgKWHyaymUuxrQ0s8QULeHawdRZG2N75VqaNnRaCqrYLH1PrPy9JL
+ND5WhgpVKkTbAz/hIorH4v66a+7pc2NMQ/eO1NzjJwUCmGSh0H0aqQjp7Q4YrOi3
+pnAVfJlSqiisvhGcbc2hTmPmJOA/+Nupdel3yfy1IItiSuVvke0iPszvsqSip+pC
+4t1lhRhtKdujUsMLNFCnBPARfipvDYsuAeyDAhRoLq8DAgMBAAE=
+-----END PUBLIC KEY-----`;
 
 function formatPrivateKeyPem(raw: string): string {
   if (!raw) return "";
@@ -4476,7 +4481,7 @@ app.post("/api/boss/generate-activation-key", requireAuth, requireRole(['bos', '
     }
 
     const privateKey = formatPrivateKeyPem(process.env.LICENSE_PRIVATE_KEY);
-    const publicKey = formatPublicKeyPem(process.env.LICENSE_PUBLIC_KEY || LICENSE_PUBLIC_KEY);
+    let pubRaw = process.env.LICENSE_PUBLIC_KEY || ""; if (pubRaw.length < 50) pubRaw = LICENSE_PUBLIC_KEY; const publicKey = formatPublicKeyPem(pubRaw);
 
     // Refuse to issue codes if the configured public/private keys are not a real pair.
     const probe = `MADRASAH_ACTIVATION_KEYPAIR_CHECK:${Date.now()}`;
