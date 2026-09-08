@@ -10,11 +10,14 @@ def rep(old, new, count=1):
         raise SystemExit(f'Expected at least {count} occurrence(s), found {actual}: {old[:120]!r}')
     s = s.replace(old, new, count)
 
-# APP_MODE is storage-only; local runtime remains the token-security boundary.
-rep("if (isOfflineMode && currentBalance > 1) {", "if (isLocalRuntime && currentBalance > 1) {")
-rep("if (isOfflineMode) {\n    return res.status(403).json({ success: false, message: \"Persetujuan top-up tidak diizinkan dalam mode offline.\" });", "if (isLocalRuntime) {\n    return res.status(403).json({ success: false, message: \"Persetujuan top-up hanya diizinkan pada server platform Cloud Run.\" });")
-rep("if (isOfflineMode) {\n    return res.status(403).json({ success: false, message: \"Pembaruan saldo token langsung dinonaktifkan dalam mode offline demi mencegah kecurangan.\" });", "if (isLocalRuntime) {\n    return res.status(403).json({ success: false, message: \"Pembaruan saldo token langsung hanya diizinkan pada server platform Cloud Run.\" });")
-rep("if (isOfflineMode) {\n      // Ignore token balance changes from the general update API in offline mode to prevent cheating/tampering", "if (isLocalRuntime) {\n      // Never trust APP_MODE for token authority: localhost cannot alter protected token balance directly")
+# Security boundary must already be independent from APP_MODE.
+required_security_markers = [
+    "if (isLocalRuntime && currentBalance > 1)",
+    "isBossRuntimeEnabled()",
+]
+for marker in required_security_markers:
+    if marker not in s:
+        raise SystemExit(f'Missing security marker: {marker}')
 
 # Online must not bootstrap from local_store.json at all.
 rep("const bootStore = readLocalStore();", "const bootStore = isOnlineMode ? {} : readLocalStore();")
@@ -23,8 +26,9 @@ rep("    if (res.rows.length === 0 && Object.keys(store).length > 0) {", "    if
 rep("    console.error(\"PostgreSQL hydration warning / timeout (falling back to local JSON store):\", err);", "    console.error(isOnlineMode\n      ? \"PostgreSQL hydration failed in ONLINE mode; local JSON fallback is disabled:\"\n      : \"PostgreSQL hydration warning / timeout (falling back to local JSON store):\", err);")
 
 # Keep runtime logging accurate.
-rep('console.log("Firebase Firestore has been completely disconnected per user instructions to avoid daily free-tier read limits. Application is fully using local storage and Cloudinary backup.");', 'console.log(`[Storage] ${isOnlineMode ? \'Cloud SQL + Cloudinary are authoritative\' : \'PostgreSQL/local_store.json + uploads are authoritative; Cloudinary is optional backup\'}.`);')
+old_log = 'console.log("Firebase Firestore has been completely disconnected per user instructions to avoid daily free-tier read limits. Application is fully using local storage and Cloudinary backup.");'
+if old_log in s:
+    rep(old_log, 'console.log(`[Storage] ${isOnlineMode ? \'Cloud SQL + Cloudinary are authoritative\' : \'PostgreSQL/local_store.json + uploads are authoritative; Cloudinary is optional backup\'}.`);')
 
 p.write_text(s, encoding='utf-8')
 print('final storage/security cleanup applied')
-# trigger
