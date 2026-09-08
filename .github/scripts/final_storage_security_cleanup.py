@@ -27,3 +27,4 @@ rep('console.log("Firebase Firestore has been completely disconnected per user i
 
 p.write_text(s, encoding='utf-8')
 print('final storage/security cleanup applied')
+# trigger
