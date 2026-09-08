@@ -111,15 +111,29 @@ function getServerKeyPair(): { privateKey: string; publicKey: string } | null {
   return cachedKeyPair;
 }
 
-const TOKEN_LOCK_SECRET = process.env.TOKEN_LOCK_SECRET || "***REMOVED***";
+const LEGACY_TOKEN_LOCK_SECRET = "***REMOVED***";
+const TOKEN_LOCK_SECRET = process.env.TOKEN_LOCK_SECRET;
 
-function calculateTokenSignature(madrasahId: string, balance: number): string {
-  return crypto.createHmac('sha256', TOKEN_LOCK_SECRET)
+if (!TOKEN_LOCK_SECRET) {
+  console.warn("WARNING: TOKEN_LOCK_SECRET environment variable is not set! Using legacy fallback (INSECURE).");
+}
+
+function calculateTokenSignature(madrasahId: string, balance: number, useLegacy: boolean = false): string {
+  const secret = (useLegacy || !TOKEN_LOCK_SECRET) ? LEGACY_TOKEN_LOCK_SECRET : TOKEN_LOCK_SECRET;
+  return crypto.createHmac('sha256', secret)
                .update(`${madrasahId}:${balance}`)
                .digest('hex');
 }
 
-const ENCRYPTION_KEY = crypto.createHash('sha256').update("***REMOVED***").digest();
+const LEGACY_ENCRYPTION_SECRET = "***REMOVED***";
+const LOCAL_STORE_SECRET = process.env.LOCAL_STORE_SECRET;
+
+if (!LOCAL_STORE_SECRET) {
+  console.warn("WARNING: LOCAL_STORE_SECRET environment variable is not set! Using legacy fallback (INSECURE).");
+}
+
+const ENCRYPTION_KEY = crypto.createHash('sha256').update(LOCAL_STORE_SECRET || LEGACY_ENCRYPTION_SECRET).digest();
+const LEGACY_ENCRYPTION_KEY = crypto.createHash('sha256').update(LEGACY_ENCRYPTION_SECRET).digest();
 
 function encryptLocalStore(text: string): string {
   const iv = crypto.randomBytes(16);
@@ -142,10 +156,19 @@ function decryptLocalStore(encryptedText: string): string {
     }
     const iv = Buffer.from(parts[0], 'hex');
     const encryptedTextData = parts[1];
-    const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-    let decrypted = decipher.update(encryptedTextData, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
+    
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+      let decrypted = decipher.update(encryptedTextData, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    } catch (e) {
+      // Fallback to legacy key
+      const legacyDecipher = crypto.createDecipheriv('aes-256-cbc', LEGACY_ENCRYPTION_KEY, iv);
+      let legacyDecrypted = legacyDecipher.update(encryptedTextData, 'hex', 'utf8');
+      legacyDecrypted += legacyDecipher.final('utf8');
+      return legacyDecrypted;
+    }
   } catch (err: any) {
     console.error("Gagal melakukan dekripsi local_store.json:", err.message);
     throw err;
@@ -158,6 +181,8 @@ function verifyAndLockMadrasahTokens() {
   for (const m of madrasahs) {
     const currentBalance = m.cbtTokenBalance || 0;
     const expectedSig = calculateTokenSignature(m.id, currentBalance);
+    const expectedLegacySig = calculateTokenSignature(m.id, currentBalance, true);
+    
     if (!m.tokenSignature) {
       if (isOfflineMode && currentBalance > 1) {
         console.error(`[CRITICAL TOKEN TAMPERING DETECTED] Madrasah "${m.name}" (${m.id}) tokens have been modified illegally! Empty signature with balance > 1 is not allowed in offline mode. Resetting tokens to 1.`);
@@ -167,10 +192,15 @@ function verifyAndLockMadrasahTokens() {
       } else {
         // First-time load or newly registered madrasah: compute and assign a valid signature
         m.tokenSignature = expectedSig;
+        tampered = true;
       }
-    } else if (m.tokenSignature !== expectedSig) {
+    } else if (TOKEN_LOCK_SECRET && m.tokenSignature === expectedLegacySig) {
+       // Migrate to new signature
+       m.tokenSignature = expectedSig;
+       tampered = true;
+    } else if (m.tokenSignature !== expectedSig && m.tokenSignature !== expectedLegacySig) {
       // TAMPERING DETECTED!
-      console.error(`[CRITICAL TOKEN TAMPERING DETECTED] Madrasah "${m.name}" (${m.id}) tokens have been modified illegally! Expected sig: ${expectedSig}, Got: ${m.tokenSignature}. Resetting tokens to 0.`);
+      console.error(`[CRITICAL TOKEN TAMPERING DETECTED] Madrasah "${m.name}" (${m.id}) tokens have been modified illegally! Resetting tokens to 0.`);
       m.cbtTokenBalance = 0;
       m.tokenSignature = calculateTokenSignature(m.id, 0);
       tampered = true;
@@ -4768,8 +4798,10 @@ app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos
 
   // Remove from teachers, add to students
   teachers.splice(tIdx, 1);
-  const rawPassword = req.body.password || t.password || "123456";
-  const hashed = hashPassword(rawPassword);
+  let convertedPassword = t.password;
+  if (req.body.password && String(req.body.password).trim()) {
+    convertedPassword = hashPassword(String(req.body.password).trim());
+  }
 
   const newStudent = tagNewRecord({
     id: "ST_" + Date.now(),
@@ -4778,7 +4810,7 @@ app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos
     classId: req.body.classId || classes[0]?.id || "C1",
     class_id: req.body.classId || classes[0]?.id || "C1",
     username: req.body.username || t.username,
-    password: hashed,
+    password: convertedPassword,
     photo: req.body.photo || "",
     no_hp: req.body.no_hp || "",
     role: req.body.role || "student"
@@ -5199,28 +5231,36 @@ app.delete("/api/students/:id/photo-history", requireAuth, requireRole(['teacher
   res.json({ success: true, student: sanitizedStudent, message: "Foto riwayat berhasil dihapus." });
 });
 
-app.put("/api/students/:id/change-role", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.put("/api/students/:id/change-role", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const sIdx = students.findIndex(s => String(s.id) === String(id));
   if (sIdx < 0) {
     return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
   }
   const st = students[sIdx];
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(st, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak." });
+  }
+  
   // Remove from students, add to teachers
   students.splice(sIdx, 1);
-  const rawPassword = req.body.password || st.password || "guru123";
-  const hashed = hashPassword(rawPassword);
+  let convertedPassword = st.password;
+  if (req.body.password && String(req.body.password).trim()) {
+    convertedPassword = hashPassword(String(req.body.password).trim());
+  }
 
-  const newTeacher = {
+  const newTeacher = tagNewRecord({
     id: "T_" + Date.now(),
     nip: req.body.nip || st.nis || "199" + Date.now(),
     name: req.body.name || st.name,
     username: req.body.username || st.username,
-    password: hashed,
+    password: convertedPassword,
     mapel: req.body.mapel || ["Fikih"],
     role: "teacher",
     homeroom_class_id: req.body.homeroom_class_id || ""
-  };
+  }, req);
   teachers.push(newTeacher);
   await saveData('teachers', teachers);
   await saveData('students', students);
@@ -5228,7 +5268,7 @@ app.put("/api/students/:id/change-role", requireAuth, requireRole(['teacher', 'g
   res.json({ success: true, teacher: sanitizedNewTeacher });
 });
 
-app.put("/api/users/change-role", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.put("/api/users/change-role", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { userId, newRole } = req.body;
   if (!userId || !newRole) {
     return res.status(400).json({ success: false, message: "userId dan newRole wajib diisi." });
@@ -5241,6 +5281,14 @@ app.put("/api/users/change-role", requireAuth, requireRole(['teacher', 'guru', '
     return res.status(404).json({ success: false, message: "Pengguna tidak ditemukan." });
   }
 
+  const targetUser = sIdx >= 0 ? students[sIdx] : teachers[tIdx];
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+
+  if (!isBos && !isItemForCurrentMadrasah(targetUser, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak." });
+  }
+
   if (newRole === "teacher" || newRole === "guru") {
     if (tIdx >= 0) {
       teachers[tIdx].role = "teacher";
@@ -5250,19 +5298,22 @@ app.put("/api/users/change-role", requireAuth, requireRole(['teacher', 'guru', '
     } else {
       const st = students[sIdx];
       students.splice(sIdx, 1);
-      const rawPassword = st.password || "guru123";
-      const hashed = hashPassword(rawPassword);
+      
+      let convertedPassword = st.password;
+      if (req.body.password && String(req.body.password).trim()) {
+        convertedPassword = hashPassword(String(req.body.password).trim());
+      }
 
-      const newTeacher = {
+      const newTeacher = tagNewRecord({
         id: st.id,
         nip: st.nis || "199" + Date.now(),
         name: st.name,
         username: st.username,
-        password: hashed,
+        password: convertedPassword,
         mapel: ["Fikih"],
         role: "teacher",
         homeroom_class_id: ""
-      };
+      }, req);
       teachers.push(newTeacher);
       await saveData('teachers', teachers);
       await saveData('students', students);
@@ -5287,21 +5338,23 @@ app.put("/api/users/change-role", requireAuth, requireRole(['teacher', 'guru', '
         }
       });
 
-      const rawPassword = tch.password || "123456";
-      const hashed = hashPassword(rawPassword);
+      let convertedPassword = tch.password;
+      if (req.body.password && String(req.body.password).trim()) {
+        convertedPassword = hashPassword(String(req.body.password).trim());
+      }
 
-      const newStudent = {
+      const newStudent = tagNewRecord({
         id: tch.id,
         nis: tch.nip || "100" + Date.now().toString().substr(-3),
         name: tch.name,
         classId: classes[0]?.id || "C1",
         class_id: classes[0]?.id || "C1",
         username: tch.username,
-        password: hashed,
+        password: convertedPassword,
         photo: "",
         no_hp: "",
         role: roleValue
-      };
+      }, req);
       students.push(newStudent);
       await saveData('teachers', teachers);
       await saveData('students', students);
@@ -5314,9 +5367,21 @@ app.put("/api/users/change-role", requireAuth, requireRole(['teacher', 'guru', '
   res.status(400).json({ success: false, message: "Role tidak valid." });
 });
 
-app.delete("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.delete("/api/students/:id", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const targetStudent = students.find(s => String(s.id) === String(id));
+  
+  if (!targetStudent) {
+    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
+  }
+
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+
+  if (!isBos && !isItemForCurrentMadrasah(targetStudent, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak." });
+  }
+
   const targetNis = targetStudent ? String(targetStudent.nis || '').trim() : '';
 
   // 1. Delete profile photo from Firestore if any
@@ -5359,13 +5424,25 @@ app.delete("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'ad
   res.json({ success: true, message: "Siswa dan seluruh data terkait (foto, absensi, dan nilai) berhasil dihapus." });
 });
 
-app.post("/api/students/delete-bulk", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.post("/api/students/delete-bulk", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) {
     return res.status(400).json({ success: false, message: "IDs harus berupa array." });
   }
-  const stringIds = ids.map(id => String(id));
-  const targetStudents = students.filter(s => stringIds.includes(String(s.id)));
+
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+
+  const requestedIds = new Set(ids.map((id: any) => String(id)));
+
+  const targetStudents = students.filter((st: any) => {
+    if (!requestedIds.has(String(st.id))) return false;
+    if (isBos) return true;
+    return isItemForCurrentMadrasah(st, req);
+  });
+
+  const allowedIdsSet = new Set(targetStudents.map((st: any) => String(st.id)));
+  const allowedIdsArr = Array.from(allowedIdsSet);
   const targetNisSet = new Set(targetStudents.map(s => String(s.nis || '').trim()).filter(Boolean));
 
   // 1. Delete profile photos & attendance photos from Firestore
@@ -5378,7 +5455,7 @@ app.post("/api/students/delete-bulk", requireAuth, requireRole(['teacher', 'guru
         }
       }
     }
-    const studentAttRecords = (attendance || []).filter(a => stringIds.includes(String(a.studentId)) || (a.nis && targetNisSet.has(String(a.nis))));
+    const studentAttRecords = (attendance || []).filter(a => allowedIdsSet.has(String(a.studentId)) || (a.nis && targetNisSet.has(String(a.nis))));
     for (const rec of studentAttRecords) {
       if (rec && rec.photo && rec.photo.startsWith('/api/photos/')) {
         const docId = rec.photo.replace('/api/photos/', '');
@@ -5390,22 +5467,22 @@ app.post("/api/students/delete-bulk", requireAuth, requireRole(['teacher', 'guru
   }
 
   // 2. Remove students
-  students = students.filter(s => !stringIds.includes(String(s.id)));
+  students = students.filter(s => !allowedIdsSet.has(String(s.id)));
   await saveData('students', students);
 
   // 3. Cascade remove attendance
   if (Array.isArray(attendance)) {
-    attendance = attendance.filter(a => !stringIds.includes(String(a.studentId)) && (!a.nis || !targetNisSet.has(String(a.nis))));
+    attendance = attendance.filter(a => !allowedIdsSet.has(String(a.studentId)) && (!a.nis || !targetNisSet.has(String(a.nis))));
     await saveData('attendance', attendance);
   }
 
   // 4. Cascade remove grades
   if (Array.isArray(grades)) {
-    grades = grades.filter(g => !stringIds.includes(String(g.studentId)) && (!g.nis || !targetNisSet.has(String(g.nis))));
+    grades = grades.filter(g => !allowedIdsSet.has(String(g.studentId)) && (!g.nis || !targetNisSet.has(String(g.nis))));
     await saveData('grades', grades);
   }
 
-  res.json({ success: true, message: `${stringIds.length} siswa dan seluruh data terkait (foto, absensi, dan nilai) berhasil dihapus.` });
+  res.json({ success: true, message: `${allowedIdsArr.length} siswa dan seluruh data terkait (foto, absensi, dan nilai) berhasil dihapus.` });
 });
 
 // 5. Classes API
@@ -8544,7 +8621,7 @@ function computeIndonesianTextSimilarity(studentAnswer: string, keyAnswer: strin
   };
 }
 
-app.post("/api/gemini/auto-koreksi", async (req, res) => {
+app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
     const { classId, examId, studentId, method = 'ai' } = req.body;
     if (!classId || !examId) {
@@ -8556,13 +8633,23 @@ app.post("/api/gemini/auto-koreksi", async (req, res) => {
       return res.status(404).json({ success: false, message: "Jadwal ujian tidak ditemukan." });
     }
 
+    const authUser = getAuthUser(req);
+    const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+
+    if (!isBos && !isItemForCurrentMadrasah(ex, req)) {
+      return res.status(403).json({ success: false, message: "Akses ditolak." });
+    }
+
     const examQuestions = getExamQuestionsServer(ex);
     const essayQuestions = examQuestions.filter((q: any) => q.type === 'esay' || q.type === 'essay');
     if (essayQuestions.length === 0) {
       return res.json({ success: false, message: "Ujian ini tidak memiliki soal esay untuk dikoreksi." });
     }
 
-    const classStudents = students.filter((s: any) => String(s.classId) === String(classId));
+    const classStudents = students.filter((s: any) => 
+      String(s.classId) === String(classId) && 
+      (isBos || isItemForCurrentMadrasah(s, req))
+    );
     let completedStudents = classStudents.filter((st: any) => {
       const key = st.id + '_' + examId;
       return Boolean(completedExams[key]) || studentExamAnswers[key] !== undefined;
@@ -8815,7 +8902,7 @@ Jawaban Siswa: ${studentAns || "(Tidak menjawab)"}
   }
 });
 
-app.post("/api/gemini/auto-koreksi-lkpd", async (req, res) => {
+app.post("/api/gemini/auto-koreksi-lkpd", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
     const { classId, lkpdId, method = 'ai' } = req.body;
     if (!classId || !lkpdId) {
@@ -8829,13 +8916,23 @@ app.post("/api/gemini/auto-koreksi-lkpd", async (req, res) => {
       return res.status(404).json({ success: false, message: "LKPD tidak ditemukan." });
     }
 
+    const authUser = getAuthUser(req);
+    const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+
+    if (!isBos && !isItemForCurrentMadrasah(lkpd, req)) {
+      return res.status(403).json({ success: false, message: "Akses ditolak." });
+    }
+
     const markers = lkpd.markers || [];
     if (markers.length === 0) {
       return res.json({ success: false, message: "LKPD ini tidak memiliki titik pertanyaan untuk dikoreksi." });
     }
 
     const submissions = lkpd.submissions || [];
-    const classStudents = students.filter((s: any) => String(s.classId) === String(classId));
+    const classStudents = students.filter((s: any) => 
+      String(s.classId) === String(classId) && 
+      (isBos || isItemForCurrentMadrasah(s, req))
+    );
     
     // Filter submissions of students in this class
     const classStudentIds = new Set(classStudents.map((s: any) => String(s.id)));
