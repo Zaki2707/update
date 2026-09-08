@@ -2599,7 +2599,6 @@ async function hydrate() {
     if (dbData['childguardLogs'] !== undefined) childguardLogs = dbData['childguardLogs'];
     if (dbData['childguardLocations'] !== undefined) childguardLocations = dbData['childguardLocations'];
     if (dbData['childguardStatus'] !== undefined) childguardStatus = dbData['childguardStatus'];
-        applyExtendedDbState(dbData);
     applyExtendedDbState(dbData);
 
     await runOneTimeMigrations();
