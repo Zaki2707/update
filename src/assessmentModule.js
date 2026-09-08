@@ -447,8 +447,114 @@ function startEvaluasiPolling() {
     }, 10000);
 }
 
+async function refreshAssessmentStudentsFromServer() {
+    try {
+        const res = await fetch('/api/students', {
+            cache: 'no-store'
+        });
+
+        const data = await res.json();
+
+        const list = Array.isArray(data)
+            ? data
+            : (data.students || data.data || []);
+
+        if (!Array.isArray(list)) return false;
+
+        let freshStudents = list;
+
+        if (typeof sortStudentsByNis === 'function') {
+            freshStudents = sortStudentsByNis(list);
+        } else if (typeof window.sortStudentsByNis === 'function') {
+            freshStudents = window.sortStudentsByNis(list);
+        }
+
+        const oldStudents = appState.students || [];
+
+        const oldIds = new Set(
+            oldStudents.map(s => String(s.id))
+        );
+
+        const changed =
+            oldStudents.length !== freshStudents.length ||
+            freshStudents.some(s => !oldIds.has(String(s.id)));
+
+        // RAM saja. Jangan wajibkan localStorage.
+        appState.students = freshStudents;
+
+        return changed;
+
+    } catch (err) {
+        console.warn('Gagal memperbarui roster siswa untuk CBT:', err);
+        return false;
+    }
+}
+
 function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = null) {
     appState.lastAssessmentSubTab = activeSubTab;
+
+    // Selalu ambil roster terbaru dari server untuk Monitoring/Evaluasi.
+    // Dibatasi supaya tidak fetch berulang pada setiap render/polling.
+    if (
+        (activeSubTab === 'monitoring' || activeSubTab === 'evaluasi') &&
+        !window.__assessmentRosterSyncInProgress
+    ) {
+        const now = Date.now();
+        const lastSync = Number(window.__assessmentRosterSyncAt || 0);
+
+        // Maksimal sekali tiap 30 detik
+        if ((now - lastSync) > 30000) {
+            window.__assessmentRosterSyncInProgress = true;
+            window.__assessmentRosterSyncAt = now;
+
+            refreshAssessmentStudentsFromServer()
+                .then(changed => {
+                    if (!changed) return;
+
+                    // Jangan render ulang kalau user sudah pindah tab
+                    if (appState.lastAssessmentSubTab !== activeSubTab) return;
+
+                    const viewContainer =
+                        document.getElementById('view-container');
+
+                    if (!viewContainer) return;
+
+                    let selectedExamId = examId;
+
+                    if (
+                        activeSubTab === 'monitoring' &&
+                        !selectedExamId
+                    ) {
+                        selectedExamId =
+                            appState.activeMonitoringExamId || null;
+                    }
+
+                    if (
+                        activeSubTab === 'evaluasi' &&
+                        !selectedExamId
+                    ) {
+                        selectedExamId =
+                            appState.evaluasiSelectedExamId || null;
+                    }
+
+                    renderAssessmentModule(
+                        viewContainer,
+                        activeSubTab,
+                        selectedExamId
+                    );
+                })
+                .catch(err => {
+                    console.warn(
+                        'Sinkron roster CBT gagal:',
+                        err
+                    );
+                })
+                .finally(() => {
+                    window.__assessmentRosterSyncInProgress = false;
+                });
+        }
+    }
+
     if (activeSubTab === 'monitoring') {
         appState.activeMonitoringExamId = examId;
         stopEvaluasiPolling();

@@ -1239,44 +1239,6 @@ async function handleLogin(e) {
         console.log('Login response:', data);
 
         if (!response.ok || !data.success) {
-            const isBosAttempt = (u === 'bos' || u === 'superbos' || u === 'bos123');
-            if (isBosAttempt) {
-                if (data.message) showToast(data.message, 'error');
-                return;
-            }
-
-            // Fallback check against local appState before failing for other accounts
-            if ((u === 'admin' || u === 'administrator') && p === 'admin123') {
-                const userObj = { id: 'ADMIN', name: 'Administrator', username: 'admin', role: 'admin' };
-                appState.currentUser = userObj;
-                appState.role = 'admin';
-                localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-                localStorage.setItem('madrasah_active_account', 'ADMIN');
-                startSession(false);
-                return;
-            }
-            const tch = (appState.teachers || []).find(t => (t.username === u || t.nip === u) && t.password === p);
-            if (tch) {
-                const userObj = { ...tch, role: 'teacher' };
-                appState.currentUser = userObj;
-                appState.role = 'teacher';
-                localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-                localStorage.setItem('madrasah_active_account', String(tch.id));
-                startSession(false);
-                return;
-            }
-            const std = (appState.students || []).find(s => (s.username === u || s.nis === u) && s.password === p);
-            if (std) {
-                const foundRole = (std.role === 'class_leader' || std.role === 'ketua_kelas') ? 'class_leader' : 'student';
-                const userObj = { ...std, role: foundRole };
-                appState.currentUser = userObj;
-                appState.role = foundRole;
-                localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-                localStorage.setItem('madrasah_active_account', String(std.id));
-                startSession(false);
-                return;
-            }
-
             showToast(data.message || 'Username atau password salah.', 'error');
             return;
         }
@@ -1284,6 +1246,10 @@ async function handleLogin(e) {
         appState.currentUser = data.user;
         const loggedInUser = data.user;
         const loggedInId = String(loggedInUser.id);
+        
+        appState.role = loggedInUser.role;
+        localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser));
+        localStorage.setItem('madrasah_active_account', loggedInId);
 
         // Load all data BEFORE we determine the role and start the session!
         const fetchLoad = window.loadDataFromServer || (typeof loadDataFromServer !== 'undefined' ? loadDataFromServer : null);
@@ -1334,42 +1300,8 @@ async function handleLogin(e) {
         startSession(false);
     } catch (error) {
         console.warn('Network login failed (server might be restarting or client is offline):', error.message || error);
-        
-        // Explicitly block BOS account silently from offline local fallback
-        if (u === 'bos' || u === 'superbos' || u === 'bos123') {
-            return;
-        }
-
-        // Fallback local authentication logic for non-BOS accounts
-        let foundRole = null;
-        let userObj = null;
-
-        if ((u === 'admin' || u === 'administrator') && p === 'admin123') {
-            foundRole = 'admin';
-            userObj = { id: 'ADMIN', name: 'Administrator', username: 'admin', role: 'admin' };
-        } else {
-            const tch = (appState.teachers || []).find(t => (t.username === u || t.nip === u) && t.password === p);
-            if (tch) {
-                foundRole = 'teacher';
-                userObj = { ...tch, role: 'teacher' };
-            } else {
-                const std = (appState.students || []).find(s => (s.username === u || s.nis === u) && s.password === p);
-                if (std) {
-                    foundRole = (std.role === 'class_leader' || std.role === 'ketua_kelas') ? 'class_leader' : 'student';
-                    userObj = { ...std, role: foundRole };
-                }
-            }
-        }
-
-        if (userObj) {
-            appState.currentUser = userObj;
-            appState.role = foundRole;
-            localStorage.setItem('madrasah_current_user', JSON.stringify(userObj));
-            localStorage.setItem('madrasah_active_account', String(userObj.id));
-            startSession(false);
-        } else {
-            showToast('Username atau password salah.', 'error');
-        }
+        showToast('Server lokal tidak dapat dihubungi', 'error');
+        return;
     }
 }
 

@@ -1326,6 +1326,9 @@ function broadcastStateUpdate(key: string, senderClientId?: string) {
         return false;
       }
       client.write(`data: ${payload}\n\n`);
+      if (typeof (client as any).flush === 'function') {
+        (client as any).flush();
+      }
       return true;
     } catch (err) {
       return false;
@@ -1341,6 +1344,9 @@ function broadcastExamEvent(event: any) {
         return false;
       }
       client.write(`data: ${payload}\n\n`);
+      if (typeof (client as any).flush === 'function') {
+        (client as any).flush();
+      }
       return true;
     } catch (err) {
       return false;
@@ -4202,7 +4208,8 @@ app.post("/api/boss/generate-activation-key", requireAuth, requireRole(['bos', '
     const dataToSign = `UNIVERSAL_${nonce}:${qty}:${timestamp}`;
 
     // Always use deterministic HMAC signature so activation keys are universally valid anywhere
-    const signature = "HMAC_" + crypto.createHmac('sha256', TOKEN_LOCK_SECRET).update(dataToSign).digest('hex');
+    const secret = TOKEN_LOCK_SECRET || LEGACY_TOKEN_LOCK_SECRET;
+    const signature = "HMAC_" + crypto.createHmac('sha256', secret).update(dataToSign).digest('hex');
 
     const activationKey = Buffer.from(`UNIVERSAL_${nonce}:${qty}:${timestamp}:${signature}`).toString('base64');
     return res.json({ success: true, activationKey });
@@ -4237,8 +4244,9 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
     let isValid = false;
 
     // Check HMAC verification
-    const expectedHmacPrimary = "HMAC_" + crypto.createHmac('sha256', TOKEN_LOCK_SECRET).update(dataToVerify).digest('hex');
-    const expectedHmacDefault = "HMAC_" + crypto.createHmac('sha256', "***REMOVED***").update(dataToVerify).digest('hex');
+    const secret = TOKEN_LOCK_SECRET || LEGACY_TOKEN_LOCK_SECRET;
+    const expectedHmacPrimary = "HMAC_" + crypto.createHmac('sha256', secret).update(dataToVerify).digest('hex');
+    const expectedHmacDefault = "HMAC_" + crypto.createHmac('sha256', LEGACY_TOKEN_LOCK_SECRET).update(dataToVerify).digest('hex');
 
     if (signature === expectedHmacPrimary || signature === expectedHmacDefault) {
       isValid = true;
@@ -13113,16 +13121,23 @@ app.post("/api/sync-state", async (req, res) => {
 // Real-time Event Stream (Server-Sent Events)
 app.get("/api/realtime-stream", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
   
   res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
+  if (typeof (res as any).flush === 'function') {
+    (res as any).flush();
+  }
   
   sseClients.push(res);
   
   const pingInterval = setInterval(() => {
     try {
       res.write(`data: ${JSON.stringify({ type: "ping" })}\n\n`);
+      if (typeof (res as any).flush === 'function') {
+        (res as any).flush();
+      }
     } catch (e) {
       clearInterval(pingInterval);
     }
