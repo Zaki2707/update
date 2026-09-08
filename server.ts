@@ -27,15 +27,22 @@ import { generateMasterV2ModulAjar } from "./src/masterGenerativeRulesEngine.js"
 // Initialize Firebase - FORCE DISCONNECTED PER USER INSTRUCTION TO PREVENT QUOTA EXCEEDED
 let db: any = null;
 
-// Runtime mode is derived from Cloud Run's platform-provided markers, never from APP_MODE/host headers.
-// This keeps one source tree for cloud + localhost while preventing a local .env toggle from enabling BOSS.
+// Cloud Run markers are the SECURITY boundary for BOSS. APP_MODE only selects storage behavior.
+// A localhost installation cannot enable BOSS merely by setting APP_MODE=online.
 const isTrustedCloudRunRuntime = Boolean(
   process.env.K_SERVICE &&
   (process.env.K_REVISION || process.env.K_CONFIGURATION)
 );
-const isOfflineMode = !isTrustedCloudRunRuntime;
+const isLocalRuntime = !isTrustedCloudRunRuntime;
+const requestedAppMode = String(process.env.APP_MODE || '').trim().toLowerCase();
+const storageMode: 'online' | 'offline' =
+  requestedAppMode === 'online' ? 'online' :
+  requestedAppMode === 'offline' ? 'offline' :
+  (isTrustedCloudRunRuntime ? 'online' : 'offline');
+const isOfflineMode = storageMode === 'offline';
+const isOnlineMode = storageMode === 'online';
 
-console.log(`[Runtime] ${isOfflineMode ? 'OFFLINE_LOCAL' : 'ONLINE_CLOUD_RUN'} mode detected.`);
+console.log(`[Runtime] ${isTrustedCloudRunRuntime ? 'TRUSTED_CLOUD_RUN' : 'LOCAL'} runtime; storage=${storageMode.toUpperCase()}${requestedAppMode ? ' (APP_MODE)' : ' (auto)'}.`);
 console.log("Firebase Firestore has been completely disconnected per user instructions to avoid daily free-tier read limits. Application is fully using local storage and Cloudinary backup.");
 
 // Cloudinary initialization
@@ -192,7 +199,7 @@ function verifyAndLockMadrasahTokens() {
     const expectedLegacySig = calculateTokenSignature(m.id, currentBalance, true);
     
     if (!m.tokenSignature) {
-      if (isOfflineMode && currentBalance > 1) {
+      if (isLocalRuntime && currentBalance > 1) {
         // Preserve the stored balance, but quarantine it until an official token action reseals it.
         m.tokenSignatureInvalid = true;
         console.error(`[TOKEN SIGNATURE INVALID] Madrasah "${m.name}" (${m.id}) has balance ${currentBalance} without a valid signature. Balance preserved; token use is blocked until resealed.`);
@@ -382,13 +389,17 @@ async function loadStoreFromFirestore(): Promise<Record<string, any>> {
 
 
 // Local Uploads Directory Configuration
+// OFFLINE: uploads/ is the primary photo store on the PC.
+// ONLINE: Cloudinary is the photo source of truth; Cloud Run filesystem is never used as photo storage/cache.
 const uploadsDir = path.join(process.cwd(), "uploads");
 const photosDir = path.join(uploadsDir, "attendance_photos");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-if (!fs.existsSync(photosDir)) {
-  fs.mkdirSync(photosDir, { recursive: true });
+if (isOfflineMode) {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+  if (!fs.existsSync(photosDir)) {
+    fs.mkdirSync(photosDir, { recursive: true });
+  }
 }
 
 // In-memory and persisted Cloudinary URL map for photo failover
@@ -432,137 +443,142 @@ async function uploadToCloudinary(base64OrPath: string, publicId?: string): Prom
   return null;
 }
 
-async function syncAllPhotosToCloudinary(): Promise<{ totalCloudinary: number; synced: number; mapped: number }> {
-  if (!process.env.CLOUDINARY_CLOUD_NAME) {
-    console.log("[Cloudinary Sync] Cloudinary is not configured. Skipping background sync.");
-    return { totalCloudinary: 0, synced: 0, mapped: 0 };
-  }
-
-  console.log("[Cloudinary Restore Sync] Starting background sync for Cloudinary photos & local uploads...");
-
-  // 1. Fetch all resources from Cloudinary to rebuild photoCloudinaryMap
-  try {
-    let nextCursor: string | null = null;
-    let allCloudPhotos: any[] = [];
-    do {
-      const res: any = await cloudinary.api.resources({
-        type: 'upload',
-        prefix: 'madrasah_photos',
-        max_results: 500,
-        next_cursor: nextCursor || undefined
-      });
-      if (res && Array.isArray(res.resources)) {
-        allCloudPhotos.push(...res.resources);
-      }
-      nextCursor = res.next_cursor || null;
-    } while (nextCursor);
-
-    try {
-      const rootRes: any = await cloudinary.api.resources({
-        type: 'upload',
-        max_results: 500
-      });
-      if (rootRes && Array.isArray(rootRes.resources)) {
-        rootRes.resources.forEach((r: any) => {
-          if (!allCloudPhotos.some(p => p.public_id === r.public_id)) {
-            allCloudPhotos.push(r);
-          }
-        });
-      }
-    } catch (e) {}
-
-    allCloudPhotos.forEach((item: any) => {
-      if (item && item.public_id && (item.secure_url || item.url)) {
-        const url = item.secure_url || item.url;
-        const fullId = item.public_id;
-        const cleanId = item.public_id.replace(/^madrasah_photos\//, '');
-        photoCloudinaryMap[fullId] = url;
-        photoCloudinaryMap[cleanId] = url;
-      }
-    });
-    console.log(`[Cloudinary Sync] Rebuilt photoCloudinaryMap with ${allCloudPhotos.length} Cloudinary assets (${Object.keys(photoCloudinaryMap).length} total keys mapped).`);
-  } catch (err: any) {
-    console.warn("[Cloudinary Sync] Could not fetch resources from Cloudinary API:", err?.message || err);
-  }
-
-  // 2. Upload any local disk files in uploadsDir not yet in Cloudinary
-  const photoCandidates = new Set<string>();
-
-  const addPhotoId = (val: any) => {
-    if (typeof val !== 'string' || !val) return;
-    let pId = val.trim();
-    if (pId.startsWith('/api/photos/')) {
-      pId = pId.replace('/api/photos/', '').trim();
-    }
-    if (pId && !pId.startsWith('http') && !pId.startsWith('data:image/')) {
-      photoCandidates.add(pId);
-    }
-  };
-
-  (students || []).forEach(s => addPhotoId(s?.photo));
-  (teachers || []).forEach(t => addPhotoId(t?.photo));
-  (attendance || []).forEach(att => addPhotoId(att?.photo));
-  (teacherAttendance || []).forEach(ta => addPhotoId(ta?.photo));
-  (questions || []).forEach(q => addPhotoId(q?.imageUrl));
-
-  try {
-    if (fs.existsSync(uploadsDir)) {
-      const files = fs.readdirSync(uploadsDir);
-      files.forEach(f => {
-        if (f && !f.startsWith('.')) {
-          photoCandidates.add(f);
-        }
-      });
-    }
-  } catch (e) {
-    console.warn("[Cloudinary Restore Sync] Could not read uploads directory:", e);
-  }
-
-  let uploaded = 0;
-  let skipped = 0;
-
-  for (const pId of photoCandidates) {
-    if (photoCloudinaryMap[pId]) {
-      skipped++;
-      continue;
-    }
-
-    const filePath = path.join(uploadsDir, pId);
-    if (fs.existsSync(filePath)) {
-      try {
-        const cUrl = await uploadToCloudinary(filePath, pId);
-        if (cUrl) {
-          photoCloudinaryMap[pId] = cUrl;
-          uploaded++;
-          console.log(`[Cloudinary Restore Sync] Uploaded missing photo ${pId} -> ${cUrl}`);
-        }
-      } catch (err: any) {
-        console.warn(`[Cloudinary Restore Sync] Upload failed for ${pId}:`, err?.message || err);
-      }
-    }
-  }
-
-  // 3. Persist photoCloudinaryMap to PostgreSQL app_store table so it survives rebuilds & redeployments
-  try {
-    await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
-    console.log(`[Cloudinary Sync] Persisted photoCloudinaryMap (${Object.keys(photoCloudinaryMap).length} mapped keys) to PostgreSQL app_store.`);
-  } catch (e: any) {
-    console.warn("[Cloudinary Sync] Could not persist photoCloudinaryMap to database:", e?.message || e);
-  }
-
-  console.log(`[Cloudinary Restore Sync Finish] Complete. Uploaded: ${uploaded}, Skipped (Already in Cloudinary): ${skipped}`);
-  return {
-    totalCloudinary: Object.keys(photoCloudinaryMap).length,
-    synced: uploaded,
-    mapped: Object.keys(photoCloudinaryMap).length
-  };
-}
-
-
 function normalizeCloudinaryPhotoId(photoId: string): string {
   return String(photoId || '')
     .replace(/^madrasah_photos\//, '')
     .replace(/[^a-zA-Z0-9_\-]/g, '_');
+}
+
+function collectReferencedPhotoIds(): Set<string> {
+  const candidates = new Set<string>();
+  const addPhotoId = (value: any) => {
+    if (typeof value !== 'string') return;
+    let photoId = value.trim();
+    if (!photoId || photoId.startsWith('http') || photoId.startsWith('data:image/')) return;
+    if (photoId.startsWith('/api/photos/')) {
+      photoId = photoId.replace('/api/photos/', '').split('?')[0].trim();
+    }
+    if (photoId) candidates.add(photoId);
+  };
+  const addHistory = (history: any) => {
+    if (!Array.isArray(history)) return;
+    for (const entry of history) {
+      addPhotoId(typeof entry === 'string' ? entry : entry?.photo);
+    }
+  };
+
+  (students || []).forEach((student: any) => {
+    addPhotoId(student?.photo);
+    addHistory(student?.photoHistory || student?.photo_history);
+  });
+  (teachers || []).forEach((teacher: any) => {
+    addPhotoId(teacher?.photo);
+    addHistory(teacher?.photoHistory || teacher?.photo_history);
+  });
+  (attendance || []).forEach((item: any) => addPhotoId(item?.photo));
+  (teacherAttendance || []).forEach((item: any) => addPhotoId(item?.photo));
+  (questions || []).forEach((item: any) => {
+    addPhotoId(item?.imageUrl);
+    addPhotoId(item?.image);
+  });
+  addPhotoId(appSettings?.schoolLogo);
+  addPhotoId(appSettings?.schoolLogoUrl);
+  return candidates;
+}
+
+async function listActualCloudinaryPhotos(): Promise<Map<string, { url: string; fullId: string }>> {
+  if (!process.env.CLOUDINARY_CLOUD_NAME) {
+    throw new Error('Cloudinary belum dikonfigurasi.');
+  }
+  const cloudByCleanId = new Map<string, { url: string; fullId: string }>();
+  let nextCursor: string | null = null;
+  do {
+    const response: any = await cloudinary.api.resources({
+      type: 'upload',
+      resource_type: 'image',
+      prefix: 'madrasah_photos',
+      max_results: 500,
+      next_cursor: nextCursor || undefined
+    });
+    const resources = Array.isArray(response?.resources) ? response.resources : [];
+    for (const item of resources) {
+      if (!item?.public_id || !(item.secure_url || item.url)) continue;
+      const url = item.secure_url || item.url;
+      const fullId = String(item.public_id);
+      const cleanId = fullId.replace(/^madrasah_photos\//, '');
+      cloudByCleanId.set(cleanId, { url, fullId });
+    }
+    nextCursor = response?.next_cursor || null;
+  } while (nextCursor);
+  return cloudByCleanId;
+}
+
+async function syncAllPhotosToCloudinary(): Promise<{ totalCloudinary: number; synced: number; mapped: number }> {
+  if (!process.env.CLOUDINARY_CLOUD_NAME) {
+    console.log('[Cloudinary Sync] Cloudinary is not configured. Skipping sync.');
+    return { totalCloudinary: 0, synced: 0, mapped: 0 };
+  }
+
+  console.log(`[Cloudinary Sync] Rebuilding mapping from actual Cloudinary assets (storage=${storageMode}).`);
+  const cloudByCleanId = await listActualCloudinaryPhotos();
+
+  // REBUILD, do not merge: this removes stale mappings that point to deleted Cloudinary assets.
+  const rebuiltMap: Record<string, string> = {};
+  for (const [cleanId, remote] of cloudByCleanId.entries()) {
+    rebuiltMap[cleanId] = remote.url;
+    rebuiltMap[remote.fullId] = remote.url;
+  }
+  photoCloudinaryMap = rebuiltMap;
+
+  let uploaded = 0;
+  let skipped = 0;
+
+  // Local files are a real source only in OFFLINE mode. Online never depends on Cloud Run disk.
+  if (isOfflineMode) {
+    const photoCandidates = collectReferencedPhotoIds();
+    try {
+      if (fs.existsSync(uploadsDir)) {
+        for (const name of fs.readdirSync(uploadsDir)) {
+          if (!name || name.startsWith('.')) continue;
+          const filePath = path.join(uploadsDir, name);
+          try {
+            if (fs.statSync(filePath).isFile()) photoCandidates.add(name);
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      console.warn('[Cloudinary Sync] Could not scan offline uploads directory:', e);
+    }
+
+    for (const photoId of photoCandidates) {
+      const normalizedId = normalizeCloudinaryPhotoId(photoId);
+      const remote = cloudByCleanId.get(normalizedId) || cloudByCleanId.get(photoId);
+      if (remote) {
+        photoCloudinaryMap[photoId] = remote.url;
+        photoCloudinaryMap[normalizedId] = remote.url;
+        photoCloudinaryMap[remote.fullId] = remote.url;
+        skipped++;
+        continue;
+      }
+      const localFile = path.join(uploadsDir, photoId);
+      if (!fs.existsSync(localFile)) continue;
+      const cloudUrl = await uploadToCloudinary(localFile, photoId);
+      if (cloudUrl) {
+        photoCloudinaryMap[photoId] = cloudUrl;
+        photoCloudinaryMap[normalizedId] = cloudUrl;
+        photoCloudinaryMap[`madrasah_photos/${normalizedId}`] = cloudUrl;
+        uploaded++;
+      }
+    }
+  }
+
+  await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
+  console.log(`[Cloudinary Sync] Finished. Remote assets=${cloudByCleanId.size}; uploaded=${uploaded}; mapped=${Object.keys(photoCloudinaryMap).length}.`);
+  return {
+    totalCloudinary: cloudByCleanId.size,
+    synced: uploaded,
+    mapped: Object.keys(photoCloudinaryMap).length
+  };
 }
 
 async function repairMissingCloudinaryPhotos(): Promise<{
@@ -577,58 +593,33 @@ async function repairMissingCloudinaryPhotos(): Promise<{
     throw new Error('Cloudinary belum dikonfigurasi.');
   }
 
-  // Cloudinary API is the source of truth here. Do not trust cached photoCloudinaryMap,
-  // because an old mapping can survive even when the actual remote asset was deleted.
-  const cloudByCleanId = new Map<string, { url: string; fullId: string }>();
-  let nextCursor: string | null = null;
-  do {
-    const response: any = await cloudinary.api.resources({
-      type: 'upload',
-      resource_type: 'image',
-      prefix: 'madrasah_photos',
-      max_results: 500,
-      next_cursor: nextCursor || undefined
-    });
+  const cloudByCleanId = await listActualCloudinaryPhotos();
+  const candidates = collectReferencedPhotoIds();
 
-    const resources = Array.isArray(response?.resources) ? response.resources : [];
-    for (const item of resources) {
-      if (!item?.public_id || !(item.secure_url || item.url)) continue;
-      const url = item.secure_url || item.url;
-      const fullId = String(item.public_id);
-      const cleanId = fullId.replace(/^madrasah_photos\//, '');
-      cloudByCleanId.set(cleanId, { url, fullId });
-    }
-    nextCursor = response?.next_cursor || null;
-  } while (nextCursor);
-
-  const candidates = new Set<string>();
-  const addPhotoId = (value: any) => {
-    if (typeof value !== 'string') return;
-    let photoId = value.trim();
-    if (!photoId || photoId.startsWith('http') || photoId.startsWith('data:image/')) return;
-    if (photoId.startsWith('/api/photos/')) {
-      photoId = photoId.replace('/api/photos/', '').split('?')[0].trim();
-    }
-    if (photoId) candidates.add(photoId);
-  };
-
-  (students || []).forEach(student => addPhotoId(student?.photo));
-  (teachers || []).forEach(teacher => addPhotoId(teacher?.photo));
-
-  // Include local photo files even if a stale database reference no longer points to them.
-  try {
-    if (fs.existsSync(uploadsDir)) {
-      for (const name of fs.readdirSync(uploadsDir)) {
-        if (!name || name.startsWith('.')) continue;
-        const filePath = path.join(uploadsDir, name);
-        try {
-          if (fs.statSync(filePath).isFile()) candidates.add(name);
-        } catch (_) {}
+  // In offline mode, orphan local files are also valid candidates for backup.
+  if (isOfflineMode) {
+    try {
+      if (fs.existsSync(uploadsDir)) {
+        for (const name of fs.readdirSync(uploadsDir)) {
+          if (!name || name.startsWith('.')) continue;
+          const filePath = path.join(uploadsDir, name);
+          try {
+            if (fs.statSync(filePath).isFile()) candidates.add(name);
+          } catch (_) {}
+        }
       }
+    } catch (err: any) {
+      console.warn('[Cloudinary Repair] Could not scan uploads directory:', err?.message || err);
     }
-  } catch (err: any) {
-    console.warn('[Cloudinary Repair] Could not scan uploads directory:', err?.message || err);
   }
+
+  // Start from a clean remote-derived mapping so stale aliases cannot survive the repair.
+  const rebuiltMap: Record<string, string> = {};
+  for (const [cleanId, remote] of cloudByCleanId.entries()) {
+    rebuiltMap[cleanId] = remote.url;
+    rebuiltMap[remote.fullId] = remote.url;
+  }
+  photoCloudinaryMap = rebuiltMap;
 
   let alreadyExists = 0;
   let uploaded = 0;
@@ -638,9 +629,7 @@ async function repairMissingCloudinaryPhotos(): Promise<{
   for (const photoId of candidates) {
     const normalizedId = normalizeCloudinaryPhotoId(photoId);
     const remote = cloudByCleanId.get(normalizedId) || cloudByCleanId.get(photoId);
-
     if (remote) {
-      // Refresh all equivalent mapping keys from the real Cloudinary asset.
       photoCloudinaryMap[photoId] = remote.url;
       photoCloudinaryMap[normalizedId] = remote.url;
       photoCloudinaryMap[remote.fullId] = remote.url;
@@ -648,20 +637,21 @@ async function repairMissingCloudinaryPhotos(): Promise<{
       continue;
     }
 
-    // The cache says nothing reliable here: remove stale aliases before attempting a real upload.
-    delete photoCloudinaryMap[photoId];
-    delete photoCloudinaryMap[normalizedId];
-    delete photoCloudinaryMap[`madrasah_photos/${normalizedId}`];
+    // ONLINE has no durable local source by design. Missing historical assets are reported, never faked.
+    if (isOnlineMode) {
+      missingSource++;
+      console.warn(`[Cloudinary Repair] Remote asset missing for ${photoId}; online mode has no local photo store.`);
+      continue;
+    }
 
     const localFile = path.join(uploadsDir, photoId);
     let hasLocalFile = false;
     try {
       hasLocalFile = fs.existsSync(localFile) && fs.statSync(localFile).isFile();
     } catch (_) {}
-
     if (!hasLocalFile) {
       missingSource++;
-      console.warn(`[Cloudinary Repair] Remote asset missing and no local source available for ${photoId}.`);
+      console.warn(`[Cloudinary Repair] Remote asset missing and no offline local source available for ${photoId}.`);
       continue;
     }
 
@@ -682,7 +672,6 @@ async function repairMissingCloudinaryPhotos(): Promise<{
   }
 
   await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
-
   console.log(`[Cloudinary Repair] Checked ${candidates.size}; exists ${alreadyExists}; uploaded ${uploaded}; missing source ${missingSource}; failed ${failed}.`);
   return {
     checked: candidates.size,
@@ -696,69 +685,49 @@ async function repairMissingCloudinaryPhotos(): Promise<{
 
 async function saveBase64ToFirestore(base64Str: string): Promise<string> {
   if (!base64Str || !base64Str.startsWith("data:image/")) return base64Str;
-  
-  const hashId = `img_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  let finalDocId = hashId;
 
-  // 1. Instant Local Disk Cache (Uploads directory) for zero-latency local access
-  try {
-    const matches = base64Str.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    if (matches && matches.length === 3) {
-      fs.writeFileSync(path.join(uploadsDir, hashId), Buffer.from(matches[2], 'base64'));
-    } else {
-      fs.writeFileSync(path.join(uploadsDir, hashId), base64Str);
-    }
-  } catch (err) {
-    console.warn("Failed to write photo to local uploads directory:", err);
-  }
+  const photoId = `img_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-  // In offline mode: storage uses PostgreSQL for data + ./uploads folder for photos
   if (isOfflineMode) {
-    // Still try Cloudinary backup if configured, even in offline mode
-    if (process.env.CLOUDINARY_CLOUD_NAME) {
-      uploadToCloudinary(base64Str, finalDocId).then(cUrl => {
-        if (cUrl) {
-          photoCloudinaryMap[finalDocId] = cUrl;
-          photoCloudinaryMap[hashId] = cUrl;
-          saveData('photoCloudinaryMap', photoCloudinaryMap, false).catch(() => {});
-        }
-      }).catch(e => console.warn("Cloudinary background upload error:", e));
-    }
-    return `/api/photos/${finalDocId}`;
-  }
-
-  // 2. Storage 1: Firebase Firestore
-  if (db) {
     try {
-      const docRef = await addDoc(collection(db, 'photos'), {
-        data: base64Str,
-        createdAt: Date.now()
-      });
-      finalDocId = docRef.id;
-      
-      // Keep local file named with docRef.id as well for fast disk lookup
-      try {
-        const matches = base64Str.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-        if (matches && matches.length === 3) {
-          fs.writeFileSync(path.join(uploadsDir, docRef.id), Buffer.from(matches[2], 'base64'));
-        }
-      } catch (e) {}
-    } catch (err: any) {
-      console.warn("Could not save photo to Firestore (e.g. quota limit/offline), fallback to local & Cloudinary:", err?.message || err);
+      if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+      const matches = base64Str.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        fs.writeFileSync(path.join(uploadsDir, photoId), Buffer.from(matches[2], 'base64'));
+      } else {
+        fs.writeFileSync(path.join(uploadsDir, photoId), base64Str);
+      }
+    } catch (err) {
+      console.error('[Photo Storage] Failed to save offline photo to uploads/:', err);
+      throw new Error('Foto gagal disimpan ke penyimpanan lokal.');
     }
+
+    // Optional backup only. uploads/ remains the offline source of truth.
+    if (process.env.CLOUDINARY_CLOUD_NAME) {
+      uploadToCloudinary(base64Str, photoId).then(cUrl => {
+        if (!cUrl) return;
+        photoCloudinaryMap[photoId] = cUrl;
+        photoCloudinaryMap[`madrasah_photos/${normalizeCloudinaryPhotoId(photoId)}`] = cUrl;
+        saveData('photoCloudinaryMap', photoCloudinaryMap, false).catch(() => {});
+      }).catch(e => console.warn('[Photo Storage] Optional offline Cloudinary backup failed:', e));
+    }
+    return `/api/photos/${photoId}`;
   }
 
-  // 3. Storage 2: Cloudinary (Dual Storage Sync)
-  // Run asynchronously so user request completes ultra-fast without waiting for external network
-  uploadToCloudinary(base64Str, finalDocId).then(cUrl => {
-    if (cUrl) {
-      photoCloudinaryMap[finalDocId] = cUrl;
-      photoCloudinaryMap[hashId] = cUrl;
-      saveData('photoCloudinaryMap', photoCloudinaryMap, false).catch(() => {});
-    }
-  }).catch(e => console.warn("Cloudinary background upload error:", e));
-
-  return `/api/photos/${finalDocId}`;
+  // ONLINE: Cloudinary must acknowledge the upload before the application reports success.
+  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+    throw new Error('Cloudinary wajib dikonfigurasi pada mode online.');
+  }
+  const cloudUrl = await uploadToCloudinary(base64Str, photoId);
+  if (!cloudUrl) {
+    throw new Error('Upload foto ke Cloudinary gagal. Foto tidak dianggap tersimpan.');
+  }
+  const normalizedId = normalizeCloudinaryPhotoId(photoId);
+  photoCloudinaryMap[photoId] = cloudUrl;
+  photoCloudinaryMap[normalizedId] = cloudUrl;
+  photoCloudinaryMap[`madrasah_photos/${normalizedId}`] = cloudUrl;
+  await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
+  return `/api/photos/${photoId}`;
 }
 
 function getOrGenerateSSLCert() {
@@ -1128,8 +1097,12 @@ async function determineAndInitPool() {
   }
 
   if (!pool) {
-    console.log("[Database Fallback Active] External database connections unavailable or quota exceeded. System is operating seamlessly using local JSON file store (local_store.json).");
     activeDbSource = "NONE";
+    if (isOnlineMode) {
+      console.error("[Database Required] Cloud SQL/PostgreSQL is unavailable in ONLINE mode. Persistent writes will be blocked until the database reconnects.");
+      return;
+    }
+    console.log("[Database Fallback Active] PostgreSQL unavailable. OFFLINE mode continues with local_store.json.");
     await ensureHydrated();
     return;
   }
@@ -1221,6 +1194,10 @@ function autoRestoreFromBackup() {
 }
 
 function readLocalStore() {
+  if (isOnlineMode) {
+    if (!localStoreCache) localStoreCache = {};
+    return localStoreCache;
+  }
   if (localStoreCache) {
     return localStoreCache;
   }
@@ -1380,6 +1357,7 @@ function executeWrite() {
 
 function writeLocalStore(store: any) {
   localStoreCache = store;
+  if (isOnlineMode) return; // Cloud Run filesystem is ephemeral; Cloud SQL is authoritative online.
   
   if (writeTimeout) {
     return; // Already scheduled
@@ -1400,6 +1378,7 @@ function writeLocalStore(store: any) {
 }
 
 function flushAllPendingWrites() {
+  if (isOnlineMode) return;
   console.log("[Shutdown] Flushing all pending writes to disk...");
   if (writeTimeout) {
     clearTimeout(writeTimeout);
@@ -1409,6 +1388,7 @@ function flushAllPendingWrites() {
 }
 
 function executeWriteSync() {
+  if (isOnlineMode) return;
   const store = localStoreCache;
   if (!store) return;
 
@@ -1439,14 +1419,6 @@ function executeWriteSync() {
   }
 }
 
-process.on("SIGINT", () => {
-  flushAllPendingWrites();
-  process.exit(0);
-});
-process.on("SIGTERM", () => {
-  flushAllPendingWrites();
-  process.exit(0);
-});
 
 async function loadData(key: string, fallback: any) {
   try {
@@ -1699,6 +1671,7 @@ async function writeKeyToPostgresDirect(key: string) {
       }
 
       handleDbError(`Save data error for ${key}`, e);
+      if (isOnlineMode) throw e;
       break;
     }
   }
@@ -1715,17 +1688,23 @@ function scheduleDbWrite(key: string) {
   const timeSinceLastWrite = now - lastWrite;
 
   if (timeSinceLastWrite >= DB_WRITE_THROTTLE_INTERVAL) {
-    writeKeyToPostgresDirect(key);
+    void writeKeyToPostgresDirect(key).catch(err => console.error(`[Database Scheduled Write] ${key}:`, err));
   } else {
     const delay = DB_WRITE_THROTTLE_INTERVAL - timeSinceLastWrite;
     const timeout = setTimeout(() => {
-      writeKeyToPostgresDirect(key);
+      void writeKeyToPostgresDirect(key).catch(err => console.error(`[Database Scheduled Write] ${key}:`, err));
     }, delay);
     dbWriteTimeouts.set(key, timeout);
   }
 }
 
 async function saveData(key: string, value: any, immediate = true) {
+  if (isOnlineMode && !isRestoring) {
+    if (dbInitPromise) await dbInitPromise;
+    if (!pool || isDbQuotaExceeded) {
+      throw new Error(`ONLINE_DATABASE_UNAVAILABLE: cannot persist ${key}`);
+    }
+  }
   if (key === 'madrasahs' && Array.isArray(value)) {
     for (const m of value) {
       // Never silently legitimize a balance that failed signature verification.
@@ -1775,6 +1754,12 @@ async function saveData(key: string, value: any, immediate = true) {
 }
 
 async function saveDataBatch(items: { key: string; value: any }[], immediate = true) {
+  if (isOnlineMode && !isRestoring) {
+    if (dbInitPromise) await dbInitPromise;
+    if (!pool || isDbQuotaExceeded) {
+      throw new Error('ONLINE_DATABASE_UNAVAILABLE: cannot persist batch');
+    }
+  }
   for (const item of items) {
     updateMemoryKey(item.key, item.value);
   }
@@ -1894,7 +1879,7 @@ async function handleGracefulShutdown(signal: string) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log(`[Graceful Shutdown] Received ${signal}. Preparing to shut down server...`);
-  
+  if (isOfflineMode) flushAllPendingWrites();
   await flushPendingDbWrites();
   
   if (pool) {
@@ -1920,31 +1905,37 @@ function updateMemoryKey(key: string, value: any) {
   else if (key === 'teachers') teachers = value;
   else if (key === 'students') students = value;
   else if (key === 'attendance') attendance = value;
+  else if (key === 'teacherAttendance') teacherAttendance = value;
   else if (key === 'questionBankGroups') questionBankGroups = value;
   else if (key === 'questions') questions = value;
   else if (key === 'grades') grades = value;
   else if (key === 'chats') chats = value;
   else if (key === 'exams') exams = value;
+  else if (key === 'lkpdList') lkpdList = value;
   else if (key === 'rooms') rooms = value;
   else if (key === 'schedules') schedules = value;
+  else if (key === 'savedRosters') savedRosters = value;
+  else if (key === 'timeSlots') timeSlots = value;
+  else if (key === 'kbmDuration') kbmDuration = value;
   else if (key === 'journals') journals = value;
   else if (key === 'gradeCategories') gradeCategories = value;
+  else if (key === 'customGradeColumns') customGradeColumns = value;
+  else if (key === 'calendarEvents') calendarEvents = value;
   else if (key === 'generatedExams') generatedExams = value;
+  else if (key === 'lessonPlans') lessonPlans = value;
   else if (key === 'activeExamSessions') activeExamSessions = value;
   else if (key === 'completedExams') completedExams = value;
   else if (key === 'forceFinishedExams') forceFinishedExams = value;
   else if (key === 'studentExamAnswers') studentExamAnswers = value;
   else if (key === 'studentExamQuestions') studentExamQuestions = value;
+  else if (key === 'studentExamMasterQuestions') studentExamMasterQuestions = value;
   else if (key === 'studentExamGrades') studentExamGrades = value;
   else if (key === 'studentTabSwitches') studentTabSwitches = value;
   else if (key === 'studentOutOfTab') studentOutOfTab = value;
   else if (key === 'blockedStudents') blockedStudents = value;
+  else if (key === 'examMessages') examMessages = value;
+  else if (key === 'examViolationLogs') examViolationLogs = value;
   else if (key === 'settings') appSettings = value;
-  else if (key === 'lessonPlans') lessonPlans = value;
-  else if (key === 'teacherAttendance') teacherAttendance = value;
-  else if (key === 'savedRosters') savedRosters = value;
-  else if (key === 'timeSlots') timeSlots = value;
-  else if (key === 'kbmDuration') kbmDuration = value;
   else if (key === 'childguardRules') childguardRules = value;
   else if (key === 'childguardLogs') childguardLogs = value;
   else if (key === 'childguardLocations') childguardLocations = value;
@@ -1953,54 +1944,70 @@ function updateMemoryKey(key: string, value: any) {
   else if (key === 'photoCloudinaryMap') photoCloudinaryMap = value;
   else if (key === 'eduGames') eduGames = value;
   else if (key === 'gameAttempts') gameAttempts = value;
-  else if (key === 'lkpdList') lkpdList = value;
+  else if (key === 'madrasahs') madrasahs = value;
+  else if (key === 'tokenRequests') tokenRequests = value;
+  else if (key === 'usedActivationKeys') usedActivationKeys = value;
 }
 
 function getMemoryKeyValue(key: string) {
-  if (key === 'photoCloudinaryMap') return photoCloudinaryMap;
-  if (key === 'eduGames') return eduGames;
-  if (key === 'gameAttempts') return gameAttempts;
   if (key === 'schoolLocationSettings') return schoolLocationSettings;
   if (key === 'classes') return classes;
   if (key === 'subjects') return subjects;
   if (key === 'teachers') return teachers;
   if (key === 'students') return students;
   if (key === 'attendance') return attendance;
+  if (key === 'teacherAttendance') return teacherAttendance;
   if (key === 'questionBankGroups') return questionBankGroups;
   if (key === 'questions') return questions;
   if (key === 'grades') return grades;
   if (key === 'chats') return chats;
   if (key === 'exams') return exams;
+  if (key === 'lkpdList') return lkpdList;
   if (key === 'rooms') return rooms;
   if (key === 'schedules') return schedules;
+  if (key === 'savedRosters') return savedRosters;
+  if (key === 'timeSlots') return timeSlots;
+  if (key === 'kbmDuration') return kbmDuration;
   if (key === 'journals') return journals;
   if (key === 'gradeCategories') return gradeCategories;
+  if (key === 'customGradeColumns') return customGradeColumns;
+  if (key === 'calendarEvents') return calendarEvents;
   if (key === 'generatedExams') return generatedExams;
+  if (key === 'lessonPlans') return lessonPlans;
   if (key === 'activeExamSessions') return activeExamSessions;
   if (key === 'completedExams') return completedExams;
   if (key === 'forceFinishedExams') return forceFinishedExams;
   if (key === 'studentExamAnswers') return studentExamAnswers;
   if (key === 'studentExamQuestions') return studentExamQuestions;
+  if (key === 'studentExamMasterQuestions') return studentExamMasterQuestions;
   if (key === 'studentExamGrades') return studentExamGrades;
   if (key === 'studentTabSwitches') return studentTabSwitches;
   if (key === 'studentOutOfTab') return studentOutOfTab;
   if (key === 'blockedStudents') return blockedStudents;
+  if (key === 'examMessages') return examMessages;
+  if (key === 'examViolationLogs') return examViolationLogs;
   if (key === 'settings') return appSettings;
-  if (key === 'lessonPlans') return lessonPlans;
-  if (key === 'teacherAttendance') return teacherAttendance;
-  if (key === 'savedRosters') return savedRosters;
-  if (key === 'timeSlots') return timeSlots;
-  if (key === 'kbmDuration') return kbmDuration;
   if (key === 'childguardRules') return childguardRules;
   if (key === 'childguardLogs') return childguardLogs;
   if (key === 'childguardLocations') return childguardLocations;
   if (key === 'childguardStatus') return childguardStatus;
   if (key === 'importGroups') return importGroups;
-  if (key === 'lkpdList') return lkpdList;
+  if (key === 'photoCloudinaryMap') return photoCloudinaryMap;
+  if (key === 'eduGames') return eduGames;
+  if (key === 'gameAttempts') return gameAttempts;
+  if (key === 'madrasahs') return madrasahs;
+  if (key === 'tokenRequests') return tokenRequests;
+  if (key === 'usedActivationKeys') return usedActivationKeys;
   return undefined;
 }
 
 async function updateStoreKeyWithLock(key: string, updateFn: (val: any) => any) {
+  if (isOnlineMode) {
+    if (dbInitPromise) await dbInitPromise;
+    if (!pool || isDbQuotaExceeded) {
+      throw new Error(`ONLINE_DATABASE_UNAVAILABLE: cannot persist ${key}`);
+    }
+  }
   // Ultra-High Performance & Non-Blocking Architecture:
   // Instead of running a heavy synchronous SELECT FOR UPDATE transaction on every single student tap,
   // we update the memory and local store instantly (resolving in <1ms), and schedule an asynchronous,
@@ -2048,6 +2055,31 @@ export const appExport = app;
 export default app;
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
+// ONLINE persistence gate: never acknowledge a mutating API request when Cloud SQL is unavailable.
+// Login/health/connection diagnostics remain available so administrators can recover the service.
+app.use(async (req, res, next) => {
+  if (!isOnlineMode || !req.path.startsWith('/api/')) return next();
+  const method = String(req.method || 'GET').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return next();
+  const allowedWithoutDb = new Set([
+    '/api/login',
+    '/api/check-connection',
+    '/api/db-test-connection'
+  ]);
+  if (allowedWithoutDb.has(req.path)) return next();
+  try {
+    if (dbInitPromise) await dbInitPromise;
+  } catch (_) {}
+  if (!pool || isDbQuotaExceeded) {
+    return res.status(503).json({
+      success: false,
+      code: 'ONLINE_DATABASE_UNAVAILABLE',
+      message: 'Cloud SQL sedang tidak tersedia. Data tidak disimpan ke filesystem sementara Cloud Run; silakan coba lagi setelah koneksi database pulih.'
+    });
+  }
+  next();
+});
+
 app.use(compression({
   threshold: 512,
   filter: (req, res) => {
@@ -2075,7 +2107,7 @@ app.use((req, res, next) => {
   next();
 }); app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-app.use('/uploads', express.static(uploadsDir));
+if (isOfflineMode) app.use('/uploads', express.static(uploadsDir));
 
 app.get("/update_offline.zip", (req, res) => {
   const filePath = path.join(process.cwd(), "update_offline.zip");
@@ -2090,10 +2122,10 @@ app.get("/update_offline.zip", (req, res) => {
 
 app.get("/api/photos/:id", async (req, res) => {
   const photoId = req.params.id;
-
-  // 1. Layer 1: Local Disk Cache (0-latency, protects Firebase & Cloudinary quotas for high student concurrency)
   const localFile = path.join(uploadsDir, photoId);
-  if (fs.existsSync(localFile)) {
+
+  // OFFLINE source of truth: local PC uploads/.
+  if (isOfflineMode && fs.existsSync(localFile)) {
     try {
       const fileBuf = fs.readFileSync(localFile);
       const strHeader = fileBuf.subarray(0, 50).toString('utf8');
@@ -2101,94 +2133,70 @@ app.get("/api/photos/:id", async (req, res) => {
         const fullStr = fileBuf.toString('utf8');
         const matches = fullStr.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
         if (matches && matches.length === 3) {
-          res.setHeader("Content-Type", matches[1]);
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-          return res.send(Buffer.from(matches[2], "base64"));
+          res.setHeader('Content-Type', matches[1]);
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          return res.send(Buffer.from(matches[2], 'base64'));
         }
       }
-      if (fileBuf[0] === 0xFF && fileBuf[1] === 0xD8) {
-        res.setHeader("Content-Type", "image/jpeg");
-      } else if (fileBuf[0] === 0x89 && fileBuf[1] === 0x50 && fileBuf[2] === 0x4E && fileBuf[3] === 0x47) {
-        res.setHeader("Content-Type", "image/png");
-      } else if (fileBuf[0] === 0x52 && fileBuf[1] === 0x49 && fileBuf[2] === 0x46 && fileBuf[3] === 0x46) {
-        res.setHeader("Content-Type", "image/webp");
-      } else {
-        res.setHeader("Content-Type", "image/jpeg");
-      }
-      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      if (fileBuf[0] === 0xFF && fileBuf[1] === 0xD8) res.setHeader('Content-Type', 'image/jpeg');
+      else if (fileBuf[0] === 0x89 && fileBuf[1] === 0x50 && fileBuf[2] === 0x4E && fileBuf[3] === 0x47) res.setHeader('Content-Type', 'image/png');
+      else if (fileBuf[0] === 0x52 && fileBuf[1] === 0x49 && fileBuf[2] === 0x46 && fileBuf[3] === 0x46) res.setHeader('Content-Type', 'image/webp');
+      else res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       return res.send(fileBuf);
-    } catch (e) {
-      // Fallback if read buffer failed
-    }
+    } catch (_) {}
   }
 
-  // 2. Layer 2: Storage 1 - Firebase Firestore
-  if (db) {
+  // Optional legacy Firestore fallback, used only if a Firestore connection is explicitly enabled.
+  if (isOfflineMode && db) {
     try {
       const snap = await getDoc(doc(db, 'photos', photoId));
       if (snap.exists()) {
         const data = snap.data().data;
-        // Asynchronously write to local disk cache so subsequent requests hit Layer 1
-        try {
-          const matches = data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-          if (matches && matches.length === 3) {
-            fs.writeFileSync(localFile, Buffer.from(matches[2], 'base64'));
-          } else {
-            fs.writeFileSync(localFile, data);
-          }
-        } catch (e) {}
-
         const matches = data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
         if (!matches || matches.length !== 3) return res.send(data);
-        const ext = matches[1];
-        const buffer = Buffer.from(matches[2], "base64");
-        res.setHeader("Content-Type", ext);
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        const buffer = Buffer.from(matches[2], 'base64');
+        res.setHeader('Content-Type', matches[1]);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         return res.send(buffer);
       }
     } catch (err: any) {
-      console.warn(`[Dual Storage Alert] Firebase Firestore read error for ${photoId} (e.g. quota limit reached):`, err?.message || err);
+      console.warn(`[Photo Storage] Firestore fallback read error for ${photoId}:`, err?.message || err);
     }
   }
 
-  // 3. Layer 3: Storage 2 - Cloudinary Resolution & Failover
-  let cUrl = photoCloudinaryMap[photoId] || 
-             photoCloudinaryMap[`madrasah_photos/${photoId}`] || 
-             photoCloudinaryMap[photoId.replace(/^madrasah_photos\//, '')];
+  // ONLINE source of truth (and optional OFFLINE backup): Cloudinary.
+  const normalizedId = normalizeCloudinaryPhotoId(photoId);
+  let cUrl = photoCloudinaryMap[photoId] ||
+             photoCloudinaryMap[normalizedId] ||
+             photoCloudinaryMap[`madrasah_photos/${normalizedId}`];
 
   if (!cUrl && process.env.CLOUDINARY_CLOUD_NAME) {
-    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-    const directUrl = `https://res.cloudinary.com/${cloudName}/image/upload/madrasah_photos/${photoId}`;
-    cUrl = directUrl;
-    photoCloudinaryMap[photoId] = directUrl;
+    try {
+      const remote: any = await cloudinary.api.resource(`madrasah_photos/${normalizedId}`, { resource_type: 'image' });
+      cUrl = remote?.secure_url || remote?.url || null;
+      if (cUrl) {
+        photoCloudinaryMap[photoId] = cUrl;
+        photoCloudinaryMap[normalizedId] = cUrl;
+        photoCloudinaryMap[`madrasah_photos/${normalizedId}`] = cUrl;
+        saveData('photoCloudinaryMap', photoCloudinaryMap, false).catch(() => {});
+      }
+    } catch (_) {
+      cUrl = null;
+      delete photoCloudinaryMap[photoId];
+      delete photoCloudinaryMap[normalizedId];
+      delete photoCloudinaryMap[`madrasah_photos/${normalizedId}`];
+    }
   }
 
   if (cUrl) {
-    // Asynchronously download and cache to local disk in background for zero latency on subsequent hits
-    if (!fs.existsSync(localFile)) {
-      try {
-        https.get(cUrl, (cRes) => {
-          if (cRes.statusCode === 200) {
-            const chunks: Buffer[] = [];
-            cRes.on('data', chunk => chunks.push(chunk));
-            cRes.on('end', () => {
-              try {
-                fs.writeFileSync(localFile, Buffer.concat(chunks));
-              } catch(e) {}
-            });
-          }
-        }).on('error', () => {});
-      } catch (e) {}
-    }
-
-    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.setHeader('Cache-Control', 'public, max-age=86400');
     return res.redirect(302, cUrl);
   }
 
-  // Fallback: Default clean SVG placeholder avatar if photo is missing in all storage layers
   const svgPlaceholder = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#f1f5f9"/><path d="M50 42a12 12 0 1 0 0-24 12 12 0 0 0 0 24zm0 8c-16 0-28 10-28 22v2h56v-2c0-12-12-22-28-22z" fill="#cbd5e1"/></svg>`;
-  res.setHeader("Content-Type", "image/svg+xml");
-  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
   return res.status(200).send(svgPlaceholder);
 });
 
@@ -2343,7 +2351,8 @@ function parseDbRows(rows: any[]) {
     forceFinishedExams: {},
     blockedStudents: {},
     activeExamSessions: {},
-    studentExamGrades: {}
+    studentExamGrades: {},
+    examViolationLogs: {}
   };
 
   for (const row of rows) {
@@ -2366,6 +2375,24 @@ function parseDbRows(rows: any[]) {
   }
   
   return dbData;
+}
+
+function applyExtendedDbState(dbData: Record<string, any>) {
+  if (dbData['customGradeColumns'] !== undefined) customGradeColumns = dbData['customGradeColumns'];
+  if (dbData['calendarEvents'] !== undefined) calendarEvents = dbData['calendarEvents'];
+  if (dbData['studentExamMasterQuestions'] !== undefined) studentExamMasterQuestions = dbData['studentExamMasterQuestions'];
+  if (dbData['examMessages'] !== undefined) examMessages = dbData['examMessages'];
+  if (dbData['examViolationLogs'] !== undefined) examViolationLogs = dbData['examViolationLogs'];
+  if (dbData['importGroups'] !== undefined) importGroups = dbData['importGroups'];
+  if (dbData['eduGames'] !== undefined) eduGames = dbData['eduGames'];
+  if (dbData['gameAttempts'] !== undefined) gameAttempts = dbData['gameAttempts'];
+  if (dbData['photoCloudinaryMap'] !== undefined) photoCloudinaryMap = dbData['photoCloudinaryMap'] || {};
+  if (dbData['madrasahs'] !== undefined) {
+    madrasahs = dbData['madrasahs'];
+    verifyAndLockMadrasahTokens();
+  }
+  if (dbData['tokenRequests'] !== undefined) tokenRequests = dbData['tokenRequests'];
+  if (dbData['usedActivationKeys'] !== undefined) usedActivationKeys = dbData['usedActivationKeys'];
 }
 
 // Hydrate from Database or local storage on startup
@@ -2457,6 +2484,10 @@ async function hydrate() {
   }
 
   if (!pool) {
+    if (isOnlineMode) {
+      console.error("[Hydration] Cloud SQL unavailable in ONLINE mode; local_store.json is not used as persistent fallback.");
+      return;
+    }
     await runOneTimeMigrations();
     console.log("Database URL / SQL_HOST not set. Using local JSON store.");
     return;
@@ -2467,7 +2498,7 @@ async function hydrate() {
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("DB Timeout")), 4000));
     await Promise.race([testPromise, timeoutPromise]);
     
-    const res = await pool.query("SELECT key, value FROM app_store WHERE key NOT IN ('attendance', 'teacherAttendance', 'chats', 'journals')");
+    const res = await pool.query("SELECT key, value FROM app_store");
     const dbData = parseDbRows(res.rows);
     console.log("Hydrate fetched rows count from Cloud SQL:", res.rows.length, "Teachers count:", Array.isArray(dbData['teachers']) ? dbData['teachers'].length : 'none', "Students count:", Array.isArray(dbData['students']) ? dbData['students'].length : 'none');
 
@@ -2568,6 +2599,8 @@ async function hydrate() {
     if (dbData['childguardLogs'] !== undefined) childguardLogs = dbData['childguardLogs'];
     if (dbData['childguardLocations'] !== undefined) childguardLocations = dbData['childguardLocations'];
     if (dbData['childguardStatus'] !== undefined) childguardStatus = dbData['childguardStatus'];
+        applyExtendedDbState(dbData);
+    applyExtendedDbState(dbData);
 
     await runOneTimeMigrations();
 
@@ -2601,7 +2634,7 @@ let dbFetchPromise: Promise<void> | null = null;
 async function refreshInmemoryState(force = false) {
   if (dbInitPromise) await dbInitPromise;
   if (!pool || isDbQuotaExceeded) {
-    await ensureHydrated();
+    if (isOfflineMode) await ensureHydrated();
     return;
   }
   const now = Date.now();
@@ -2611,7 +2644,7 @@ async function refreshInmemoryState(force = false) {
   if (!dbFetchPromise) {
     dbFetchPromise = (async () => {
       try {
-        const resDb = await pool.query("SELECT key, value FROM app_store WHERE key NOT IN ('attendance', 'teacherAttendance', 'chats', 'journals')");
+        const resDb = await pool.query("SELECT key, value FROM app_store");
         const dbData = parseDbRows(resDb.rows);
         if (dbData['schoolLocationSettings'] !== undefined) schoolLocationSettings = dbData['schoolLocationSettings'];
         if (dbData['classes'] !== undefined) classes = dbData['classes'];
@@ -2658,12 +2691,6 @@ async function refreshInmemoryState(force = false) {
         if (dbData['childguardLogs'] !== undefined) childguardLogs = dbData['childguardLogs'];
         if (dbData['childguardLocations'] !== undefined) childguardLocations = dbData['childguardLocations'];
         if (dbData['childguardStatus'] !== undefined) childguardStatus = dbData['childguardStatus'];
-        if (dbData['photoCloudinaryMap'] !== undefined) {
-          photoCloudinaryMap = {
-            ...photoCloudinaryMap,
-            ...(dbData['photoCloudinaryMap'] || {})
-          };
-        }
 
         lastDbFetchTime = Date.now();
         try {
@@ -3872,7 +3899,7 @@ app.post("/api/db-pull-cloud", async (req, res) => {
     }
 
     // 3. Fetch current status from Cloud SQL
-    const result = await pool.query("SELECT key, value FROM app_store WHERE key NOT IN ('attendance', 'teacherAttendance', 'chats', 'journals')");
+    const result = await pool.query("SELECT key, value FROM app_store");
     
     // Read local store and apply to memory variables
     const store = readLocalStore();
@@ -4321,8 +4348,8 @@ app.post("/api/token-requests", requireAuth, requireRole(['teacher', 'guru', 'ad
 });
 
 app.post("/api/token-requests/:id/approve", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
-  if (isOfflineMode) {
-    return res.status(403).json({ success: false, message: "Persetujuan top-up tidak diizinkan dalam mode offline." });
+  if (!isBossRuntimeEnabled()) {
+    return res.status(403).json({ success: false, message: "Persetujuan top-up hanya tersedia pada runtime BOSS Cloud Run yang tepercaya." });
   }
   const { id } = req.params;
   const { approvedQuantity } = req.body;
@@ -4370,8 +4397,8 @@ app.post("/api/token-requests/:id/reject", requireAuth, requireRole(['bos', 'sup
 });
 
 app.post("/api/madrasahs/:id/update-tokens", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
-  if (isOfflineMode) {
-    return res.status(403).json({ success: false, message: "Pembaruan saldo token langsung dinonaktifkan dalam mode offline demi mencegah kecurangan." });
+  if (!isBossRuntimeEnabled()) {
+    return res.status(403).json({ success: false, message: "Pembaruan saldo token hanya tersedia pada runtime BOSS Cloud Run yang tepercaya." });
   }
   const { id } = req.params;
   const { newBalance, deltaTokens } = req.body;
@@ -4706,8 +4733,8 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
   if (adminPass && String(adminPass).trim().length > 0) targetM.adminPass = hashPassword(String(adminPass).trim());
   if (phone !== undefined) targetM.phone = String(phone).trim();
   if (cbtTokenBalance !== undefined) {
-    if (isOfflineMode) {
-      // Ignore token balance changes from the general update API in offline mode to prevent cheating/tampering
+    if (!isBossRuntimeEnabled()) {
+      // Ignore token balance changes unless this is the trusted BOSS runtime. APP_MODE never grants this permission.
     } else {
       targetM.cbtTokenBalance = Math.max(0, parseInt(cbtTokenBalance, 10) || 0);
       delete targetM.tokenSignatureInvalid;
@@ -7603,19 +7630,26 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
 });
 
 async function saveDeltaDb(deltaType: string, itemKey: string, value: any) {
+  if (isOnlineMode) {
+    if (dbInitPromise) await dbInitPromise;
+    if (!pool || isDbQuotaExceeded) {
+      throw new Error(`ONLINE_DATABASE_UNAVAILABLE: cannot persist delta ${deltaType}`);
+    }
+  }
   if (pool && !isDbQuotaExceeded) {
     const dbKey = `delta::${deltaType}::${itemKey}`;
     try {
       if (value === null || value === undefined) {
-         await pool.query('DELETE FROM app_store WHERE key = $1', [dbKey]);
+        await pool.query('DELETE FROM app_store WHERE key = $1', [dbKey]);
       } else {
-         await pool.query(`
-            INSERT INTO app_store (key, value) VALUES ($1, $2)
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-         `, [dbKey, JSON.stringify(value)]);
+        await pool.query(`
+          INSERT INTO app_store (key, value) VALUES ($1, $2)
+          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        `, [dbKey, JSON.stringify(value)]);
       }
-    } catch(e) {
-       console.error("Delta write error:", e);
+    } catch (e) {
+      console.error('Delta write error:', e);
+      if (isOnlineMode) throw e;
     }
   }
 }

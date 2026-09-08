@@ -663,11 +663,11 @@ function renderSettingModule(container) {
                             <i class="fa-solid fa-cloud-arrow-down"></i>
                             <span>Tarik & Sinkronkan Data Cloud</span>
                         </button>
-                        <button type="button" onclick="forceSyncCloudinaryPhotos()" class="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-xl shadow transition flex items-center gap-2 cursor-pointer" title="Periksa dan sinkronkan semua foto siswa/guru dari penyimpanan Cloudinary">
+                        <button type="button" onclick="forceSyncCloudinaryPhotos()" class="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-xl shadow transition flex items-center gap-2 cursor-pointer" title="Bangun ulang mapping dari aset yang benar-benar ada di Cloudinary dan buang mapping foto yang sudah basi">
                             <i class="fa-solid fa-images"></i>
                             <span>Sinkronkan Foto Cloudinary</span>
                         </button>
-                        <button type="button" id="repair-cloudinary-missing-btn" onclick="repairMissingCloudinaryPhotos()" class="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow transition flex items-center gap-2 cursor-pointer" title="Cek aset Cloudinary yang benar-benar ada dan upload foto lokal yang masih belum tersimpan di Cloudinary">
+                        <button type="button" id="repair-cloudinary-missing-btn" onclick="repairMissingCloudinaryPhotos()" class="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow transition flex items-center gap-2 cursor-pointer" title="Audit foto profil, riwayat foto, absensi siswa/guru, dan gambar soal; upload sumber lokal yang belum ada di Cloudinary">
                             <i class="fa-solid fa-cloud-arrow-up"></i>
                             <span>Periksa & Upload Foto Hilang</span>
                         </button>
