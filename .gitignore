@@ -5,3 +5,5 @@ coverage/
 *.tmp
 .env*
 !.env.example
+
+dist/
