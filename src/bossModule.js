@@ -484,6 +484,32 @@ async function submitOfflineActivationKey() {
                         appState.teachers[tchIdx].cbtTokenBalance = data.remainingTokens;
                     }
                 }
+            } else if (!isTeacher && typeof data.remainingTokens === 'number') {
+                const newBalance = Number(data.remainingTokens) || 0;
+
+                // Keep the logged-in admin/session copy in sync with the authoritative server balance.
+                if (appState.currentUser) {
+                    appState.currentUser.cbtTokenBalance = newBalance;
+                    if (window.safeSetLocalStorage) {
+                        window.safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+                    }
+                }
+
+                // Also update the matching madrasah object immediately so every badge/helper sees the same value.
+                if (Array.isArray(appState.madrasahs) && appState.madrasahs.length > 0) {
+                    const currentMId = appState.currentUser && (appState.currentUser.madrasahId || appState.currentUser.madrasahSlug);
+                    let mIdx = appState.madrasahs.findIndex(m =>
+                        String(m.id) === String(currentMId) ||
+                        String(m.slug) === String(currentMId)
+                    );
+                    if (mIdx < 0 && appState.madrasahs.length === 1) mIdx = 0;
+                    if (mIdx >= 0) {
+                        appState.madrasahs[mIdx].cbtTokenBalance = newBalance;
+                    }
+                    if (window.safeSetLocalStorage) {
+                        window.safeSetLocalStorage('madrasah_madrasahs', appState.madrasahs);
+                    }
+                }
             }
 
             // Reload the local data
@@ -539,8 +565,20 @@ async function submitOfflineActivationKey() {
                     if (window.showToast) window.showToast(`Berhasil diaktivasi! Ditambahkan +${qty} Token ke akun Guru. Saldo terbaru: ${appState.currentUser.cbtTokenBalance} Token.`, 'success');
                 } else {
                     if (appState.madrasahs && appState.madrasahs.length > 0) {
-                        appState.madrasahs[0].cbtTokenBalance = (appState.madrasahs[0].cbtTokenBalance || 0) + qty;
-                        if (window.saveState) window.saveState('madrasahs', appState.madrasahs);
+                        const currentMId = appState.currentUser && (appState.currentUser.madrasahId || appState.currentUser.madrasahSlug);
+                        let mIdx = appState.madrasahs.findIndex(m =>
+                            String(m.id) === String(currentMId) ||
+                            String(m.slug) === String(currentMId)
+                        );
+                        if (mIdx < 0 && appState.madrasahs.length === 1) mIdx = 0;
+                        if (mIdx >= 0) {
+                            appState.madrasahs[mIdx].cbtTokenBalance = (appState.madrasahs[mIdx].cbtTokenBalance || 0) + qty;
+                            if (appState.currentUser) {
+                                appState.currentUser.cbtTokenBalance = appState.madrasahs[mIdx].cbtTokenBalance;
+                                if (window.safeSetLocalStorage) window.safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+                            }
+                            if (window.saveState) window.saveState('madrasahs', appState.madrasahs);
+                        }
                     }
                     if (window.showToast) window.showToast(`Berhasil diaktivasi! Ditambahkan +${qty} Token secara offline.`, 'success');
                 }
