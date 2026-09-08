@@ -1,3 +1,5 @@
+import './securityConsoleGuard.js';
+
 // Robust fetch response .json() fallback for non-JSON or HTML responses
 const originalFetchJson = Response.prototype.json;
 Response.prototype.json = async function () {
