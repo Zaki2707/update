@@ -4,7 +4,7 @@ import { SharedArray } from 'k6/data';
 import { Rate, Counter } from 'k6/metrics';
 
 const BASE_URL = String(__ENV.BASE_URL || 'https://madrasahku.ai.studio').replace(/\/+$/, '');
-const TENANT = String(__ENV.TENANT || 'default');
+const TENANT = String(__ENV.TENANT || '').trim();
 const EXAM_ID = String(__ENV.EXAM_ID || '').trim();
 const VUS = Math.max(1, Number.parseInt(__ENV.VUS || '20', 10));
 const ACCOUNT_OFFSET = Math.max(0, Number.parseInt(__ENV.ACCOUNT_OFFSET || '0', 10));
@@ -66,14 +66,15 @@ function tryJson(res) {
   try { return res.json(); } catch (_) { return null; }
 }
 
-function authHeaders(token) {
-  return {
+function authHeaders(token, tenant = '') {
+  const headers = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${token}`,
     'X-Auth-Token': token,
-    'X-Madrasah-Id': TENANT,
     'X-User-Role': 'student',
   };
+  if (tenant) headers['X-Madrasah-Id'] = tenant;
+  return headers;
 }
 
 function tagged(headers, name) {
@@ -114,12 +115,17 @@ export default function () {
     sleep(((__VU - 1) / (VUS - 1)) * RAMP_SECONDS);
   }
 
-  const loginRes = postJson('/api/login', {
+  const loginBody = {
     username: String(account.username),
     password: String(account.password),
-    madrasahId: TENANT,
-    madrasahSlug: TENANT,
-  }, { 'Content-Type': 'application/json', 'X-Madrasah-Id': TENANT }, 'POST /api/login');
+  };
+  const loginHeaders = { 'Content-Type': 'application/json' };
+  if (TENANT) {
+    loginBody.madrasahId = TENANT;
+    loginBody.madrasahSlug = TENANT;
+    loginHeaders['X-Madrasah-Id'] = TENANT;
+  }
+  const loginRes = postJson('/api/login', loginBody, loginHeaders, 'POST /api/login');
 
   const loginData = tryJson(loginRes);
   const token = String(loginData?.user?.token || loginData?.token || '');
@@ -133,11 +139,18 @@ export default function () {
     return;
   }
 
-  const headers = authHeaders(token);
+  const effectiveTenant = String(
+    TENANT ||
+    loginData?.user?.madrasahId ||
+    loginData?.user?.madrasahSlug ||
+    ''
+  ).trim();
+  const headers = authHeaders(token, effectiveTenant);
   const studentId = String(loginData?.user?.id || account.studentId || '');
+  const tenantQuery = effectiveTenant ? `?madrasahId=${encodeURIComponent(effectiveTenant)}` : '';
 
   const examsRes = http.get(
-    `${BASE_URL}/api/exams?madrasahId=${encodeURIComponent(TENANT)}`,
+    `${BASE_URL}/api/exams${tenantQuery}`,
     tagged(headers, 'GET /api/exams')
   );
   check(examsRes, { 'daftar ujian 200': (r) => r.status === 200 });
@@ -248,7 +261,7 @@ export default function () {
   }
 
   const summaryRes = http.get(
-    `${BASE_URL}/api/exam/my-summary?madrasahId=${encodeURIComponent(TENANT)}`,
+    `${BASE_URL}/api/exam/my-summary${tenantQuery}`,
     tagged(headers, 'GET /api/exam/my-summary')
   );
   check(summaryRes, { 'my-summary 200': (r) => r.status === 200 });
