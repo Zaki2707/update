@@ -789,12 +789,12 @@ async function syncKeyFromServer(key) {
                     appState.students = sortStudentsByNis(newData);
                 } else if (stateField === 'students' && typeof window.sortStudentsByNis === 'function') {
                     appState.students = window.sortStudentsByNis(newData);
-                } else if (stateField === 'attendance' && Array.isArray(newData) && newData.length === 0 && Array.isArray(appState.attendance) && appState.attendance.length > 0) {
+                } else if (!isOnlineServerAuthoritativeStorage() && stateField === 'attendance' && Array.isArray(newData) && newData.length === 0 && Array.isArray(appState.attendance) && appState.attendance.length > 0) {
                     // Do not wipe client attendance if server returned empty, sync client data to server instead
                     fetch('/api/sync-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'attendance', data: appState.attendance }) }).catch(() => {});
-                } else if (stateField === 'teacherAttendance' && Array.isArray(newData) && newData.length === 0 && Array.isArray(appState.teacherAttendance) && appState.teacherAttendance.length > 0) {
+                } else if (!isOnlineServerAuthoritativeStorage() && stateField === 'teacherAttendance' && Array.isArray(newData) && newData.length === 0 && Array.isArray(appState.teacherAttendance) && appState.teacherAttendance.length > 0) {
                     fetch('/api/sync-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'teacherAttendance', data: appState.teacherAttendance }) }).catch(() => {});
-                } else if (stateField === 'grades' && Array.isArray(newData) && newData.length === 0 && Array.isArray(appState.grades) && appState.grades.length > 0) {
+                } else if (!isOnlineServerAuthoritativeStorage() && stateField === 'grades' && Array.isArray(newData) && newData.length === 0 && Array.isArray(appState.grades) && appState.grades.length > 0) {
                     fetch('/api/sync-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'grades', data: appState.grades }) }).catch(() => {});
                 } else {
                     appState[stateField] = newData;
@@ -841,6 +841,43 @@ async function syncKeyFromServer(key) {
     }
 }
 
+const realtimeKeySyncState = new Map();
+
+function queueRealtimeKeySync(key) {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey) return;
+
+    let state = realtimeKeySyncState.get(normalizedKey);
+    if (!state) {
+        state = { running: false, pending: false, timer: null, lastStartedAt: 0 };
+        realtimeKeySyncState.set(normalizedKey, state);
+    }
+
+    state.pending = true;
+
+    const run = async () => {
+        state.timer = null;
+        if (state.running || !state.pending) return;
+        state.pending = false;
+        state.running = true;
+        state.lastStartedAt = Date.now();
+        try {
+            await syncKeyFromServer(normalizedKey);
+        } finally {
+            state.running = false;
+            if (state.pending) {
+                const elapsed = Date.now() - state.lastStartedAt;
+                state.timer = setTimeout(run, Math.max(0, 300 - elapsed));
+            }
+        }
+    };
+
+    if (state.running || state.timer) return;
+    const elapsed = Date.now() - state.lastStartedAt;
+    state.timer = setTimeout(run, Math.max(0, 300 - elapsed));
+}
+window.queueRealtimeKeySync = queueRealtimeKeySync;
+
 function getStoredRealtimeAuthToken() {
     try {
         const saved = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
@@ -871,7 +908,10 @@ function initRealtimeSync() {
 
     const scheduleReconnect = (delay = 1500) => {
         if (reconnectTimeout) clearTimeout(reconnectTimeout);
-        reconnectTimeout = setTimeout(connect, delay);
+        reconnectTimeout = setTimeout(() => {
+            reconnectTimeout = null;
+            connect();
+        }, delay);
     };
 
     async function connect() {
@@ -923,8 +963,7 @@ function initRealtimeSync() {
                 const payload = JSON.parse(event.data);
                 if (payload && payload.type === 'state-update') {
                     if (payload.senderClientId !== appState.clientId) {
-                        console.log('Real-time update received for key:', payload.key);
-                        syncKeyFromServer(payload.key);
+                        queueRealtimeKeySync(payload.key);
                     }
                 } else if (payload && (payload.type === 'exam_progress' || payload.type === 'student_heartbeat' || payload.type === 'exam_violation' || payload.type === 'exam_finish' || payload.type === 'exam_started' || payload.type === 'exam_presence')) {
                     if (typeof window.__onExamMonitoringEvent === 'function') {
@@ -1400,6 +1439,7 @@ async function initAppSession() {
     if (fetchLoad) {
         try {
             await fetchLoad();
+            await refreshAuthoritativeTokenBalance();
         } catch(e) {
             console.warn('Gagal loadDataFromServer:', e);
         }
@@ -1525,6 +1565,7 @@ async function handleLogin(e) {
                     loginBtn.innerHTML = '<i class="fa-solid fa-spinner animate-spin mr-1.5"></i>Memuat Sesi...';
                 }
                 await fetchLoad();
+                await refreshAuthoritativeTokenBalance();
                 if (loginBtn) {
                     loginBtn.disabled = false;
                     loginBtn.innerHTML = origHtml;
@@ -1567,6 +1608,47 @@ async function handleLogin(e) {
     }
 }
 
+async function refreshAuthoritativeTokenBalance() {
+    if (window.isOfflineMode === true || appState.isOfflineMode === true) return null;
+    if (!appState.currentUser) return null;
+
+    const role = String(appState.role || appState.currentUser.role || '').toLowerCase().trim();
+    if (!['admin', 'administrator', 'teacher', 'guru'].includes(role)) return null;
+
+    try {
+        const response = await fetch('/api/token-balance', { cache: 'no-store' });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.success || typeof data.balance !== 'number') return null;
+
+        const balance = Number(data.balance) || 0;
+        appState.currentUser.cbtTokenBalance = balance;
+        safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+
+        if (data.scope === 'teacher' && Array.isArray(appState.teachers)) {
+            const idx = appState.teachers.findIndex(t =>
+                String(t.id) === String(appState.currentUser.id) ||
+                String(t.username) === String(appState.currentUser.username)
+            );
+            if (idx >= 0) appState.teachers[idx].cbtTokenBalance = balance;
+        }
+
+        if (data.scope === 'madrasah' && Array.isArray(appState.madrasahs)) {
+            const targetId = String(data.madrasahId || appState.currentUser.madrasahId || appState.currentUser.madrasahSlug || '');
+            const idx = appState.madrasahs.findIndex(m =>
+                String(m.id) === targetId || String(m.slug) === targetId
+            );
+            if (idx >= 0) appState.madrasahs[idx].cbtTokenBalance = balance;
+        }
+
+        if (typeof window.updateHeaderTokenBadge === 'function') window.updateHeaderTokenBadge();
+        return balance;
+    } catch (err) {
+        console.warn('Gagal menyegarkan saldo token authoritative:', err?.message || err);
+        return null;
+    }
+}
+window.refreshAuthoritativeTokenBalance = refreshAuthoritativeTokenBalance;
+
 function getActiveMadrasahTokenBalance() {
     const role = String(appState.role || '').toLowerCase().trim();
     if (role === 'teacher' || role === 'guru') {
@@ -1580,6 +1662,10 @@ function getActiveMadrasahTokenBalance() {
             }
         }
         return 0;
+    }
+
+    if ((role === 'admin' || role === 'administrator') && appState.currentUser && typeof appState.currentUser.cbtTokenBalance === 'number') {
+        return appState.currentUser.cbtTokenBalance;
     }
 
     if (appState.madrasahs && appState.madrasahs.length > 0) {

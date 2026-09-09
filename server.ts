@@ -2593,7 +2593,7 @@ async function runOneTimeMigrations() {
   }
 
   if (studentsChanged) await saveData('students', students);
-  if (madrasahsChanged) await saveData('madrasahs', madrasahs);
+  if (madrasahsChanged) await saveData('madrasahs', madrasahs, true);
   if (settingsChanged) await saveData('settings', appSettings);
 }
 function parseDbRows(rows: any[]) {
@@ -3428,7 +3428,14 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     const { password, passwordRaw, ...rest } = st;
     return rest;
   });
-  const sanitizedMadrasahs = madrasahs.map(({ adminPass, ...rest }: any) => rest);
+  const isBosUser = Boolean(authUser && (authUser.role === 'bos' || authUser.role === 'superadmin'));
+  const visibleMadrasahs = isBosUser
+    ? (madrasahs || [])
+    : (madrasahs || []).filter((m: any) => {
+        const requestId = String(mId || authUser?.madrasahId || authUser?.madrasahSlug || 'default');
+        return String(m.id) === requestId || String(m.slug) === requestId;
+      });
+  const sanitizedMadrasahs = visibleMadrasahs.map(({ adminPass, tokenSignature, tokenSignatureInvalid, ...rest }: any) => rest);
   let sanitizedSettings = null;
   if (appSettings) {
     const { adminPass, ...restSettings } = appSettings;
@@ -4492,6 +4499,38 @@ app.get("/api/auth/me", (req, res) => {
   res.json({ success: true, user: authUser });
 });
 
+app.get("/api/token-balance", requireAuth, (req: any, res) => {
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase().trim();
+
+  if (role === 'teacher' || role === 'guru') {
+    const teacher = (teachers || []).find((t: any) =>
+      String(t.id) === String(authUser?.id || '') ||
+      (authUser?.username && String(t.username) === String(authUser.username))
+    );
+    if (!teacher) return res.status(404).json({ success: false, message: "Data guru tidak ditemukan." });
+    return res.json({ success: true, scope: 'teacher', balance: Number(teacher.cbtTokenBalance || 0) });
+  }
+
+  if (role === 'admin' || role === 'administrator') {
+    const targetId = String(authUser?.madrasahId || authUser?.madrasahSlug || '').trim();
+    const target = (madrasahs || []).find((m: any) =>
+      String(m.id) === targetId || String(m.slug) === targetId
+    );
+    if (!target) return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+    return res.json({
+      success: true,
+      scope: 'madrasah',
+      madrasahId: target.id,
+      balance: Number(target.cbtTokenBalance || 0),
+      locked: Boolean(target.tokenSignatureInvalid)
+    });
+  }
+
+  return res.status(403).json({ success: false, message: "Saldo token tidak tersedia untuk peran ini." });
+});
+
 function sanitizeMadrasahPublic(m: any) {
   if (!m) return null;
   return {
@@ -4506,12 +4545,25 @@ function sanitizeMadrasahPublic(m: any) {
 
 // Multi-Tenant & Bos Token Endpoints
 app.get("/api/madrasahs", requireAuth, (req: any, res) => {
-  const authUser = req.user;
-  const isBos = authUser && (authUser.role === 'bos' || authUser.role === 'superadmin');
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase().trim();
+  const isBos = role === 'bos' || role === 'superadmin';
+
   if (isBos) {
-    return res.json({ success: true, madrasahs: (madrasahs || []).map(({ adminPass, ...rest }: any) => rest) });
+    return res.json({
+      success: true,
+      madrasahs: (madrasahs || []).map(({ adminPass, tokenSignature, tokenSignatureInvalid, ...rest }: any) => rest)
+    });
   }
-  res.json({ success: true, madrasahs: (madrasahs || []).map(sanitizeMadrasahPublic) });
+
+  const targetId = String(authUser?.madrasahId || authUser?.madrasahSlug || '').trim();
+  const ownMadrasahs = (madrasahs || []).filter((m: any) =>
+    String(m.id) === targetId || String(m.slug) === targetId
+  );
+  return res.json({
+    success: true,
+    madrasahs: ownMadrasahs.map(({ adminPass, tokenSignature, tokenSignatureInvalid, ...rest }: any) => rest)
+  });
 });
 
 app.get("/api/madrasah-by-slug/:slug", (req: any, res) => {
@@ -4556,10 +4608,10 @@ app.post("/api/register-madrasah", async (req, res) => {
     createdAt: new Date().toISOString()
   };
   madrasahs.push(newMadrasah);
-  await saveData('madrasahs', madrasahs);
+  await saveData('madrasahs', madrasahs, true);
 
   // Save initial madrasah list
-  await saveData('madrasahs', madrasahs);
+  await saveData('madrasahs', madrasahs, true);
   return res.json({
     success: true,
     madrasah: newMadrasah,
@@ -4676,7 +4728,7 @@ app.post("/api/token-requests/:id/approve", requireAuth, requireRole(['bos', 'su
   }
 
   await saveData('tokenRequests', tokenRequests);
-  await saveData('madrasahs', madrasahs);
+  await saveData('madrasahs', madrasahs, true);
 
   return res.json({
     success: true,
@@ -4720,7 +4772,7 @@ app.post("/api/madrasahs/:id/update-tokens", requireAuth, requireRole(['bos', 's
   }
   delete targetM.tokenSignatureInvalid;
   targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance || 0);
-  await saveData('madrasahs', madrasahs);
+  await saveData('madrasahs', madrasahs, true);
   return res.json({
     success: true,
     madrasah: targetM,
@@ -4912,7 +4964,7 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
     // Track used key
     usedActivationKeys.push(signature);
     await saveData('usedActivationKeys', usedActivationKeys);
-    await saveData('madrasahs', madrasahs);
+    await saveData('madrasahs', madrasahs, true);
 
     return res.json({
       success: true,
@@ -4974,7 +5026,7 @@ app.post("/api/deduct-cbt-token", requireAuth, requireRole(['teacher', 'guru', '
     // Re-sign balance to prevent false-positive tamper detection on next startup
     delete targetM.tokenSignatureInvalid;
     targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
-    await saveData('madrasahs', madrasahs);
+    await saveData('madrasahs', madrasahs, true);
     return res.json({
       success: true,
       remainingTokens: targetM.cbtTokenBalance,
@@ -5022,7 +5074,7 @@ app.post("/api/madrasahs/:id/toggle-status", requireAuth, requireRole(['bos', 's
     return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
   }
   targetM.isActive = targetM.isActive === false ? true : false;
-  await saveData('madrasahs', madrasahs);
+  await saveData('madrasahs', madrasahs, true);
   return res.json({
     success: true,
     madrasah: targetM,
@@ -5055,7 +5107,7 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
   }
   if (isActive !== undefined) targetM.isActive = Boolean(isActive);
 
-  await saveData('madrasahs', madrasahs);
+  await saveData('madrasahs', madrasahs, true);
   return res.json({
     success: true,
     madrasah: targetM,
@@ -5087,7 +5139,7 @@ app.delete("/api/madrasahs/:id", requireAuth, requireRole(['bos', 'superadmin'])
       createdAt: new Date().toISOString()
     });
   }
-  await saveData('madrasahs', madrasahs);
+  await saveData('madrasahs', madrasahs, true);
   return res.json({
     success: true,
     message: `Madrasah "${deletedName}" berhasil dihapus.`
