@@ -8147,7 +8147,15 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
   const sId = resolveStudentId(req, authUser);
   const { examId, answers } = req.body;
   const authRole = String(authUser.role || '').toLowerCase();
-  const isStaffForceFinish = req.body?.forceFinish === true && ['teacher', 'guru', 'admin', 'bos', 'superadmin'].includes(authRole);
+  const staffRoles = ['teacher', 'guru', 'admin', 'bos', 'superadmin'];
+  const isStaffRole = staffRoles.includes(authRole);
+  const isStaffForceFinish = req.body?.forceFinish === true && isStaffRole;
+  if (req.body?.forceFinish === true && !isStaffRole) {
+    return res.status(403).json({ success: false, message: "Force Finish hanya dapat dilakukan oleh guru/admin yang berwenang." });
+  }
+  if (isStaffRole && !isStaffForceFinish) {
+    return res.status(403).json({ success: false, message: "Akun staf hanya dapat menyelesaikan attempt siswa melalui Force Finish." });
+  }
   if (!sId || !examId) return res.status(400).json({ success: false, message: "studentId and examId required" });
 
   const eId = String(examId);
@@ -8169,17 +8177,28 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
   }
 
   const allowedIds = new Set(masterQuestions.map((q: any) => String(q.id)));
-  const incomingAnswers: Record<string, any> = {};
-  if (answers && typeof answers === 'object' && !Array.isArray(answers)) {
-    for (const [qid, val] of Object.entries(answers)) if (allowedIds.has(String(qid))) incomingAnswers[String(qid)] = val;
-  }
-  // Never replace persisted answers with an empty client payload. For Force Finish, also
-  // recover any latest in-memory session answers before server-side scoring.
-  const savedSessionAnswers = (isStaffForceFinish && activeExamSessions[key] && activeExamSessions[key].answers && typeof activeExamSessions[key].answers === 'object')
-    ? activeExamSessions[key].answers
+  const filterAllowedAnswers = (source: any): Record<string, any> => {
+    const filtered: Record<string, any> = {};
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return filtered;
+    for (const [qid, val] of Object.entries(source)) {
+      const normalizedId = String(qid);
+      if (allowedIds.has(normalizedId)) filtered[normalizedId] = val;
+    }
+    return filtered;
+  };
+
+  // Normal student submit may send the student's own final answer payload.
+  // Staff Force Finish must NEVER trust answers supplied by the admin browser.
+  const incomingAnswers = isStaffForceFinish ? {} : filterAllowedAnswers(answers);
+  const persistedAnswers = filterAllowedAnswers(studentExamAnswers[key]);
+  const savedSessionAnswers = isStaffForceFinish
+    ? filterAllowedAnswers(activeExamSessions[key]?.answers)
     : {};
-  studentExamAnswers[key] = { ...(studentExamAnswers[key] || {}), ...savedSessionAnswers, ...incomingAnswers };
-  const finalAns = studentExamAnswers[key] || {};
+
+  // Server-authoritative precedence: persisted answers -> latest live-session answers ->
+  // student's own final payload (normal submit only). Invalid/stale question IDs are dropped.
+  studentExamAnswers[key] = { ...persistedAnswers, ...savedSessionAnswers, ...incomingAnswers };
+  const finalAns = studentExamAnswers[key];
 
   let correctPGCount = 0;
   const pgQuestions = masterQuestions.filter((q: any) => q.type !== 'esay' && q.type !== 'essay');
