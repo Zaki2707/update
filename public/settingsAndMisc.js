@@ -828,7 +828,7 @@ function renderSettingModule(container) {
                         <span>Aturan Pembersihan Cerdas</span>
                     </div>
                     <p class="text-xs text-slate-600 leading-relaxed">
-                        Sistem akan mencari foto absensi yang berusia <strong>lebih dari 30 hari</strong>. Foto-foto usang tersebut akan dihapus secara permanen dari Firebase untuk menghemat ruang, <strong>KECUALI</strong> jika foto tersebut adalah satu-satunya foto terakhir yang dimiliki oleh siswa atau guru tersebut. Dengan metode ini, <strong>seluruh siswa & guru dijamin akan tetap memiliki minimal 1 foto verifikasi terbaru di dalam sistem</strong>. Data teks kehadiran (tanggal, jam, keterangan) tidak akan dihapus!
+                        Sistem akan mencari foto absensi yang berusia <strong>lebih dari 30 hari</strong>. Foto-foto usang tersebut akan dihapus secara permanen dari Cloudinary untuk menghemat ruang, <strong>KECUALI</strong> jika foto tersebut adalah foto terbaru orang tersebut atau masih direferensikan oleh data penting lain. Dengan metode ini, <strong>seluruh siswa & guru dijamin akan tetap memiliki minimal 1 foto verifikasi terbaru di dalam sistem</strong>. Data teks kehadiran (tanggal, jam, keterangan) tidak akan dihapus!
                     </p>
 
                     <div class="pt-2 flex flex-col gap-3">
@@ -4451,7 +4451,7 @@ async function runSmartPhotoCleanup() {
 }
 
 async function runTeacherPhotoCleanup() {
-    if (!confirm("Apakah Anda yakin ingin menghapus semua file foto riwayat absen guru?\n\nSistem akan:\n1. Menghapus semua file foto selfie absensi guru di Firebase.\n2. Menghapus hanya foto absensi guru lama (>30 hari) yang aman dan tetap menyisakan minimal 1 foto terbaru setiap guru.\n\nAset Cloudinary yang benar-benar usang akan dihapus permanen. Foto terbaru dan foto yang masih dipakai akan dipertahankan. Lanjutkan?")) return;
+    if (!confirm("Apakah Anda yakin ingin membersihkan foto absensi guru lama?\n\nSistem akan:\n1. Memeriksa aset foto absensi guru di Cloudinary.\n2. Menghapus hanya foto berusia >30 hari yang aman dan tetap menyisakan minimal 1 foto terbaru setiap guru.\n3. Mempertahankan foto yang masih dipakai oleh profil, riwayat, atau data penting lain.\n\nAset yang benar-benar usang akan dihapus permanen. Lanjutkan?")) return;
     
     const btn = document.querySelector('button[onclick="runTeacherPhotoCleanup()"]');
     const statusContainer = document.getElementById('cleanup-status-container');
@@ -4461,7 +4461,7 @@ async function runTeacherPhotoCleanup() {
         statusContainer.innerHTML = `
             <div class="flex items-center gap-2 text-xs font-semibold px-4 py-2.5 rounded-xl bg-rose-100 text-rose-800 animate-pulse border border-rose-200">
                 <i class="fa-solid fa-spinner fa-spin"></i>
-                <span>Sedang menghapus semua foto absensi guru...</span>
+                <span>Sedang memeriksa dan membersihkan foto absensi guru lama...</span>
             </div>
         `;
     }
