@@ -1,0 +1,72 @@
+name: Apply CBT Master Recovery Fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/patch-cbt-master-recovery.cjs'
+      - '.github/workflows/apply-cbt-master-recovery.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply CBT master recovery patch
+        run: node scripts/patch-cbt-master-recovery.cjs
+
+      - name: Verify targeted recovery invariants
+        shell: bash
+        run: |
+          grep -q "recoverMissingExamMasterQuestions" server.ts
+          grep -q "masterRecovered: true" server.ts
+          grep -q "studentExamMasterQuestions', key, null" server.ts
+          grep -q "q.correctOptionText || q.answer" server.ts
+
+      - name: Application security audit
+        run: npm run security:audit
+
+      - name: TypeScript check
+        run: npm run lint
+
+      - name: Clean production build
+        run: npm run build
+
+      - name: Verify source/build parity
+        shell: bash
+        run: |
+          for f in src/*.js; do
+            b="public/$(basename "$f")"
+            if [ -f "$b" ]; then
+              cmp -s "$f" "$b" || { echo "Source/public drift: $f != $b"; exit 1; }
+            fi
+          done
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server.ts
+          git commit -m "fix: recover CBT master keys for resumed attempts"
+          git push origin HEAD:main
