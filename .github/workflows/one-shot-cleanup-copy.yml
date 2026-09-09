@@ -1,0 +1,58 @@
+name: One-shot Smart Cleanup Wording
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-shot-cleanup-copy.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - name: Fix Cloudinary cleanup wording
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/settingsAndMisc.js')
+          s = p.read_text(encoding='utf-8')
+          old_rule = 'Foto-foto usang tersebut akan dihapus secara permanen dari Firebase untuk menghemat ruang, <strong>KECUALI</strong> jika foto tersebut adalah satu-satunya foto terakhir yang dimiliki oleh siswa atau guru tersebut.'
+          new_rule = 'Foto-foto usang tersebut akan dihapus secara permanen dari Cloudinary untuk menghemat ruang, <strong>KECUALI</strong> jika foto tersebut adalah foto terbaru orang tersebut atau masih direferensikan oleh data penting lain.'
+          if s.count(old_rule) != 1:
+              raise SystemExit(f'cleanup rule match count={s.count(old_rule)}')
+          s = s.replace(old_rule, new_rule, 1)
+          old_confirm = 'Apakah Anda yakin ingin menghapus semua file foto riwayat absen guru?\\n\\nSistem akan:\\n1. Menghapus semua file foto selfie absensi guru di Firebase.\\n2. Menghapus hanya foto absensi guru lama (>30 hari) yang aman dan tetap menyisakan minimal 1 foto terbaru setiap guru.\\n\\nAset Cloudinary yang benar-benar usang akan dihapus permanen. Foto terbaru dan foto yang masih dipakai akan dipertahankan. Lanjutkan?'
+          new_confirm = 'Apakah Anda yakin ingin membersihkan foto absensi guru lama?\\n\\nSistem akan:\\n1. Memeriksa aset foto absensi guru di Cloudinary.\\n2. Menghapus hanya foto berusia >30 hari yang aman dan tetap menyisakan minimal 1 foto terbaru setiap guru.\\n3. Mempertahankan foto yang masih dipakai oleh profil, riwayat, atau data penting lain.\\n\\nAset yang benar-benar usang akan dihapus permanen. Lanjutkan?'
+          if s.count(old_confirm) != 1:
+              raise SystemExit(f'teacher confirm match count={s.count(old_confirm)}')
+          s = s.replace(old_confirm, new_confirm, 1)
+          s = s.replace('Sedang menghapus semua foto absensi guru...', 'Sedang memeriksa dan membersihkan foto absensi guru lama...', 1)
+          p.write_text(s, encoding='utf-8')
+          Path('public/settingsAndMisc.js').write_text(s, encoding='utf-8')
+          PY
+      - run: npm ci
+      - run: npm run security:audit
+      - run: npm run lint
+      - name: Build
+        run: |
+          rm -rf dist
+          npm run build
+          git diff --check
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/settingsAndMisc.js public/settingsAndMisc.js
+          git commit -m 'fix: align smart cleanup UI with cloudinary' || exit 0
+          git push origin HEAD:main
