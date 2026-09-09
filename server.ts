@@ -7678,6 +7678,112 @@ function shuffleArray<T>(arr: T[]): T[] {
   return array;
 }
 
+function getRawQuestionsForExamAttempt(matchedExam: any): any[] {
+  let rawQuestions = Array.isArray(matchedExam?.questions) ? matchedExam.questions : [];
+  if (rawQuestions.length > 0) return rawQuestions;
+
+  const allQuestions = getMemoryKeyValue('questions') || questions || [];
+  const exCode = String(matchedExam?.bankCode || matchedExam?.groupCode || '').trim().toLowerCase();
+  const exSub = String(matchedExam?.subject || matchedExam?.subjectId || '').trim().toLowerCase();
+  const exClass = String(matchedExam?.class || matchedExam?.className || matchedExam?.classId || '').trim().toLowerCase();
+  const mId = String(matchedExam?.madrasahId || matchedExam?.madrasahSlug || '').trim();
+
+  return allQuestions.filter((q: any) => {
+    if (!q) return false;
+    if (mId && mId !== 'default' && mId !== 'BOSS') {
+      const qmId = String(q.madrasahId || q.madrasahSlug || '').trim();
+      if (qmId && qmId !== mId) return false;
+    }
+    const qCode = String(q.code || q.bankCode || q.groupCode || '').trim().toLowerCase();
+    const qSub = String(q.subjectId || q.subject || '').trim().toLowerCase();
+    const qClass = String(q.classId || q.className || q.class || '').trim().toLowerCase();
+
+    if (exCode && qCode && qCode === exCode) return true;
+    if (exSub && qSub && (qSub === exSub || qSub.includes(exSub) || exSub.includes(qSub))) {
+      if (exClass && qClass && !exClass.includes('all') && !qClass.includes('all')) {
+        return qClass === exClass || exClass.includes(qClass);
+      }
+      return true;
+    }
+    return false;
+  });
+}
+
+function resolveMasterCorrectText(rawQuestion: any, originalOptions: any[]): string {
+  let correctText = String(rawQuestion?.correctOptionText || '').trim();
+  if (correctText) return correctText;
+
+  const rawKey = String(rawQuestion?.answer || '').trim();
+  const letterIdx = ['a', 'b', 'c', 'd', 'e'].indexOf(rawKey.toLowerCase().replace('.', ''));
+  if (letterIdx !== -1 && originalOptions[letterIdx] !== undefined) {
+    return String(originalOptions[letterIdx]).trim();
+  }
+  return rawKey;
+}
+
+function rebuildMasterQuestionsFromAssigned(matchedExam: any, assignedQuestions: any[]): any[] {
+  if (!Array.isArray(assignedQuestions) || assignedQuestions.length === 0) return [];
+  const rawQuestions = getRawQuestionsForExamAttempt(matchedExam);
+  if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) return [];
+
+  const usedIndexes = new Set<number>();
+  const rebuilt: any[] = [];
+
+  for (let idx = 0; idx < assignedQuestions.length; idx++) {
+    const assigned = assignedQuestions[idx];
+    const assignedId = String(assigned?.id || '');
+    let rawIndex = rawQuestions.findIndex((q: any, rawIdx: number) =>
+      !usedIndexes.has(rawIdx) && q?.id !== undefined && q?.id !== null && String(q.id) === assignedId
+    );
+
+    // Legacy/generated IDs may not exist in the bank. Fall back to exact question text/type,
+    // but never to array position alone because that could attach the wrong answer key.
+    if (rawIndex < 0) {
+      rawIndex = rawQuestions.findIndex((q: any, rawIdx: number) => {
+        if (usedIndexes.has(rawIdx) || !q) return false;
+        if (String(q.question || '').trim() !== String(assigned?.question || '').trim()) return false;
+        const rawType = String(q.type || 'mc').toLowerCase();
+        const assignedType = String(assigned?.type || 'mc').toLowerCase();
+        return rawType === assignedType;
+      });
+    }
+
+    if (rawIndex < 0) return [];
+    usedIndexes.add(rawIndex);
+
+    const raw = rawQuestions[rawIndex];
+    const originalOptions = Array.isArray(raw.options) ? [...raw.options] : [];
+    const assignedOptions = Array.isArray(assigned?.options) ? [...assigned.options] : [...originalOptions];
+    const correctText = resolveMasterCorrectText(raw, originalOptions);
+
+    rebuilt.push({
+      ...raw,
+      id: assigned?.id || raw.id || ('Q_' + idx + '_' + String(matchedExam?.id || 'exam')),
+      options: assignedOptions,
+      originalOptions,
+      correctOptionText: correctText,
+      answer: raw.answer || correctText
+    });
+  }
+
+  return rebuilt;
+}
+
+async function recoverMissingExamMasterQuestions(key: string, matchedExam: any): Promise<any[]> {
+  const existingMaster = studentExamMasterQuestions[key];
+  if (Array.isArray(existingMaster) && existingMaster.length > 0) return existingMaster;
+
+  const assigned = studentExamQuestions[key];
+  const rebuilt = rebuildMasterQuestionsFromAssigned(matchedExam, assigned);
+  if (!Array.isArray(rebuilt) || rebuilt.length === 0 || rebuilt.length !== (Array.isArray(assigned) ? assigned.length : 0)) {
+    return [];
+  }
+
+  studentExamMasterQuestions[key] = rebuilt;
+  await saveDeltaDb('studentExamMasterQuestions', key, rebuilt);
+  return rebuilt;
+}
+
 app.post("/api/exam/attempt/start-questions", async (req, res) => {
   const authUser = getAuthUser(req);
   if (!authUser) {
@@ -7698,13 +7804,30 @@ app.post("/api/exam/attempt/start-questions", async (req, res) => {
     return res.status(409).json({ success: false, message: "Session ujian belum aktif. Mulai atau lanjutkan ujian terlebih dahulu." });
   }
 
-  // Poin 6: Kunci urutan soal di server (Never re-shuffle on refresh/reconnect)
+  // Poin 6: Kunci urutan soal di server (Never re-shuffle on refresh/reconnect).
+  // Legacy attempts may have the sanitized assigned packet persisted without the private master key.
+  // Recover the master from the exact assigned packet + server bank before returning resume.
   if (studentExamQuestions[key] && Array.isArray(studentExamQuestions[key]) && studentExamQuestions[key].length > 0) {
-    return res.json({
-      success: true,
-      questions: studentExamQuestions[key],
-      isResumed: true
-    });
+    const recoveredMaster = await recoverMissingExamMasterQuestions(key, matchedExam);
+    if (!Array.isArray(recoveredMaster) || recoveredMaster.length === 0) {
+      const savedAnswerCount = Object.keys(studentExamAnswers[key] || activeExamSessions[key]?.answers || {}).length;
+      if (savedAnswerCount > 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Paket soal lama ditemukan tetapi kunci penilaiannya tidak dapat dipulihkan dengan aman. Jawaban siswa tetap disimpan; admin perlu reset attempt ini sebelum ujian diulang."
+        });
+      }
+      // No answers exist, so regenerating a fresh packet is safe.
+      delete studentExamQuestions[key];
+      await saveDeltaDb('studentExamQuestions', key, null);
+    } else {
+      return res.json({
+        success: true,
+        questions: studentExamQuestions[key],
+        isResumed: true,
+        masterRecovered: true
+      });
+    }
   }
 
   // Poin 2: Switch to 'questions' memory key and filter by bankCode, subject, class, tenant
@@ -8171,9 +8294,15 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
     return res.status(409).json({ success: false, message: "Session ujian tidak aktif sehingga finalisasi ditolak." });
   }
 
-  const masterQuestions = studentExamMasterQuestions[key];
+  let masterQuestions = studentExamMasterQuestions[key];
   if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
-    return res.status(409).json({ success: false, message: "Kunci soal server tidak tersedia. Finalisasi ditolak agar nilai tidak salah; muat ulang paket soal lalu coba lagi." });
+    masterQuestions = await recoverMissingExamMasterQuestions(key, context.exam);
+  }
+  if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
+    return res.status(409).json({
+      success: false,
+      message: "Kunci soal server tidak tersedia. Finalisasi ditolak karena kunci tidak dapat dipulihkan dengan aman; jawaban siswa tetap tersimpan agar nilai tidak salah."
+    });
   }
 
   const allowedIds = new Set(masterQuestions.map((q: any) => String(q.id)));
@@ -8207,7 +8336,8 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
     const uAns = finalAns[q.id] !== undefined ? finalAns[q.id] : finalAns[String(q.id)];
     if (uAns === undefined || uAns === null) return;
     const normUAns = String(uAns).trim().toLowerCase();
-    const normKey = String(q.answer || q.correctOptionText || '').trim().toLowerCase();
+    // Prefer resolved correct option text because q.answer may be the pre-shuffle letter.
+    const normKey = String(q.correctOptionText || q.answer || '').trim().toLowerCase();
     if (normUAns === normKey) correctPGCount++;
     else if (Array.isArray(q.options) && /^[a-e]$/i.test(normUAns)) {
       const idx = normUAns.toUpperCase().charCodeAt(0) - 65;
@@ -8563,6 +8693,7 @@ app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru',
   delete forceFinishedExams[key];
   delete studentExamAnswers[key];
   delete studentExamQuestions[key];
+  delete studentExamMasterQuestions[key];
   delete studentTabSwitches[key];
   delete studentOutOfTab[key];
   delete blockedStudents[key];
@@ -8575,6 +8706,7 @@ app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru',
     saveDeltaDb('forceFinishedExams', key, null),
     saveDeltaDb('studentExamAnswers', key, null),
     saveDeltaDb('studentExamQuestions', key, null),
+    saveDeltaDb('studentExamMasterQuestions', key, null),
     saveDeltaDb('studentTabSwitches', key, null),
     saveDeltaDb('studentOutOfTab', key, null),
     saveDeltaDb('blockedStudents', key, null)
