@@ -3818,7 +3818,6 @@ async function backupSystemData() {
         const incCbt = cbCbt ? cbCbt.checked : true;
         const incLessonPlans = cbLessonPlans ? cbLessonPlans.checked : true;
         const incSettings = cbSettings ? cbSettings.checked : true;
-        const isOfflineRestoreMode = (window.isOfflineMode === true || appState.isOfflineMode === true);
 
         // Helper to convert single image URL to base64
         const imageUrlToBase64 = async (url) => {
@@ -4046,6 +4045,7 @@ async function restoreSystemData(event) {
         const incCbt = cbCbt ? cbCbt.checked : true;
         const incLessonPlans = cbLessonPlans ? cbLessonPlans.checked : true;
         const incSettings = cbSettings ? cbSettings.checked : true;
+        const isOfflineRestoreMode = (window.isOfflineMode === true || appState.isOfflineMode === true);
 
         const messageHtml = `
             <div class="space-y-3 text-left">
