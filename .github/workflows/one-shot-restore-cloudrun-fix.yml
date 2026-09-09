@@ -26,8 +26,8 @@ jobs:
           node-version: '22.14.0'
           cache: npm
 
-      - name: Patch browser storage and restore flow
-        run: python3 .github/scripts/restore_fix.py
+      - name: Patch restore mode declaration
+        run: python3 .github/scripts/restore_fix_followup.py
 
       - name: Install locked dependencies
         run: npm ci
@@ -63,15 +63,15 @@ jobs:
             exit 1
           fi
 
-      - name: Commit validated restore fix
+      - name: Commit validated follow-up
         shell: bash
         run: |
           if git diff --quiet; then
-            echo 'No patch changes to commit.'
+            echo 'No follow-up changes to commit.'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/appScript.js public/appScript.js src/settingsAndMisc.js public/settingsAndMisc.js
-          git commit -m 'fix: make Cloud Run restore server-authoritative'
+          git add src/settingsAndMisc.js public/settingsAndMisc.js
+          git commit -m 'fix: scope restore mode flag correctly'
           git push origin HEAD:main
