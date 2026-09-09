@@ -3823,6 +3823,7 @@ app.post("/api/game/messages/dismiss", (req, res) => {
 app.get("/api/db-status", async (req, res) => {
   const status: any = {
     connected: false,
+    mode: storageMode,
     sql: {
       connected: false,
       configured: false,
@@ -3891,53 +3892,40 @@ app.get("/api/db-status", async (req, res) => {
     status.sql.details = err.message || String(err);
   }
 
-  // 2. Check Firebase Firestore
-  try {
-    const configPath = './firebase-applet-config.json';
-    if (!fs.existsSync(configPath)) {
-      status.firebase.message = "File konfigurasi firebase-applet-config.json tidak ditemukan.";
-    } else if (!db) {
-      status.firebase.message = "Koneksi Firebase dinonaktifkan sengaja (Aman dari limit kuota).";
-      status.firebase.connected = true;
-      status.firebase.details = "Sistem berjalan penuh menggunakan Cloudinary & File Backup.";
-      status.firebase.configured = true;
-    } else {
-      status.firebase.configured = true;
-      // Test actual network read from Firestore
-      const testDoc = doc(db, 'photos', 'connection_test_id');
-      const getDocPromise = getDoc(testDoc);
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Koneksi Firebase Firestore timeout (3 detik).")), 3000)
-      );
-      await Promise.race([getDocPromise, timeoutPromise]);
-      status.firebase.connected = true;
-      status.firebase.message = "Terhubung sukses ke Firebase Firestore!";
-      status.firebase.details = "Koneksi baca/tulis dokumen media/foto aktif.";
-    }
-  } catch (err: any) {
-    status.firebase.connected = false;
-    status.firebase.message = "Gagal terhubung ke Firebase Firestore.";
-    status.firebase.details = err.message || String(err);
-  }
+  // 2. Firebase Firestore is intentionally disabled in the current architecture.
+  // Do not probe it as a health dependency.
+  status.firebase.configured = false;
+  status.firebase.connected = false;
+  status.firebase.skipped = true;
+  status.firebase.message = "Dinonaktifkan sesuai arsitektur aplikasi.";
+  status.firebase.details = "";
 
-  // 3. Check JSON (Local Store)
-  try {
-    const exists = fs.existsSync(LOCAL_STORE_FILE);
-    if (!exists) {
-      status.json.message = "File local_store.json tidak ditemukan.";
-    } else {
-      status.json.configured = true;
-      const raw = fs.readFileSync(LOCAL_STORE_FILE, "utf-8");
-      const parsed = JSON.parse(decryptLocalStore(raw));
-      const keysCount = Object.keys(parsed || {}).length;
-      status.json.connected = true;
-      status.json.message = "File lokal local_store.json terbaca dan valid!";
-      status.json.details = `Memiliki ${keysCount} kategori modul data tersimpan.`;
+  // 3. Local JSON is only a health dependency in OFFLINE mode.
+  if (isOfflineMode) {
+    try {
+      const exists = fs.existsSync(LOCAL_STORE_FILE);
+      if (!exists) {
+        status.json.message = "File local_store.json tidak ditemukan.";
+      } else {
+        status.json.configured = true;
+        const raw = fs.readFileSync(LOCAL_STORE_FILE, "utf-8");
+        const parsed = JSON.parse(decryptLocalStore(raw));
+        const keysCount = Object.keys(parsed || {}).length;
+        status.json.connected = true;
+        status.json.message = "File lokal local_store.json terbaca dan valid!";
+        status.json.details = `Memiliki ${keysCount} kategori modul data tersimpan.`;
+      }
+    } catch (err: any) {
+      status.json.connected = false;
+      status.json.message = "File lokal local_store.json rusak atau gagal dibaca.";
+      status.json.details = err.message || String(err);
     }
-  } catch (err: any) {
+  } else {
+    status.json.configured = false;
     status.json.connected = false;
-    status.json.message = "File lokal local_store.json rusak atau gagal dibaca.";
-    status.json.details = err.message || String(err);
+    status.json.skipped = true;
+    status.json.message = "Tidak digunakan pada mode online; Cloud SQL adalah source of truth.";
+    status.json.details = "";
   }
 
   // 4. Check Cloudinary
@@ -3960,26 +3948,27 @@ app.get("/api/db-status", async (req, res) => {
     status.cloudinary.details = err.message || String(err);
   }
 
-  // Strict Connection Logic: Green/connected ONLY IF ALL services are healthy!
+  // Mode-aware connection logic: only authoritative services determine health.
   if (isOfflineMode) {
-    if (status.sql.connected && status.json.connected) {
-      status.connected = true;
-      status.message = "Sistem Luring (Offline) Aktif: PostgreSQL dan Penyimpanan Foto Lokal (Uploads) terhubung sempurna!";
+    status.connected = Boolean(status.sql.connected && status.json.connected);
+    if (status.connected) {
+      status.message = "Sistem Luring (Offline) Aktif: PostgreSQL dan local_store.json terhubung.";
     } else {
-      status.connected = false;
-      status.message = "Sistem Offline bermasalah pada koneksi database PostgreSQL lokal.";
+      const failures = [];
+      if (!status.sql.connected) failures.push("PostgreSQL lokal");
+      if (!status.json.connected) failures.push("Local JSON");
+      status.message = `Sistem Offline bermasalah pada: ${failures.join(', ')}.`;
     }
-  } else if (status.sql.connected && status.firebase.connected && status.json.connected && status.cloudinary.connected) {
-    status.connected = true;
-    status.message = "Semua sistem database (SQL, Firebase, JSON, dan Cloudinary) berhasil terhubung sempurna!";
   } else {
-    status.connected = false;
-    const failures = [];
-    if (!status.sql.connected) failures.push("PostgreSQL/Cloud SQL");
-    if (!status.firebase.connected) failures.push("Firebase Firestore");
-    if (!status.json.connected) failures.push("Local JSON");
-    if (!status.cloudinary.connected) failures.push("Cloudinary");
-    status.message = `Sistem bermasalah pada: ${failures.join(", ")}.`;
+    status.connected = Boolean(status.sql.connected && status.cloudinary.connected);
+    if (status.connected) {
+      status.message = "Sistem Online Aktif: Cloud SQL dan Cloudinary terhubung.";
+    } else {
+      const failures = [];
+      if (!status.sql.connected) failures.push("PostgreSQL/Cloud SQL");
+      if (!status.cloudinary.connected) failures.push("Cloudinary");
+      status.message = `Sistem Online bermasalah pada: ${failures.join(', ')}.`;
+    }
   }
 
   res.json(status);
