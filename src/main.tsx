@@ -23,6 +23,7 @@ import './pedagogyNonAIEngine.js';
 import './modulAjarModule.js';
 import './settingsAndMisc.js';
 import './themePackageModule.js';
+import './themeEngineV2.js';
 import './assessmentModule.js';
 import './chatModule.js';
 import './calendarModule.js';
