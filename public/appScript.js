@@ -425,9 +425,76 @@ function getLocalStorageRole() {
     return role;
 }
 
+const ONLINE_SERVER_AUTH_STORAGE_KEYS = new Set([
+    'madrasah_settings',
+    'madrasah_students',
+    'madrasah_teachers',
+    'madrasah_classes',
+    'madrasah_subjects',
+    'madrasah_attendance',
+    'madrasah_attendance_photos',
+    'madrasah_teacherAttendance',
+    'madrasah_teacher_attendance',
+    'madrasah_teacherAttendance_photos',
+    'madrasah_teacher_attendance_photos',
+    'madrasah_questions',
+    'madrasah_questionBank',
+    'madrasah_questionBankGroups',
+    'madrasah_question_groups',
+    'madrasah_questionBank_photos',
+    'madrasah_schedules',
+    'madrasah_savedRosters',
+    'madrasah_timeSlots',
+    'madrasah_kbmDuration',
+    'madrasah_exams',
+    'madrasah_rooms',
+    'madrasah_journals',
+    'madrasah_gradeCategories',
+    'madrasah_grade_categories',
+    'madrasah_generated_exams',
+    'madrasah_generatedExams',
+    'madrasah_lessonPlans',
+    'madrasah_lesson_plans',
+    'madrasah_grades',
+    'madrasah_customGradeColumns',
+    'madrasah_schoolLocationSettings',
+    'madrasah_madrasahs',
+    'madrasah_photoCloudinaryMap'
+]);
+
+function isOnlineServerAuthoritativeStorage() {
+    try {
+        if (window.isOfflineMode === true || appState?.isOfflineMode === true) return false;
+        if (window.isOfflineMode === false || appState?.isOfflineMode === false) return true;
+    } catch (_) {}
+    return false;
+}
+
+function purgeOnlineServerAuthoritativeCaches() {
+    if (!isOnlineServerAuthoritativeStorage()) return;
+    try {
+        for (const key of ONLINE_SERVER_AUTH_STORAGE_KEYS) localStorage.removeItem(key);
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+            const key = localStorage.key(i);
+            if (key && (key === 'madrasah_lkpdList' || /^madrasah_.+_lkpdList$/.test(key))) {
+                localStorage.removeItem(key);
+            }
+        }
+    } catch (_) {}
+}
+window.isOnlineServerAuthoritativeStorage = isOnlineServerAuthoritativeStorage;
+window.purgeOnlineServerAuthoritativeCaches = purgeOnlineServerAuthoritativeCaches;
+
 function safeSetLocalStorage(key, value) {
     const storageKey = String(key || '');
     if (!storageKey) return false;
+
+    // Cloud Run/online mode is server-authoritative. Keep only session and CBT
+    // recovery/offline-queue data in browser storage; purge replicated datasets.
+    if (isOnlineServerAuthoritativeStorage() && ONLINE_SERVER_AUTH_STORAGE_KEYS.has(storageKey)) {
+        try { localStorage.removeItem(storageKey); } catch (_) {}
+        return true;
+    }
 
     // Full LKPD state is server-authoritative and may contain large images.
     // Never persist it in localStorage; also purge any legacy copy quietly.
@@ -511,6 +578,13 @@ function saveState(key) {
     if (!key || appState[key] === undefined) return;
     
     if (key === 'attendance' || key === 'teacherAttendance') {
+        if (isOnlineServerAuthoritativeStorage()) {
+            try {
+                localStorage.removeItem('madrasah_' + key);
+                localStorage.removeItem('madrasah_' + key + '_photos');
+                if (key === 'teacherAttendance') localStorage.removeItem('madrasah_teacher_attendance_photos');
+            } catch (_) {}
+        } else {
         try {
             const dataList = appState[key];
             const dataWithoutPhotos = [];
@@ -564,6 +638,7 @@ function saveState(key) {
         } catch(err) {
             console.error('Error separating photo from ' + key, err);
             safeSetLocalStorage('madrasah_' + key, appState[key]);
+        }
         }
     } else {
         const storageKey = (key === 'lkpdList' && typeof window.getLkpdStorageKey === 'function') 
@@ -1248,6 +1323,7 @@ async function initAppSession() {
             appState.settings = { ...appState.settings, ...data.settings };
             appState.isOfflineMode = !!data.isOfflineMode;
             window.isOfflineMode = !!data.isOfflineMode;
+            if (!window.isOfflineMode) purgeOnlineServerAuthoritativeCaches();
         }
     } catch(e) {
         console.warn('Gagal fetch settings awal:', e);

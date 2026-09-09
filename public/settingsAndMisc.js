@@ -3818,6 +3818,7 @@ async function backupSystemData() {
         const incCbt = cbCbt ? cbCbt.checked : true;
         const incLessonPlans = cbLessonPlans ? cbLessonPlans.checked : true;
         const incSettings = cbSettings ? cbSettings.checked : true;
+        const isOfflineRestoreMode = (window.isOfflineMode === true || appState.isOfflineMode === true);
 
         // Helper to convert single image URL to base64
         const imageUrlToBase64 = async (url) => {
@@ -3872,8 +3873,9 @@ async function backupSystemData() {
         const teacherAttendanceList = incAttendance ? await processPhotosInArray(appState.teacherAttendance || [], 'photo', incPhotos, 'Foto Absen Guru') : [];
 
         // Build backup payload with selected components
+        const isOfflineBackupMode = (window.isOfflineMode === true || appState.isOfflineMode === true);
         const backupData = {
-            version: '2.0',
+            version: '2.1',
             timestamp: new Date().toISOString(),
             schoolName: schoolName,
             students: studentsList,
@@ -3894,15 +3896,17 @@ async function backupSystemData() {
             grades: incCbt ? (appState.grades || []) : [],
             settings: incSettings ? (appState.settings || {}) : {},
             schoolLocationSettings: incSettings ? (appState.schoolLocationSettings || {}) : {},
-            localStorageDump: {}
+            ...(isOfflineBackupMode ? { localStorageDump: {} } : {})
         };
 
-        if (incSettings) {
+        // Browser cache is not part of an online/Cloud Run backup.
+        // Keep the legacy dump only for true offline installations.
+        if (incSettings && isOfflineBackupMode) {
             for (let i = 0; i < localStorage.length; i++) {
                 const key = localStorage.key(i);
                 if (key && key.startsWith('madrasah_')) {
                     backupData.localStorageDump[key] = localStorage.getItem(key);
-                    backupData[key] = localStorage.getItem(key); // backwards compatibility
+                    backupData[key] = localStorage.getItem(key); // offline backwards compatibility
                 }
             }
         }
@@ -3955,6 +3959,10 @@ async function restoreSystemData(event) {
             throw new Error('Format file backup tidak valid.');
         }
 
+        const legacyDump = (data.localStorageDump && typeof data.localStorageDump === 'object' && !Array.isArray(data.localStorageDump))
+            ? data.localStorageDump
+            : {};
+
         const getArray = (key, legacyKeys = []) => {
             if (Array.isArray(data[key])) return data[key];
             if (typeof data[key] === 'string') {
@@ -3964,10 +3972,11 @@ async function restoreSystemData(event) {
                 } catch (e) {}
             }
             for (const lk of legacyKeys) {
-                if (Array.isArray(data[lk])) return data[lk];
-                if (typeof data[lk] === 'string') {
+                const candidate = data[lk] !== undefined ? data[lk] : legacyDump[lk];
+                if (Array.isArray(candidate)) return candidate;
+                if (typeof candidate === 'string') {
                     try {
-                        const parsed = JSON.parse(data[lk]);
+                        const parsed = JSON.parse(candidate);
                         if (Array.isArray(parsed)) return parsed;
                     } catch (e) {}
                 }
@@ -3984,10 +3993,11 @@ async function restoreSystemData(event) {
                 } catch (e) {}
             }
             for (const lk of legacyKeys) {
-                if (data[lk] && typeof data[lk] === 'object') return data[lk];
-                if (typeof data[lk] === 'string') {
+                const candidate = data[lk] !== undefined ? data[lk] : legacyDump[lk];
+                if (candidate && typeof candidate === 'object') return candidate;
+                if (typeof candidate === 'string') {
                     try {
-                        const parsed = JSON.parse(data[lk]);
+                        const parsed = JSON.parse(candidate);
                         if (parsed && typeof parsed === 'object') return parsed;
                     } catch (e) {}
                 }
@@ -4147,127 +4157,132 @@ async function restoreSystemData(event) {
                     incSettings ? ['schoolLocationSettings', 'madrasah_schoolLocationSettings', restorePayload.schoolLocationSettings] : null
                 ].filter(Boolean);
 
-                // Restore via server API with fallback for 413 Payload Too Large
+                // Restore through the dedicated server API. Online/Cloud Run must fail closed:
+                // a failed authoritative write must never be converted into a fake success toast.
                 let serverRestored = false;
                 let mergedServerData = null;
+                let serverRestoreError = null;
+
+                const parseRestoreResponse = async (response, label) => {
+                    let json = null;
+                    try { json = await response.json(); } catch (_) {}
+                    if (!response.ok || !json || json.success === false) {
+                        const detail = json && json.message ? json.message : `HTTP ${response.status}`;
+                        throw new Error(`${label}: ${detail}`);
+                    }
+                    return json;
+                };
+
+                const uploadRestoreChunks = async (payloadString) => {
+                    const chunkSize = 500000;
+                    const uploadId = `restore_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                    const totalChunks = Math.ceil(payloadString.length / chunkSize);
+                    for (let i = 0; i < totalChunks; i++) {
+                        const chunkData = payloadString.slice(i * chunkSize, (i + 1) * chunkSize);
+                        const response = await fetch('/api/system/restore/chunk', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ uploadId, chunkData, chunkIndex: i, totalChunks })
+                        });
+                        const json = await parseRestoreResponse(response, `Restore bagian ${i + 1}/${totalChunks} gagal`);
+                        if (json.merged) mergedServerData = json.merged;
+                    }
+                    serverRestored = true;
+                };
+
                 try {
                     const payloadString = JSON.stringify(restorePayload);
                     if (payloadString.length > 500000) {
-                        // Chunked restore
-                        const chunkSize = 500000;
-                        const uploadId = Date.now().toString();
-                        const totalChunks = Math.ceil(payloadString.length / chunkSize);
-                        
-                        let lastRes = null;
-                        for (let i = 0; i < totalChunks; i++) {
-                            const chunkData = payloadString.slice(i * chunkSize, (i + 1) * chunkSize);
-                            const res = await fetch('/api/system/restore/chunk', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ uploadId, chunkData, chunkIndex: i, totalChunks })
-                            });
-                            if (!res.ok) throw new Error(`Chunk ${i} failed`);
-                            lastRes = res;
-                        }
-                        serverRestored = true;
-                        try {
-                            const json = await lastRes.json();
-                            if (json && json.merged) {
-                                mergedServerData = json.merged;
-                            }
-                        } catch (e) {}
+                        await uploadRestoreChunks(payloadString);
                     } else {
-                        const res = await fetch('/api/system/restore', {
+                        const response = await fetch('/api/system/restore', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: payloadString
                         });
-                        if (res.ok) {
+                        if (response.status === 413) {
+                            await uploadRestoreChunks(payloadString);
+                        } else {
+                            const json = await parseRestoreResponse(response, 'Restore server gagal');
+                            if (json.merged) mergedServerData = json.merged;
                             serverRestored = true;
-                            try {
-                                const json = await res.json();
-                                if (json && json.merged) {
-                                    mergedServerData = json.merged;
-                                }
-                            } catch (e) {}
-                        } else if (res.status === 413) {
-                            // If it still 413s, fallback to chunked upload
-                            const chunkSize = 500000;
-                            const uploadId = Date.now().toString();
-                            const totalChunks = Math.ceil(payloadString.length / chunkSize);
-                            
-                            let lastRes = null;
-                            for (let i = 0; i < totalChunks; i++) {
-                                const chunkData = payloadString.slice(i * chunkSize, (i + 1) * chunkSize);
-                                const chunkRes = await fetch('/api/system/restore/chunk', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ uploadId, chunkData, chunkIndex: i, totalChunks })
-                                });
-                                if (!chunkRes.ok) throw new Error(`Chunk ${i} failed`);
-                                lastRes = chunkRes;
-                            }
-                            serverRestored = true;
-                            try {
-                                const json = await lastRes.json();
-                                if (json && json.merged) {
-                                    mergedServerData = json.merged;
-                                }
-                            } catch (e) {}
                         }
                     }
                 } catch (err) {
+                    serverRestoreError = err;
                     console.warn('Server restore error:', err);
                 }
 
                 if (!serverRestored) {
+                    if (!isOfflineRestoreMode) {
+                        throw serverRestoreError || new Error('Restore Cloud Run gagal disimpan ke server.');
+                    }
+
+                    // Offline-only compatibility fallback. Every write is verified; one failure
+                    // aborts the restore instead of reporting success with partial data.
                     for (const [key, lsKey, val] of componentsToSync) {
-                        if (val !== undefined && val !== null) {
-                            try {
-                                await fetch('/api/sync-state', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ key, data: val })
-                                });
-                            } catch (e) {
-                                console.warn(`Failed to sync key ${key}:`, e);
-                            }
+                        if (val === undefined || val === null) continue;
+                        const response = await fetch('/api/sync-state', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ key, data: val })
+                        });
+                        let json = null;
+                        try { json = await response.json(); } catch (_) {}
+                        if (!response.ok || (json && json.success === false)) {
+                            throw new Error((json && json.message) || `Gagal menyimpan komponen ${key}.`);
                         }
                     }
+                    serverRestored = true;
                 }
 
-                // Explicitly persist selected restored data arrays & objects to localStorage & appState
-                for (const [key, lsKey, val] of componentsToSync) {
-                    let finalVal = val;
-                    if (mergedServerData && mergedServerData[key] !== undefined) {
-                        finalVal = mergedServerData[key];
-                    }
-                    if (finalVal !== undefined && finalVal !== null) {
-                        if (key === 'students') {
-                            appState[key] = sortStudentsByNis(finalVal);
-                        } else {
-                            appState[key] = finalVal;
-                        }
-                        if (key === 'questions') {
-                            appState.questionBank = finalVal; // dual name backwards compat
-                        }
-                        if (window.safeSetLocalStorage) {
-                            window.safeSetLocalStorage(lsKey, appState[key]);
-                        } else {
+                if (isOfflineRestoreMode) {
+                    // Offline installations still need browser/local cache for continuity.
+                    for (const [key, lsKey, val] of componentsToSync) {
+                        let finalVal = val;
+                        if (mergedServerData && mergedServerData[key] !== undefined) finalVal = mergedServerData[key];
+                        if (finalVal === undefined || finalVal === null) continue;
+                        if (key === 'students') appState[key] = sortStudentsByNis(finalVal);
+                        else appState[key] = finalVal;
+                        if (key === 'questions') appState.questionBank = finalVal;
+                        if (window.safeSetLocalStorage) window.safeSetLocalStorage(lsKey, appState[key]);
+                        else {
                             try { localStorage.setItem(lsKey, JSON.stringify(appState[key])); } catch (_) {}
                         }
                         if (lsKey === 'madrasah_questionBankGroups') {
-                            if (window.safeSetLocalStorage) {
-                                window.safeSetLocalStorage('madrasah_question_groups', finalVal);
-                            } else {
+                            if (window.safeSetLocalStorage) window.safeSetLocalStorage('madrasah_question_groups', finalVal);
+                            else {
                                 try { localStorage.setItem('madrasah_question_groups', JSON.stringify(finalVal)); } catch (_) {}
                             }
+                        }
+                    }
+                } else {
+                    // Cloud Run: never duplicate restored server datasets into localStorage.
+                    // Remove legacy/stale caches and reload authoritative data from the server.
+                    if (typeof window.purgeOnlineServerAuthoritativeCaches === 'function') {
+                        window.purgeOnlineServerAuthoritativeCaches();
+                    } else {
+                        for (const [, lsKey] of componentsToSync) {
+                            try { localStorage.removeItem(lsKey); } catch (_) {}
+                        }
+                        try { localStorage.removeItem('madrasah_question_groups'); } catch (_) {}
+                    }
+
+                    if (typeof window.loadDataFromServer === 'function') {
+                        await window.loadDataFromServer();
+                    } else if (mergedServerData) {
+                        for (const [key, , val] of componentsToSync) {
+                            const finalVal = mergedServerData[key] !== undefined ? mergedServerData[key] : val;
+                            if (finalVal === undefined || finalVal === null) continue;
+                            if (key === 'students') appState.students = sortStudentsByNis(finalVal);
+                            else appState[key] = finalVal;
+                            if (key === 'questions') appState.questionBank = finalVal;
                         }
                     }
                 }
 
                 if (window.showToast) {
-                    window.showToast('Data berhasil dipulihkan! Memuat ulang sistem...', 'success');
+                    window.showToast(isOfflineRestoreMode ? 'Data berhasil dipulihkan! Memuat ulang sistem...' : 'Restore Cloud Run berhasil disimpan ke server dan data telah dimuat ulang dari sumber utama.', 'success');
                 }
                 setTimeout(() => {
                     window.location.reload();
