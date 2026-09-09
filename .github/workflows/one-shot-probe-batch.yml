@@ -1,0 +1,27 @@
+name: One-shot Batch Implementation Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-shot-probe-batch.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locate implementation points
+        shell: bash
+        run: |
+          echo '--- server sync/lkpd/settings ---'
+          grep -n -E "api/sync-state|mergeLkpdListDataSmart|key === 'lkpdList'|key === \"lkpdList\"|api/settings|cleanup-photos|cleanup-teacher-photos" server.ts || true
+          echo '--- frontend settings/theme ---'
+          grep -n -E "function saveSettings|function renderSettingModule|Theme Switcher Functions|function selectSystemTheme|function updateThemeSelectionUI|runSmartPhotoCleanup|runTeacherPhotoCleanup" src/settingsAndMisc.js || true
+          echo '--- lkpd delete/import/save ---'
+          grep -n -E "deleteLkpd =|handleImportLkpdImage|saveLkpdState|customImage" src/lkpdModule.js | head -80 || true
+          echo '--- apply theme ---'
+          grep -n -E "function applyTheme|window.applyTheme|dynamic-theme-style" src/appScript.js || true
