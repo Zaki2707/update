@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 p = Path('server.ts')
 s = p.read_text()
@@ -10,7 +11,16 @@ def rep(old, new, count=1):
         raise SystemExit(f'Expected {count} occurrence(s), found {n}: {old[:120]!r}')
     s = s.replace(old, new, count)
 
-anchor = """  return [...otherItems, ...taggedIncoming];\n}\n\nfunction mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any): any[] {"""
+def sub(pattern, replacement, count=1, flags=0):
+    global s
+    s2, n = re.subn(pattern, replacement, s, count=count, flags=flags)
+    if n != count:
+        raise SystemExit(f'Expected regex {count} occurrence(s), found {n}: {pattern[:120]!r}')
+    s = s2
+
+# Tenant-owned merge for master arrays. It preserves server-only credentials but never
+# trusts browser-supplied tenant tags.
+anchor = "  return [...otherItems, ...taggedIncoming];\n}\n\nfunction mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any): any[] {"
 helper = """  return [...otherItems, ...taggedIncoming];
 }
 
@@ -50,9 +60,10 @@ function mergeTenantEntityListData(globalList: any[], incomingData: any[], req: 
 function mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any): any[] {"""
 rep(anchor, helper)
 
+# Require auth for generic sync-state and restrict master-data sync to staff.
 rep('app.post("/api/sync-state", async (req, res) => {', 'app.post("/api/sync-state", requireAuth, async (req, res) => {')
 rep(
-    """    let { key, data } = req.body;\n    if (!key) return res.status(400).json({ success: false, message: \"Key required\" });\n""",
+    '    let { key, data } = req.body;\n    if (!key) return res.status(400).json({ success: false, message: "Key required" });\n',
     """    let { key, data } = req.body;
     if (!key) return res.status(400).json({ success: false, message: \"Key required\" });
 
@@ -68,57 +79,8 @@ rep(
 """
 )
 
-old_master = """    if (key === 'teachers') {
-      if (Array.isArray(data)) {
-        const tMap = new Map(teachers.map((t: any) => [String(t.id), t]));
-        const newTeachers = [];
-        for (const item of data as any[]) { if (item && item.id != null) { const ext: any = tMap.get(String(item.id)); newTeachers.push(ext ? { ...ext, ...item } : item); } }
-        teachers = newTeachers;
-      } else {
-        teachers = data;
-      }
-      await saveData('teachers', teachers);
-    }
-    else if (key === 'students') {
-      if (Array.isArray(data)) {
-        const sMap = new Map(students.map((s: any) => [String(s.id), s]));
-        const newStudents = [];
-        for (const item of data as any[]) {
-          if (item && item.id != null) {
-            const idStr = String(item.id);
-            const ext: any = sMap.get(idStr);
-            if (!ext) {
-              newStudents.push(item);
-            } else {
-              const merged: any = { ...ext, ...item };
-              if (ext.name && ext.name !== ext.nis && (item.name === item.nis || !item.name)) merged.name = ext.name;
-              if (ext.no_hp && !item.no_hp) merged.no_hp = ext.no_hp;
-              if (ext.photo && !item.photo) merged.photo = ext.photo;
-              if (ext.password && String(ext.password) !== String(ext.nis) && (String(item.password) === String(item.nis) || !item.password)) merged.password = ext.password;
-              newStudents.push(merged);
-            }
-          }
-        }
-        students = newStudents;
-      } else {
-        students = data;
-      }
-      await saveData('students', students);
-    }
-    else if (key === 'classes') {
-      if (Array.isArray(data)) {
-        const cMap = new Map(classes.map((c: any) => [String(c.id), c]));
-        const newClasses = [];
-        for (const item of data as any[]) { if (item && item.id != null) { const ext: any = cMap.get(String(item.id)); newClasses.push(ext ? { ...ext, ...item } : item); } }
-        classes = newClasses;
-      } else {
-        classes = data;
-      }
-      await saveData('classes', classes);
-    }
-    else if (key === 'subjects') { subjects = data; await saveData('subjects', subjects); }
-"""
-new_master = """    if (key === 'teachers') {
+master_pattern = r"    if \(key === 'teachers'\) \{.*?    else if \(key === 'subjects'\) \{ subjects = data; await saveData\('subjects', subjects\); \}\n"
+master_replacement = """    if (key === 'teachers') {
       teachers = mergeTenantEntityListData(teachers, data, req, 'teacher');
       await saveData('teachers', teachers);
     }
@@ -135,10 +97,11 @@ new_master = """    if (key === 'teachers') {
       await saveData('subjects', subjects);
     }
 """
-rep(old_master, new_master)
+sub(master_pattern, master_replacement, flags=re.S)
 
+# Teacher edit/delete ownership.
 rep(
-    """  const t = teachers[idx];\n  \n  let updatedPassword = t.password;""",
+    '  const t = teachers[idx];\n  \n  let updatedPassword = t.password;',
     """  const t = teachers[idx];
   const authUser = getAuthUser(req);
   const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
@@ -149,7 +112,7 @@ rep(
   let updatedPassword = t.password;"""
 )
 rep(
-    """  const teacherToDelete = (teachers || []).find(t => String(t.id) === String(id));\n  const photoUrlsToDelete = new Set<string>();""",
+    '  const teacherToDelete = (teachers || []).find(t => String(t.id) === String(id));\n  const photoUrlsToDelete = new Set<string>();',
     """  const teacherToDelete = (teachers || []).find(t => String(t.id) === String(id));
   if (!teacherToDelete) {
     return res.status(404).json({ success: false, message: \"Guru tidak ditemukan.\" });
@@ -162,25 +125,27 @@ rep(
   const photoUrlsToDelete = new Set<string>();"""
 )
 rep(
-    """      if (record && String(record.teacherId) === String(id) && record.photo) {""",
-    """      if (record && String(record.teacherId) === String(id) && (isBos || isItemForCurrentMadrasah(record, req)) && record.photo) {"""
+    '      if (record && String(record.teacherId) === String(id) && record.photo) {',
+    '      if (record && String(record.teacherId) === String(id) && (isBos || isItemForCurrentMadrasah(record, req)) && record.photo) {'
 )
 
+# Student duplicate checks and photo-edit helpers must be tenant scoped too.
 rep(
-    """    const duplicate = students.find(s => String(s.nis || '').trim() === trimmedNis && String(s.id) !== String(id));""",
-    """    const duplicate = filterByMadrasah(students, req).find(s => String(s.nis || '').trim() === trimmedNis && String(s.id) !== String(id));"""
+    "    const duplicate = students.find(s => String(s.nis || '').trim() === trimmedNis && String(s.id) !== String(id));",
+    "    const duplicate = filterByMadrasah(students, req).find(s => String(s.nis || '').trim() === trimmedNis && String(s.id) !== String(id));"
 )
-rep(
-    """    const idx = students.findIndex(s => \n      String(s.nis || '').trim() === itemNis || \n      String(s.username || '').trim() === itemNis\n    );""",
+sub(
+    r"    const idx = students\.findIndex\(s =>\s*String\(s\.nis \|\| ''\)\.trim\(\) === itemNis \|\|\s*String\(s\.username \|\| ''\)\.trim\(\) === itemNis\s*\);",
     """    const authUser = getAuthUser(req);
     const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-    const idx = students.findIndex(s => 
+    const idx = students.findIndex(s =>
       (String(s.nis || '').trim() === itemNis || String(s.username || '').trim() === itemNis) &&
       (isBos || isItemForCurrentMadrasah(s, req))
-    );"""
+    );""",
+    flags=re.S
 )
 rep(
-    """  const st = students[idx];\n  const prevPhoto = st.photo || '';""",
+    "  const st = students[idx];\n  const prevPhoto = st.photo || '';",
     """  const st = students[idx];
   const authUser = getAuthUser(req);
   const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
@@ -190,7 +155,7 @@ rep(
   const prevPhoto = st.photo || '';"""
 )
 rep(
-    """  const st = students[idx];\n  let history: any[] = Array.isArray(st.photoHistory) ? [...st.photoHistory] : [];""",
+    "  const st = students[idx];\n  let history: any[] = Array.isArray(st.photoHistory) ? [...st.photoHistory] : [];",
     """  const st = students[idx];
   const authUser = getAuthUser(req);
   const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
@@ -200,8 +165,9 @@ rep(
   let history: any[] = Array.isArray(st.photoHistory) ? [...st.photoHistory] : [];"""
 )
 
+# Class edits/deletes and homeroom assignment must stay in current tenant.
 rep(
-    """    if (idx >= 0) {\n      classes[idx] = { """,
+    '    if (idx >= 0) {\n      classes[idx] = { ',
     """    if (idx >= 0) {
       const authUser = getAuthUser(req);
       const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
@@ -211,13 +177,13 @@ rep(
       classes[idx] = { """
 )
 rep(
-    """      teachers.forEach(t => {\n        if (String(t.id) === String(homeroomTeacherId)) {""",
+    '      teachers.forEach(t => {\n        if (String(t.id) === String(homeroomTeacherId)) {',
     """      teachers.forEach(t => {
         if (!isItemForCurrentMadrasah(t, req)) return;
         if (String(t.id) === String(homeroomTeacherId)) {"""
 )
 rep(
-    """    teachers.forEach(t => {\n      if (String(t.id) === String(homeroomTeacherId)) {""",
+    '    teachers.forEach(t => {\n      if (String(t.id) === String(homeroomTeacherId)) {',
     """    teachers.forEach(t => {
       if (!isItemForCurrentMadrasah(t, req)) return;
       if (String(t.id) === String(homeroomTeacherId)) {"""
@@ -235,6 +201,8 @@ rep(
   }
   classes = classes.filter(c => String(c.id) !== String(id));"""
 )
+
+# Subject deletion ownership.
 rep(
     """app.delete(\"/api/subjects/:id\", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {\n  const { id } = req.params;\n  subjects = subjects.filter(s => String(s.id) !== String(id));""",
     """app.delete(\"/api/subjects/:id\", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
