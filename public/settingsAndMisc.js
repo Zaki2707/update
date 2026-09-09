@@ -3535,8 +3535,9 @@ function handleCustomStyleChange(style) {
 async function checkDatabaseConnection() {
     const statusResultEl = document.getElementById('db-connection-test-result');
     if (statusResultEl) {
-        statusResultEl.innerHTML = `<div class="p-3 bg-blue-50 text-blue-700 rounded-xl text-xs flex items-center gap-2"><i class="fa-solid fa-spinner fa-spin"></i><span>Sedang menguji koneksi mendalam ke database, Firebase, dan file JSON...</span></div>`;
+        statusResultEl.innerHTML = `<div class="p-3 bg-blue-50 text-blue-700 rounded-xl text-xs flex items-center gap-2"><i class="fa-solid fa-spinner fa-spin"></i><span>Sedang menguji layanan penyimpanan yang aktif...</span></div>`;
     }
+
     try {
         const res = await fetch('/api/db-status');
         const text = await res.text();
@@ -3545,115 +3546,66 @@ async function checkDatabaseConnection() {
             data = JSON.parse(text);
         } catch (e) {
             if (statusResultEl) {
-                statusResultEl.innerHTML = `
-                    <div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs space-y-1 animate-in fade-in">
-                        <div class="font-bold flex items-center gap-2"><i class="fa-solid fa-circle-xmark text-rose-600 text-sm"></i><span>Respons Server Non-JSON (Status: MERAH)</span></div>
-                        <p class="text-slate-700 font-mono text-[11px] bg-rose-100/50 p-2 rounded">${text.substring(0, 300)}</p>
-                        <p class="text-slate-500 text-[11px] mt-1">💡 Tips: Periksa log server backend atau pastikan variabel <code class="bg-rose-100 px-1 py-0.5 rounded">DATABASE_URL</code> sudah benar.</p>
-                    </div>
-                `;
+                statusResultEl.innerHTML = `<div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs"><div class="font-bold mb-1">Respons diagnostik tidak valid</div><p class="text-[11px] text-slate-600">Status HTTP ${res.status}. Periksa log backend.</p></div>`;
             }
             return;
         }
 
         if (statusResultEl) {
-            const sqlObj = data.sql || { connected: false, message: "Tidak terbaca" };
-            const firebaseObj = data.firebase || { connected: false, message: "Tidak terbaca" };
-            const jsonObj = data.json || { connected: false, message: "Tidak terbaca" };
-
+            const mode = String(data.mode || '').toLowerCase() === 'offline' ? 'offline' : 'online';
+            const sqlObj = data.sql || { connected: false, message: 'Tidak terbaca' };
+            const jsonObj = data.json || { connected: false, message: 'Tidak terbaca' };
+            const cloudinaryObj = data.cloudinary || { connected: false, message: 'Tidak terbaca' };
             const isAllOk = data.connected === true;
 
-            const renderBadge = (isOk) => {
-                if (isOk) {
-                    return `<span class="inline-flex items-center gap-1 bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>ONLINE</span>`;
-                } else {
-                    return `<span class="inline-flex items-center gap-1 bg-rose-100 text-rose-800 text-[10px] font-bold px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>OFFLINE</span>`;
-                }
-            };
+            const renderIcon = (isOk) => isOk
+                ? `<i class="fa-solid fa-circle-check text-emerald-500 text-base"></i>`
+                : `<i class="fa-solid fa-circle-xmark text-rose-500 text-base"></i>`;
+            const renderBadge = (isOk) => isOk
+                ? `<span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">ONLINE</span>`
+                : `<span class="px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[10px] font-bold">OFFLINE</span>`;
+            const serviceCard = (number, title, obj) => `
+                <div class="flex items-start gap-3 p-3 rounded-xl hover:bg-slate-50/50 transition duration-150 border border-slate-50">
+                    <div class="mt-0.5">${renderIcon(obj.connected)}</div>
+                    <div class="flex-1 space-y-0.5 min-w-0">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="font-bold text-slate-800 text-xs">${number}. ${title}</span>
+                            ${renderBadge(obj.connected)}
+                        </div>
+                        <p class="text-[11px] text-slate-600">${obj.message || ''}</p>
+                        ${obj.details ? `<p class="text-[10px] text-slate-400 font-mono bg-slate-50 p-1.5 rounded border border-slate-100/60 overflow-x-auto whitespace-pre-wrap">${obj.details}</p>` : ''}
+                    </div>
+                </div>`;
 
-            const renderIcon = (isOk) => {
-                return isOk 
-                    ? `<i class="fa-solid fa-circle-check text-emerald-500 text-base"></i>` 
-                    : `<i class="fa-solid fa-circle-xmark text-rose-500 text-base"></i>`;
-            };
+            const cards = mode === 'online'
+                ? [
+                    serviceCard(1, 'Database SQL (Google Cloud SQL)', sqlObj),
+                    serviceCard(2, 'Cloudinary (Penyimpanan Foto)', cloudinaryObj)
+                  ].join('')
+                : [
+                    serviceCard(1, 'Database PostgreSQL Lokal', sqlObj),
+                    serviceCard(2, 'Local File System (local_store.json)', jsonObj)
+                  ].join('');
 
             statusResultEl.innerHTML = `
                 <div class="space-y-4 animate-in fade-in duration-300">
-                    <!-- MAIN BANNER -->
-                    ${isAllOk ? `
-                        <div class="p-4 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-2xl text-xs space-y-1 shadow-sm">
-                            <div class="font-bold flex items-center gap-2 text-sm text-emerald-800">
-                                <i class="fa-solid fa-shield-halved text-emerald-600 text-base"></i>
-                                <span>STATUS SISTEM: HIJAU (AMAN & SINKRON)</span>
-                            </div>
-                            <p class="text-slate-600 text-[11px]">Semua sistem database, penyimpanan Firebase Firestore, dan penyimpanan cadangan lokal terhubung dengan sempurna secara real-time.</p>
+                    <div class="p-4 ${isAllOk ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-900'} border rounded-2xl text-xs space-y-1 shadow-sm">
+                        <div class="font-bold flex items-center gap-2 text-sm">
+                            <i class="fa-solid ${isAllOk ? 'fa-circle-check text-emerald-600' : 'fa-circle-xmark text-rose-600'}"></i>
+                            <span>${mode === 'online' ? 'Status Penyimpanan Online' : 'Status Penyimpanan Offline'}</span>
                         </div>
-                    ` : `
-                        <div class="p-4 bg-rose-50 border border-rose-200 text-rose-950 rounded-2xl text-xs space-y-1 shadow-sm">
-                            <div class="font-bold flex items-center gap-2 text-sm text-rose-800">
-                                <i class="fa-solid fa-triangle-exclamation text-rose-600 text-base animate-bounce"></i>
-                                <span>STATUS SISTEM: MERAH (GANGGUAN TERDETEKSI!)</span>
-                            </div>
-                            <p class="text-slate-600 text-[11px] font-semibold">${data.message || 'Beberapa komponen penting terputus. Mohon segera periksa detail status di bawah.'}</p>
-                            <p class="text-slate-500 text-[10px] pt-1">⚠️ PENTING: Penggunaan sistem dalam status merah berisiko menyebabkan data absensi baru tidak tersinkronisasi ke cloud.</p>
-                        </div>
-                    `}
-
-                    <!-- THREE-SERVICE STATUS PANEL -->
-                    <div class="bg-white border border-slate-100 rounded-2xl p-4 shadow-sm space-y-3.5">
-                        <h4 class="text-xs font-bold text-slate-700 tracking-wide uppercase">Detail Keandalan Layanan</h4>
-                        
-                        <!-- 1. SQL DATABASE -->
-                        <div class="flex items-start gap-3 p-3 rounded-xl hover:bg-slate-50/50 transition duration-150 border border-slate-50">
-                            <div class="mt-0.5">${renderIcon(sqlObj.connected)}</div>
-                            <div class="flex-1 space-y-0.5 min-w-0">
-                                <div class="flex items-center justify-between gap-2">
-                                    <span class="font-bold text-slate-800 text-xs">1. Database SQL (PostgreSQL Cloud)</span>
-                                    ${renderBadge(sqlObj.connected)}
-                                </div>
-                                <p class="text-[11px] text-slate-600 truncate">${sqlObj.message}</p>
-                                ${sqlObj.details ? `<p class="text-[10px] text-slate-400 font-mono bg-slate-50 p-1.5 rounded border border-slate-100/60 overflow-x-auto whitespace-pre-wrap">${sqlObj.details}</p>` : ''}
-                            </div>
-                        </div>
-
-                        <!-- 2. LOCAL JSON BACKUP -->
-                        <div class="flex items-start gap-3 p-3 rounded-xl hover:bg-slate-50/50 transition duration-150 border border-slate-50">
-                            <div class="mt-0.5">${renderIcon(jsonObj.connected)}</div>
-                            <div class="flex-1 space-y-0.5 min-w-0">
-                                <div class="flex items-center justify-between gap-2">
-                                    <span class="font-bold text-slate-800 text-xs">2. Local File System (JSON Backup)</span>
-                                    ${renderBadge(jsonObj.connected)}
-                                </div>
-                                <p class="text-[11px] text-slate-600 truncate">${jsonObj.message}</p>
-                                ${jsonObj.details ? `<p class="text-[10px] text-slate-400 font-mono bg-slate-50 p-1.5 rounded border border-slate-100/60 overflow-x-auto whitespace-pre-wrap">${jsonObj.details}</p>` : ''}
-                            </div>
-                        </div>
-
-                        <!-- 3. CLOUDINARY -->
-                        <div class="flex items-start gap-3 p-3 rounded-xl hover:bg-slate-50/50 transition duration-150 border border-slate-50">
-                            <div class="mt-0.5">${renderIcon(data.cloudinary.connected)}</div>
-                            <div class="flex-1 space-y-0.5 min-w-0">
-                                <div class="flex items-center justify-between gap-2">
-                                    <span class="font-bold text-slate-800 text-xs">3. Cloudinary (Image Storage)</span>
-                                    ${renderBadge(data.cloudinary.connected)}
-                                </div>
-                                <p class="text-[11px] text-slate-600 truncate">${data.cloudinary.message}</p>
-                                ${data.cloudinary.details ? `<p class="text-[10px] text-slate-400 font-mono bg-slate-50 p-1.5 rounded border border-slate-100/60 overflow-x-auto whitespace-pre-wrap">${data.cloudinary.details}</p>` : ''}
-                            </div>
-                        </div>
+                        <p class="text-slate-700">${data.message || (isAllOk ? 'Layanan utama terhubung.' : 'Ada layanan utama yang belum terhubung.')}</p>
                     </div>
-                </div>
-            `;
+                    <div class="bg-white border border-slate-100 rounded-2xl p-4 shadow-sm space-y-3.5">
+                        <h4 class="text-xs font-bold text-slate-700 tracking-wide uppercase">Layanan yang Aktif</h4>
+                        ${cards}
+                    </div>
+                    <p class="text-[10px] text-slate-400">Firebase Firestore tidak digunakan sebagai backend aktif. Local JSON hanya diperiksa pada mode offline.</p>
+                </div>`;
         }
     } catch (err) {
         if (statusResultEl) {
-            statusResultEl.innerHTML = `
-                <div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs space-y-1 animate-in fade-in">
-                    <div class="font-bold flex items-center gap-2"><i class="fa-solid fa-circle-xmark text-rose-600 text-sm"></i><span>Gagal Menghubungi Server Diagnostik (Status: MERAH)</span></div>
-                    <p class="text-slate-700">${err.message || String(err)}</p>
-                    <p class="text-slate-500 text-[11px] mt-1">Pastikan server backend aktif dan file .env sudah dikonfigurasi dengan benar.</p>
-                </div>
-            `;
+            statusResultEl.innerHTML = `<div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs"><div class="font-bold mb-1">Gagal menghubungi server diagnostik</div><p class="text-slate-700">${err?.message || String(err)}</p></div>`;
         }
     }
 }
