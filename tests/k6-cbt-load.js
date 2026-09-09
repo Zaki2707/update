@@ -96,6 +96,12 @@ function postJson(path, body, headers, name) {
   return http.post(`${BASE_URL}${path}`, JSON.stringify(body), tagged(headers, name));
 }
 
+function logFailure(label, res) {
+  if (!res || res.status === 200) return;
+  const body = String(res.body || '').replace(/\s+/g, ' ').slice(0, 500);
+  console.error(`${label} gagal: HTTP ${res.status}${body ? ` - ${body}` : ''}`);
+}
+
 export default function () {
   const accountIndex = ACCOUNT_OFFSET + (__VU - 1);
   const account = accounts[accountIndex];
@@ -122,7 +128,10 @@ export default function () {
     'login token tersedia': () => token.length > 20,
   });
   loginFail.add(!loginOk);
-  if (!loginOk || !token) return;
+  if (!loginOk || !token) {
+    logFailure('login', loginRes);
+    return;
+  }
 
   const headers = authHeaders(token);
   const studentId = String(loginData?.user?.id || account.studentId || '');
@@ -132,6 +141,22 @@ export default function () {
     tagged(headers, 'GET /api/exams')
   );
   check(examsRes, { 'daftar ujian 200': (r) => r.status === 200 });
+  logFailure('daftar ujian', examsRes);
+
+  // Current CBT lifecycle requires an active server session BEFORE locked questions are requested.
+  const bootstrapStartRes = postJson('/api/exam/attempt/start', {
+    studentId,
+    examId: EXAM_ID,
+  }, headers, 'POST /api/exam/attempt/start [bootstrap]');
+
+  const bootstrapStartOk = check(bootstrapStartRes, {
+    'attempt bootstrap 200': (r) => r.status === 200,
+  });
+  attemptStartFail.add(!bootstrapStartOk);
+  if (!bootstrapStartOk) {
+    logFailure('attempt bootstrap', bootstrapStartRes);
+    return;
+  }
 
   const questionsRes = postJson('/api/exam/attempt/start-questions', {
     studentId,
@@ -145,17 +170,26 @@ export default function () {
     'soal tersedia': () => questions.length > 0,
   });
   startQuestionFail.add(!questionsOk);
-  if (!questionsOk || questions.length === 0) return;
+  if (!questionsOk || questions.length === 0) {
+    logFailure('start-questions', questionsRes);
+    return;
+  }
 
-  const startRes = postJson('/api/exam/attempt/start', {
+  // Resume once after question locking so server monitoring can synchronize totalQuestions
+  // from the authoritative studentExamQuestions order without resetting the attempt.
+  const syncStartRes = postJson('/api/exam/attempt/start', {
     studentId,
     examId: EXAM_ID,
-    totalQuestions: questions.length,
-  }, headers, 'POST /api/exam/attempt/start');
+  }, headers, 'POST /api/exam/attempt/start [sync]');
 
-  const startOk = check(startRes, { 'attempt start 200': (r) => r.status === 200 });
-  attemptStartFail.add(!startOk);
-  if (!startOk) return;
+  const syncStartOk = check(syncStartRes, {
+    'attempt sync 200': (r) => r.status === 200,
+  });
+  attemptStartFail.add(!syncStartOk);
+  if (!syncStartOk) {
+    logFailure('attempt sync', syncStartRes);
+    return;
+  }
 
   const answers = {};
   const answerCount = Math.min(ANSWERS_PER_STUDENT, questions.length);
@@ -172,6 +206,7 @@ export default function () {
     }, headers, 'POST /api/exam/heartbeat');
     const hbOk = check(hbRes, { 'heartbeat 200': (r) => r.status === 200 });
     heartbeatFail.add(!hbOk);
+    if (!hbOk) logFailure('heartbeat', hbRes);
 
     const answer = chooseAnswer(q);
     answers[qId] = answer;
@@ -184,6 +219,7 @@ export default function () {
     }, headers, 'POST /api/exam/attempt/answer');
     const answerOk = check(answerRes, { 'answer 200': (r) => r.status === 200 });
     answerFail.add(!answerOk);
+    if (!answerOk) logFailure('answer', answerRes);
 
     think();
   }
@@ -193,10 +229,10 @@ export default function () {
     const recoveryRes = postJson('/api/exam/attempt/start', {
       studentId,
       examId: EXAM_ID,
-      totalQuestions: questions.length,
     }, headers, 'POST /api/exam/attempt/start [recovery]');
     const recoveryOk = check(recoveryRes, { 'recovery start 200': (r) => r.status === 200 });
     recoveryFail.add(!recoveryOk);
+    if (!recoveryOk) logFailure('recovery start', recoveryRes);
   }
 
   // Optional and OFF by default to avoid auto-blocking students across repeated runs.
@@ -208,6 +244,7 @@ export default function () {
       clientTimestamp: Date.now(),
     }, headers, 'POST /api/exam/violation');
     check(violationRes, { 'violation 200': (r) => r.status === 200 });
+    if (violationRes.status !== 200) logFailure('violation', violationRes);
   }
 
   const summaryRes = http.get(
@@ -215,6 +252,7 @@ export default function () {
     tagged(headers, 'GET /api/exam/my-summary')
   );
   check(summaryRes, { 'my-summary 200': (r) => r.status === 200 });
+  logFailure('my-summary', summaryRes);
 
   // OFF by default so the same dedicated load-test exam can be reused while ramping 20 -> 800.
   if (FINISH) {
@@ -225,6 +263,7 @@ export default function () {
     }, headers, 'POST /api/exam/attempt/finish');
     const finishOk = check(finishRes, { 'finish 200': (r) => r.status === 200 });
     finishFail.add(!finishOk);
+    if (!finishOk) logFailure('finish', finishRes);
   }
 
   successfulStudents.add(1);
