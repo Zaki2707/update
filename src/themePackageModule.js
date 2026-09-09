@@ -272,6 +272,20 @@ if (typeof originalRenderSetting === 'function') {
 }
 const originalSelectTheme = window.selectSystemTheme;
 if (typeof originalSelectTheme === 'function') {
-    window.selectSystemTheme = function(name) { if (name !== 'package') clearThemePackageVisual(); return originalSelectTheme.apply(this, arguments); };
+    window.selectSystemTheme = function(name) {
+        const oldPkg = window.appState?.settings?.themePackage;
+        if (name !== 'package') {
+            clearThemePackageVisual();
+            if (window.appState?.settings && oldPkg) delete window.appState.settings.themePackage;
+        }
+        const result = originalSelectTheme.apply(this, arguments);
+        if (name !== 'package' && oldPkg) {
+            Promise.resolve()
+                .then(() => persistThemeSettings())
+                .then(() => releaseThemeAssets(getPackageAssetRefs(oldPkg)))
+                .catch(err => console.warn('Gagal membersihkan aset tema lama:', err));
+        }
+        return result;
+    };
 }
 setTimeout(()=>{ if (window.appState?.settings?.theme === 'package' && window.appState.settings.themePackage) applyThemePackage(window.appState.settings.themePackage); },1200);

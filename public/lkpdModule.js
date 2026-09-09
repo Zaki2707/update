@@ -49,17 +49,21 @@ window.saveLkpdState = async function() {
     } catch (_) {}
 
     try {
-        if (typeof window.saveState === 'function') {
-            window.saveState('lkpdList');
-        } else {
-            await fetch('/api/sync-state', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: 'lkpdList', data: window.appState.lkpdList })
-            }).catch(() => {});
+        // Commit directly and await the server before any managed asset is released.
+        // This prevents a delete/reset race where Cloudinary still sees the old
+        // LKPD reference and incorrectly protects an asset that should be removed.
+        const response = await fetch('/api/sync-state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: 'lkpdList', data: window.appState.lkpdList })
+        });
+        const data = await response.json();
+        if (!response.ok || (data && data.success === false)) {
+            throw new Error((data && data.message) || 'Server gagal menyimpan LKPD.');
         }
     } catch (err) {
         console.error("Error saving LKPD state:", err);
+        throw err;
     }
 };
 
