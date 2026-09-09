@@ -1041,6 +1041,23 @@ async function resetAndShowUserPassword(userId, currentType) {
                     </div>
                 </div>`;
         }
+        if (currentType !== 'teacher') {
+            try {
+                const source = appState.students || [];
+                const student = source.find(item => String(item.id) === String(userId));
+                const existing = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
+                const map = new Map();
+                (Array.isArray(existing) ? existing : []).forEach(c => {
+                    if (c?.studentId) map.set(String(c.studentId), c);
+                });
+                map.set(String(userId), {
+                    studentId: String(userId),
+                    username: student?.username || '',
+                    temporaryPassword: newPassword
+                });
+                sessionStorage.setItem('cbt_print_credentials', JSON.stringify(Array.from(map.values())));
+            } catch (_) {}
+        }
         showToast('Password akun berhasil direset.', 'success');
     } catch (err) {
         showToast('Gagal reset password: ' + err.message, 'error');

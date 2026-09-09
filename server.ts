@@ -1601,6 +1601,26 @@ function getJakartaIsoString(): string {
 
 // --- ULTRA-HIGH PERFORMANCE DATABASE SYNC & MERGE ENGINE ---
 
+function tenantIdentityKey(item: any): string {
+  const tenantId = String(item?.madrasahId || 'default').trim().toLowerCase() || 'default';
+  const tenantSlug = String(item?.madrasahSlug || 'default').trim().toLowerCase() || 'default';
+  return `${tenantId}|${tenantSlug}`;
+}
+
+function dedupeStudentsByTenantAndNis(list: any[]): any[] {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  return list.filter((student: any) => {
+    if (!student) return false;
+    const nis = String(student.nis || '').trim().toLowerCase();
+    if (!nis) return true;
+    const compositeKey = `${tenantIdentityKey(student)}|${nis}`;
+    if (seen.has(compositeKey)) return false;
+    seen.add(compositeKey);
+    return true;
+  });
+}
+
 function mergeArrays(existing: any[], incoming: any[], key: string): any[] {
   if (!Array.isArray(existing)) return incoming;
   if (!Array.isArray(incoming)) return incoming;
@@ -1609,23 +1629,25 @@ function mergeArrays(existing: any[], incoming: any[], key: string): any[] {
   if (key === 'students') idField = 'nis';
   else if (key === 'teachers') idField = 'nip';
 
+  const buildMergeKey = (item: any): string | null => {
+    if (!item || typeof item !== 'object') return null;
+    const idVal = item[idField] || item['id'];
+    if (idVal === undefined || idVal === null) return null;
+    if (key === 'students' || key === 'teachers') {
+      return `${tenantIdentityKey(item)}|${String(idVal)}`;
+    }
+    return String(idVal);
+  };
+
   const existingMap = new Map<string, any>();
   existing.forEach(item => {
-    if (item && typeof item === 'object') {
-      const idVal = item[idField] || item['id'];
-      if (idVal !== undefined) {
-        existingMap.set(String(idVal), item);
-      }
-    }
+    const mergeKey = buildMergeKey(item);
+    if (mergeKey !== null) existingMap.set(mergeKey, item);
   });
 
   incoming.forEach(item => {
-    if (item && typeof item === 'object') {
-      const idVal = item[idField] || item['id'];
-      if (idVal !== undefined) {
-        existingMap.set(String(idVal), item);
-      }
-    }
+    const mergeKey = buildMergeKey(item);
+    if (mergeKey !== null) existingMap.set(mergeKey, item);
   });
 
   return Array.from(existingMap.values());
@@ -2789,15 +2811,8 @@ async function hydrate() {
     if (dbData['teachers'] !== undefined) teachers = dbData['teachers'];
     if (dbData['students'] !== undefined) students = dbData['students'];
     
-    // Deduplicate students by nis
-    const seenNis = new Set();
-    students = (students || []).filter(s => {
-      const nis = String(s.nis || '').trim();
-      if (!nis) return true;
-      if (seenNis.has(nis)) return false;
-      seenNis.add(nis);
-      return true;
-    });
+    // NIS is only unique inside one madrasah. Never collapse students across tenants.
+    students = dedupeStudentsByTenantAndNis(students || []);
 
     // Merge database partitions back into active arrays on boot if fetched from database
     if (dbData['attendance'] !== undefined) {
@@ -2914,14 +2929,7 @@ async function refreshInmemoryState(force = false) {
         if (dbData['subjects'] !== undefined) subjects = dbData['subjects'];
         if (dbData['teachers'] !== undefined) teachers = dbData['teachers'];
         if (dbData['students'] !== undefined) {
-          const seenNis = new Set();
-          students = (dbData['students'] || []).filter((s: any) => {
-            const nis = String(s.nis || '').trim();
-            if (!nis) return true;
-            if (seenNis.has(nis)) return false;
-            seenNis.add(nis);
-            return true;
-          });
+          students = dedupeStudentsByTenantAndNis(dbData['students'] || []);
         }
         if (dbData['attendance'] !== undefined) {
           const archives: any[] = [];
@@ -4341,8 +4349,13 @@ app.post("/api/login", async (req, res) => {
   }
 
   const loginTenantMatches = (entity: any): boolean => {
-    if (!requestedTenant) return true;
     const entityTenant = String(entity?.madrasahId || entity?.madrasahSlug || 'default');
+    if (!requestedTenant) {
+      const defaultM = madrasahs.find((m: any) => String(m.id) === 'default' || String(m.slug) === 'default') || madrasahs[0];
+      const defaultId = String(defaultM?.id || 'default');
+      const defaultSlug = String(defaultM?.slug || 'default').toLowerCase();
+      return entityTenant === 'default' || entityTenant === defaultId || entityTenant.toLowerCase() === defaultSlug;
+    }
     return entityTenant === String(requestedTenant.id) ||
       entityTenant.toLowerCase() === String(requestedTenant.slug || '').toLowerCase();
   };
@@ -4475,6 +4488,8 @@ app.post("/api/login", async (req, res) => {
       nip: teacher.nip,
       role: "teacher",
       mapel: teacher.mapel,
+      madrasahId: teacher.madrasahId || requestedTenant?.id || teacher.madrasahSlug || 'default',
+      madrasahSlug: teacher.madrasahSlug || requestedTenant?.slug || teacher.madrasahId || 'default',
       cbtTokenBalance: teacher.cbtTokenBalance !== undefined ? teacher.cbtTokenBalance : 0
     };
     const token = createAuthToken(teacherUser);
@@ -4505,6 +4520,8 @@ app.post("/api/login", async (req, res) => {
       classId: student.classId,
       class_id: student.classId,
       role: student.role || "student",
+      madrasahId: student.madrasahId || requestedTenant?.id || student.madrasahSlug || 'default',
+      madrasahSlug: student.madrasahSlug || requestedTenant?.slug || student.madrasahId || 'default',
       photo: student.photo,
       no_hp: student.no_hp
     };
@@ -5177,22 +5194,43 @@ app.delete("/api/madrasahs/:id", requireAuth, requireRole(['bos', 'superadmin'])
 
 // Helper functions for Multi-Tenant Scoping and Security
 function getRequestMadrasahId(req: any): string | null {
-  // Enforce tenant strictly from JWT session if authenticated
+  // Enforce tenant strictly from JWT session if authenticated.
   const authUser = req.user || getAuthUser(req);
   if (authUser) {
     const role = String(authUser.role || '').toLowerCase();
-    // Only super admin ('bos' / 'superadmin') can query cross-tenant or override via header/query
+
+    // Only super admin ('bos' / 'superadmin') can query cross-tenant or override via header/query.
     if (role === 'bos' || role === 'superadmin') {
       const headerVal = req.headers['x-madrasah-id'];
       if (headerVal) return String(headerVal);
       if (req.query.madrasahId) return String(req.query.madrasahId);
-      return authUser.madrasahId || 'default';
+      return String(authUser.madrasahId || authUser.madrasahSlug || 'default');
     }
-    // For anyone else (student, teacher, local school admin), strictly lock to their own token's madrasah
-    return authUser.madrasahId || 'default';
+
+    const tokenTenant = String(authUser.madrasahId || authUser.madrasahSlug || '').trim();
+    if (tokenTenant) return tokenTenant;
+
+    // Compatibility for JWTs issued before tenant claims were added to teacher/student login.
+    // Resolve only when the authenticated account maps unambiguously to exactly one record.
+    const isTeacherRole = role === 'teacher' || role === 'guru';
+    const isStudentRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+    const source = isTeacherRole ? (teachers || []) : (isStudentRole ? (students || []) : []);
+    if (source.length > 0) {
+      let candidates = source.filter((item: any) => String(item?.id || '') === String(authUser.id || ''));
+      if (candidates.length !== 1 && authUser.username) {
+        candidates = source.filter((item: any) => String(item?.username || '').toLowerCase() === String(authUser.username).toLowerCase());
+      }
+      if (candidates.length === 1) {
+        const resolvedTenant = String(candidates[0]?.madrasahId || candidates[0]?.madrasahSlug || '').trim();
+        if (resolvedTenant) return resolvedTenant;
+      }
+    }
+
+    // Fail closed to the default tenant instead of trusting client headers for a normal user.
+    return 'default';
   }
 
-  // Fallback for unauthenticated requests
+  // Fallback for unauthenticated requests.
   const headerVal = req.headers['x-madrasah-id'];
   if (headerVal) return String(headerVal);
   if (req.query.madrasahId) return String(req.query.madrasahId);
@@ -5217,7 +5255,9 @@ function filterByMadrasah(list: any[], req: any): any[] {
       if (!imId && !imSlug) return true; // Offline-only legacy compatibility.
       return imId === targetId || imSlug === targetSlug || imId === targetSlug || imSlug === targetId || imId === 'default' || imSlug === 'default';
     });
-    if (matched.length > 0) return matched;
+    // A real non-default tenant must stay empty when it has no records.
+    // Falling through to the default tenant here would leak another madrasah's data.
+    return matched;
   }
   
   const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];

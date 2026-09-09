@@ -1244,6 +1244,38 @@ window.applyTeacherHistoryPhoto = applyTeacherHistoryPhoto;
 window.saveTeacherProfileSelf = saveTeacherProfileSelf;
 
 // Student Module
+function getCachedStudentTemporaryPassword(student) {
+    if (!student) return '';
+    try {
+        const cached = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
+        if (!Array.isArray(cached)) return '';
+        const byId = cached.find(c => String(c?.studentId || '') === String(student.id || ''));
+        const byUsername = cached.find(c => c?.username && String(c.username).toLowerCase() === String(student.username || '').toLowerCase());
+        const credential = byId || byUsername;
+        return credential?.temporaryPassword ? String(credential.temporaryPassword) : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function escapeStudentCredentialHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+function renderStudentPasswordForAdmin(student) {
+    const temporaryPassword = getCachedStudentTemporaryPassword(student);
+    if (temporaryPassword) {
+        return `<span class="font-mono text-xs text-slate-800">${escapeStudentCredentialHtml(temporaryPassword)}</span>`;
+    }
+    return `<button type="button" onclick="window.openResetPasswordModal ? window.openResetPasswordModal('${escapeStudentCredentialHtml(student?.id || '')}', 'student') : openStudentModal('${escapeStudentCredentialHtml(student?.id || '')}')" class="text-[10px] font-semibold text-amber-700 hover:text-amber-800 underline underline-offset-2" title="Password lama tersimpan sebagai hash dan tidak dapat dibaca kembali">Tersimpan aman · Reset</button>`;
+}
+
+function studentPasswordForExport(student) {
+    return getCachedStudentTemporaryPassword(student) || 'Reset diperlukan';
+}
+
 function renderStudentModule(container) {
     // Auto-refresh students from server
     fetch('/api/students')
@@ -1336,7 +1368,7 @@ function renderStudentModule(container) {
                                         <td class="p-4 font-semibold text-slate-800">${s.name}</td>
                                         <td class="p-4"><span class="px-2 py-0.5 bg-slate-100 rounded-lg text-xs">${cls ? cls.name : '-'}</span></td>
                                         <td class="p-4 font-mono text-xs">${s.username}</td>
-                                        <td class="p-4 font-mono text-xs">${s.password}</td>
+                                        <td class="p-4 font-mono text-xs">${renderStudentPasswordForAdmin(s)}</td>
                                         ${!isTeacher ? `
                                         <td class="p-4 text-center space-x-2">
                                             <button type="button" onclick="openStudentModal('${s.id}')" class="p-2 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition"><i class="fa-solid fa-pen text-xs"></i></button>
@@ -1903,7 +1935,7 @@ function exportStudentsToExcel() {
             'Nama Lengkap': s.name,
             'Kelas': cls ? cls.name : '-',
             'Username': s.username,
-            'Password': s.password
+            'Password': studentPasswordForExport(s)
         };
     });
 
@@ -1996,7 +2028,7 @@ function exportStudentsToWord() {
         <td><b>${s.name}</b></td>
         <td>${cls ? cls.name : '-'}</td>
         <td class="font-mono">${s.username}</td>
-        <td class="font-mono">${s.password}</td>
+        <td class="font-mono">${escapeStudentCredentialHtml(studentPasswordForExport(s))}</td>
         </tr>
         `;
     }).join('')}
