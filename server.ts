@@ -5287,6 +5287,39 @@ function mergeTenantListData(globalList: any[], incomingData: any[], req: any): 
   return [...otherItems, ...taggedIncoming];
 }
 
+function mergeTenantEntityListData(globalList: any[], incomingData: any[], req: any, kind: 'teacher' | 'student' | 'class' | 'subject'): any[] {
+  if (!Array.isArray(incomingData)) return Array.isArray(globalList) ? globalList : [];
+  if (!Array.isArray(globalList)) globalList = [];
+
+  const currentExisting = globalList.filter(item => isItemForCurrentMadrasah(item, req));
+  const currentMap = new Map(currentExisting.filter(Boolean).map((item: any) => [String(item.id), item]));
+  const otherItems = globalList.filter(item => !isItemForCurrentMadrasah(item, req));
+  const mergedIncoming: any[] = [];
+
+  for (const rawItem of incomingData) {
+    if (!rawItem || rawItem.id === undefined || rawItem.id === null) continue;
+    const existing: any = currentMap.get(String(rawItem.id));
+    let merged: any = existing ? { ...existing, ...rawItem } : { ...rawItem };
+
+    if ((kind === 'teacher' || kind === 'student') && existing?.password && !rawItem.password) {
+      merged.password = existing.password;
+    }
+    if (kind === 'student' && existing) {
+      if (existing.name && existing.name !== existing.nis && (rawItem.name === rawItem.nis || !rawItem.name)) merged.name = existing.name;
+      if (existing.no_hp && !rawItem.no_hp) merged.no_hp = existing.no_hp;
+      if (existing.photo && !rawItem.photo) merged.photo = existing.photo;
+      if (existing.password && String(existing.password) !== String(existing.nis) && (String(rawItem.password || '') === String(rawItem.nis || '') || !rawItem.password)) merged.password = existing.password;
+    }
+
+    delete merged.madrasahId;
+    delete merged.madrasahSlug;
+    merged = tagNewRecord(merged, req);
+    mergedIncoming.push(merged);
+  }
+
+  return [...otherItems, ...mergedIncoming];
+}
+
 function mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any): any[] {
   if (!Array.isArray(incomingData)) return globalList;
   if (!Array.isArray(globalList)) globalList = [];
@@ -5452,6 +5485,11 @@ app.put("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
   }
   const t = teachers[idx];
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(t, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak: guru bukan milik madrasah Anda." });
+  }
   
   let updatedPassword = t.password;
   if (req.body.password && String(req.body.password).trim().length > 0) {
@@ -5527,6 +5565,14 @@ app.delete("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'ad
   
   // 1. Find the teacher to get their profile photo
   const teacherToDelete = (teachers || []).find(t => String(t.id) === String(id));
+  if (!teacherToDelete) {
+    return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
+  }
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(teacherToDelete, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak: guru bukan milik madrasah Anda." });
+  }
   const photoUrlsToDelete = new Set<string>();
   
   if (teacherToDelete) {
@@ -5551,7 +5597,7 @@ app.delete("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'ad
   await updateStoreKeyWithLock('teacherAttendance', (currentVal) => {
     const list = Array.isArray(currentVal) ? currentVal : [];
     list.forEach(record => {
-      if (record && String(record.teacherId) === String(id) && record.photo) {
+      if (record && String(record.teacherId) === String(id) && (isBos || isItemForCurrentMadrasah(record, req)) && record.photo) {
         photoUrlsToDelete.add(record.photo);
         record.photo = ''; // clear photo
       }
@@ -5708,9 +5754,11 @@ app.post("/api/students/bulk-upload-photos", requireAuth, requireRole(['teacher'
       item.photo = await saveBase64ToFirestore(item.photo);
     }
 
-    const idx = students.findIndex(s => 
-      String(s.nis || '').trim() === itemNis || 
-      String(s.username || '').trim() === itemNis
+    const authUser = getAuthUser(req);
+    const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+    const idx = students.findIndex(s =>
+      (String(s.nis || '').trim() === itemNis || String(s.username || '').trim() === itemNis) &&
+      (isBos || isItemForCurrentMadrasah(s, req))
     );
     
     if (idx >= 0) {
@@ -5748,7 +5796,7 @@ app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
 
   if (nis) {
     const trimmedNis = String(nis).trim();
-    const duplicate = students.find(s => String(s.nis || '').trim() === trimmedNis && String(s.id) !== String(id));
+    const duplicate = filterByMadrasah(students, req).find(s => String(s.nis || '').trim() === trimmedNis && String(s.id) !== String(id));
     if (duplicate) {
       return res.status(400).json({ success: false, message: `NIS "${trimmedNis}" sudah digunakan oleh siswa lain (${duplicate.name}).` });
     }
@@ -5813,6 +5861,11 @@ app.post("/api/students/:id/set-profile-photo", requireAuth, requireRole(['teach
   }
 
   const st = students[idx];
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(st, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak." });
+  }
   const prevPhoto = st.photo || '';
   let history: any[] = Array.isArray(st.photoHistory) ? [...st.photoHistory] : [];
 
@@ -5862,6 +5915,11 @@ app.delete("/api/students/:id/photo-history", requireAuth, requireRole(['teacher
   }
 
   const st = students[idx];
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(st, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak." });
+  }
   let history: any[] = Array.isArray(st.photoHistory) ? [...st.photoHistory] : [];
   history = history.filter(h => {
     const p = typeof h === 'string' ? h : (h.photo || '');
@@ -6196,6 +6254,11 @@ app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', '
   if (targetId) {
     const idx = classes.findIndex(c => String(c.id) === String(targetId));
     if (idx >= 0) {
+      const authUser = getAuthUser(req);
+      const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+      if (!isBos && !isItemForCurrentMadrasah(classes[idx], req)) {
+        return res.status(403).json({ success: false, message: "Akses ditolak: kelas bukan milik madrasah Anda." });
+      }
       classes[idx] = { 
         ...classes[idx], 
         name, 
@@ -6206,6 +6269,7 @@ app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', '
 
       // Sync teachers homeroom_class_id
       teachers.forEach(t => {
+        if (!isItemForCurrentMadrasah(t, req)) return;
         if (String(t.id) === String(homeroomTeacherId)) {
           t.homeroom_class_id = String(targetId);
         } else if (String(t.homeroom_class_id) === String(targetId)) {
@@ -6224,6 +6288,7 @@ app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', '
 
   if (homeroomTeacherId) {
     teachers.forEach(t => {
+      if (!isItemForCurrentMadrasah(t, req)) return;
       if (String(t.id) === String(homeroomTeacherId)) {
         t.homeroom_class_id = newId;
       }
@@ -6237,6 +6302,13 @@ app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', '
 
 app.delete("/api/classes/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
+  const targetClass = classes.find(c => String(c.id) === String(id));
+  if (!targetClass) return res.status(404).json({ success: false, message: "Kelas tidak ditemukan." });
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(targetClass, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak: kelas bukan milik madrasah Anda." });
+  }
   classes = classes.filter(c => String(c.id) !== String(id));
   await saveData('classes', classes);
   res.json({ success: true, message: "Kelas berhasil dihapus." });
@@ -6261,6 +6333,13 @@ app.post("/api/subjects", requireAuth, requireRole(['teacher', 'guru', 'admin', 
 
 app.delete("/api/subjects/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
+  const targetSubject = subjects.find(s => String(s.id) === String(id));
+  if (!targetSubject) return res.status(404).json({ success: false, message: "Mata pelajaran tidak ditemukan." });
+  const authUser = getAuthUser(req);
+  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  if (!isBos && !isItemForCurrentMadrasah(targetSubject, req)) {
+    return res.status(403).json({ success: false, message: "Akses ditolak: mata pelajaran bukan milik madrasah Anda." });
+  }
   subjects = subjects.filter(s => String(s.id) !== String(id));
   await saveData('subjects', subjects);
   res.json({ success: true, message: "Mata pelajaran berhasil dihapus." });
@@ -13812,10 +13891,20 @@ app.post("/api/system/restore/chunk", async (req, res) => {
 });
 
 // Sync State API for generic app state persistence
-app.post("/api/sync-state", async (req, res) => {
+app.post("/api/sync-state", requireAuth, async (req, res) => {
   try {
     let { key, data } = req.body;
     if (!key) return res.status(400).json({ success: false, message: "Key required" });
+
+    const authUser = (req as any).user || getAuthUser(req);
+    const role = String(authUser?.role || '').toLowerCase();
+    const tenantMasterKeys = new Set(['teachers', 'students', 'classes', 'subjects']);
+    if (tenantMasterKeys.has(String(key)) && !staffRoles.has(role)) {
+      return res.status(403).json({ success: false, message: 'Aksi master data hanya dapat dilakukan guru atau administrator.' });
+    }
+    if (tenantMasterKeys.has(String(key)) && !Array.isArray(data)) {
+      return res.status(400).json({ success: false, message: 'Payload master data harus berupa array.' });
+    }
 
     // Process base64 uploads for students
     if (key === 'students' && Array.isArray(data)) {
@@ -13859,64 +13948,21 @@ app.post("/api/sync-state", async (req, res) => {
     }
 
     if (key === 'teachers') {
-      if (Array.isArray(data)) {
-        const tMap = new Map(teachers.map((t: any) => [String(t.id), t]));
-        const newTeachers = [];
-        for (const item of data as any[]) { if (item && item.id != null) { const ext: any = tMap.get(String(item.id)); newTeachers.push(ext ? { ...ext, ...item } : item); } }
-        teachers = newTeachers;
-      } else {
-        teachers = data;
-      }
+      teachers = mergeTenantEntityListData(teachers, data, req, 'teacher');
       await saveData('teachers', teachers);
     }
     else if (key === 'students') {
-      if (Array.isArray(data)) {
-        const sMap = new Map(students.map((s: any) => [String(s.id), s]));
-        const newStudents = [];
-        for (const item of data as any[]) {
-          if (item && item.id != null) {
-            const idStr = String(item.id);
-            const ext: any = sMap.get(idStr);
-            if (!ext) {
-              newStudents.push(item);
-            } else {
-              // Smart merge: preserve non-empty/customized existing fields over default/empty incoming fields
-              const merged: any = { ...ext, ...item };
-              // Preserve name if existing is customized and incoming is default/placeholder (e.g. name === nis)
-              if (ext.name && ext.name !== ext.nis && (item.name === item.nis || !item.name)) {
-                merged.name = ext.name;
-              }
-              if (ext.no_hp && !item.no_hp) {
-                merged.no_hp = ext.no_hp;
-              }
-              if (ext.photo && !item.photo) {
-                merged.photo = ext.photo;
-              }
-              if (ext.password && String(ext.password) !== String(ext.nis) && (String(item.password) === String(item.nis) || !item.password)) {
-                merged.password = ext.password;
-              }
-              newStudents.push(merged);
-            }
-          }
-        }
-        students = newStudents;
-      } else {
-        students = data;
-      }
+      students = mergeTenantEntityListData(students, data, req, 'student');
       await saveData('students', students);
     }
     else if (key === 'classes') {
-      if (Array.isArray(data)) {
-        const cMap = new Map(classes.map((c: any) => [String(c.id), c]));
-        const newClasses = [];
-        for (const item of data as any[]) { if (item && item.id != null) { const ext: any = cMap.get(String(item.id)); newClasses.push(ext ? { ...ext, ...item } : item); } }
-        classes = newClasses;
-      } else {
-        classes = data;
-      }
+      classes = mergeTenantEntityListData(classes, data, req, 'class');
       await saveData('classes', classes);
     }
-    else if (key === 'subjects') { subjects = data; await saveData('subjects', subjects); }
+    else if (key === 'subjects') {
+      subjects = mergeTenantEntityListData(subjects, data, req, 'subject');
+      await saveData('subjects', subjects);
+    }
     else if (key === 'attendance') {
       if (Array.isArray(data)) {
         if (data.length === 0 && Array.isArray(attendance) && attendance.length > 0) {
