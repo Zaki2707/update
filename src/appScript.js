@@ -63,6 +63,15 @@
         localStorage.removeItem('madrasah_students');
         localStorage.removeItem('madrasah_student_livecam_frames');
 
+        // LKPD can contain large embedded images. The server/RAM is authoritative;
+        // remove legacy browser copies so they cannot exhaust localStorage quota.
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+            const key = localStorage.key(i);
+            if (key && (key === 'madrasah_lkpdList' || /^madrasah_.+_lkpdList$/.test(key))) {
+                localStorage.removeItem(key);
+            }
+        }
+
         let role = '';
         try {
             const savedUser = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
@@ -420,6 +429,13 @@ function safeSetLocalStorage(key, value) {
     const storageKey = String(key || '');
     if (!storageKey) return false;
 
+    // Full LKPD state is server-authoritative and may contain large images.
+    // Never persist it in localStorage; also purge any legacy copy quietly.
+    if (storageKey === 'madrasah_lkpdList' || /^madrasah_.+_lkpdList$/.test(storageKey)) {
+        try { localStorage.removeItem(storageKey); } catch (_) {}
+        return false;
+    }
+
     // Server/RAM is authoritative for the full student roster.
     if (storageKey === 'madrasah_students') {
         try { localStorage.removeItem(storageKey); } catch (_) {}
@@ -750,19 +766,66 @@ async function syncKeyFromServer(key) {
     }
 }
 
+function getStoredRealtimeAuthToken() {
+    try {
+        const saved = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
+        return saved && saved.token ? String(saved.token) : '';
+    } catch (_) {
+        return '';
+    }
+}
+
 function initRealtimeSync() {
+    // Prevent duplicate SSE loops when modules/routes are rendered repeatedly.
+    if (window.__madrasahRealtimeStarted) return;
+    window.__madrasahRealtimeStarted = true;
+
     let sseSource = null;
     let reconnectTimeout = null;
-    
-    async function connect() {
+    let authWatchInterval = null;
+    let connectedAuthToken = '';
+    let rejectedAuthToken = '';
+
+    const closeSource = () => {
         if (sseSource) {
-            sseSource.close();
+            try { sseSource.close(); } catch (_) {}
+            sseSource = null;
+        }
+        connectedAuthToken = '';
+    };
+
+    const scheduleReconnect = (delay = 1500) => {
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        reconnectTimeout = setTimeout(connect, delay);
+    };
+
+    async function connect() {
+        closeSource();
+
+        const authToken = getStoredRealtimeAuthToken();
+        if (!authToken) {
+            // Logged-out/login page: wait locally. Do NOT hit protected endpoints.
+            rejectedAuthToken = '';
+            scheduleReconnect(1500);
+            return;
+        }
+
+        // If this exact token was already rejected, wait for login/session rotation
+        // instead of spamming /api/realtime-token with repeated 401 responses.
+        if (rejectedAuthToken && rejectedAuthToken === authToken) {
+            scheduleReconnect(2000);
+            return;
         }
 
         console.log('Connecting to authenticated real-time event stream...');
         let realtimeTicket = '';
         try {
             const ticketResponse = await fetch('/api/realtime-token', { cache: 'no-store' });
+            if (ticketResponse.status === 401 || ticketResponse.status === 403) {
+                rejectedAuthToken = authToken;
+                scheduleReconnect(2000);
+                return;
+            }
             const ticketData = await ticketResponse.json();
             if (ticketResponse.ok && ticketData && ticketData.success && ticketData.token) {
                 realtimeTicket = String(ticketData.token);
@@ -772,13 +835,14 @@ function initRealtimeSync() {
         }
 
         if (!realtimeTicket) {
-            clearTimeout(reconnectTimeout);
-            reconnectTimeout = setTimeout(connect, 5000);
+            scheduleReconnect(5000);
             return;
         }
 
+        rejectedAuthToken = '';
+        connectedAuthToken = authToken;
         sseSource = new EventSource('/api/realtime-stream?rt=' + encodeURIComponent(realtimeTicket));
-        
+
         sseSource.onmessage = function(event) {
             try {
                 const payload = JSON.parse(event.data);
@@ -796,19 +860,45 @@ function initRealtimeSync() {
                 console.error('Error parsing SSE event data:', e);
             }
         };
-        
-        sseSource.onerror = function(err) {
-            console.warn('Real-time event stream disconnected, reconnecting in 5 seconds...');
-            sseSource.close();
-            if (reconnectTimeout) clearTimeout(reconnectTimeout);
-            reconnectTimeout = setTimeout(connect, 5000);
+
+        sseSource.onerror = function() {
+            closeSource();
+            scheduleReconnect(5000);
         };
     }
-    
+
+    // Detect login/logout/token rotation without making any network request while logged out.
+    authWatchInterval = setInterval(() => {
+        const currentToken = getStoredRealtimeAuthToken();
+        if (!currentToken) {
+            if (sseSource) closeSource();
+            return;
+        }
+        if (connectedAuthToken && currentToken !== connectedAuthToken) {
+            closeSource();
+            rejectedAuthToken = '';
+            scheduleReconnect(0);
+        } else if (!sseSource && currentToken !== rejectedAuthToken && !reconnectTimeout) {
+            scheduleReconnect(0);
+        }
+    }, 2000);
+
+    window.__stopRealtimeSync = function() {
+        closeSource();
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+        if (authWatchInterval) clearInterval(authWatchInterval);
+        authWatchInterval = null;
+        window.__madrasahRealtimeStarted = false;
+    };
+
     connect();
 }
 
-// Start realtime synchronization on load
+window.initRealtimeSync = initRealtimeSync;
+
+// Start realtime synchronization on load. When logged out this only performs a
+// lightweight local auth check and does not call the protected realtime API.
 setTimeout(initRealtimeSync, 1000);
 
 window.applyLogoShape = function(element, shape) {

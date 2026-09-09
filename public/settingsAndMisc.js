@@ -818,7 +818,7 @@ function renderSettingModule(container) {
                             <i class="fa-solid fa-wand-magic-sparkles text-indigo-600"></i>
                             <span>Pembersihan Foto Pintar (Smart Cleanup)</span>
                         </h2>
-                        <p class="text-xs text-slate-400 mt-0.5">Optimalkan kapasitas penyimpanan Firebase Anda secara cerdas dengan menghapus foto absensi lama namun tetap menyisakan minimal 1 foto terbaru untuk setiap siswa & guru.</p>
+                        <p class="text-xs text-slate-400 mt-0.5">Optimalkan kapasitas Cloudinary dengan menghapus foto absensi lama (>30 hari) secara aman, sambil mempertahankan minimal 1 foto terbaru setiap siswa & guru serta seluruh foto yang masih direferensikan.</p>
                     </div>
                 </div>
 
@@ -3298,9 +3298,8 @@ async function loadDataFromServer() {
             }
             if (res.exams) appState.exams = res.exams;
             if (res.lkpdList) {
+                // Full LKPD payload stays in RAM/server; do not duplicate it in localStorage.
                 appState.lkpdList = res.lkpdList;
-                const storageKey = typeof window.getLkpdStorageKey === 'function' ? window.getLkpdStorageKey() : 'madrasah_lkpdList';
-                safeSetLocalStorage(storageKey, appState.lkpdList);
             }
             if (res.rooms) appState.rooms = res.rooms;
             if (res.journals) appState.journals = res.journals;
@@ -4452,7 +4451,7 @@ async function runSmartPhotoCleanup() {
 }
 
 async function runTeacherPhotoCleanup() {
-    if (!confirm("Apakah Anda yakin ingin menghapus semua file foto riwayat absen guru?\n\nSistem akan:\n1. Menghapus semua file foto selfie absensi guru di Firebase.\n2. Mengosongkan kolom foto pada data absensi guru agar menghemat ruang.\n\nTindakan ini tidak dapat dibatalkan. Lanjutkan?")) return;
+    if (!confirm("Apakah Anda yakin ingin menghapus semua file foto riwayat absen guru?\n\nSistem akan:\n1. Menghapus semua file foto selfie absensi guru di Firebase.\n2. Menghapus hanya foto absensi guru lama (>30 hari) yang aman dan tetap menyisakan minimal 1 foto terbaru setiap guru.\n\nAset Cloudinary yang benar-benar usang akan dihapus permanen. Foto terbaru dan foto yang masih dipakai akan dipertahankan. Lanjutkan?")) return;
     
     const btn = document.querySelector('button[onclick="runTeacherPhotoCleanup()"]');
     const statusContainer = document.getElementById('cleanup-status-container');

@@ -501,40 +501,64 @@ function normalizeCloudinaryPhotoId(photoId: string): string {
     .replace(/[^a-zA-Z0-9_\-]/g, '_');
 }
 
+function getCloudinaryPhotoIdFromReference(value: any): string | null {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw || raw.startsWith('data:image/')) return null;
+
+  if (raw.startsWith('/api/photos/')) {
+    const id = raw.slice('/api/photos/'.length).split(/[?#]/)[0];
+    return id ? normalizeCloudinaryPhotoId(id) : null;
+  }
+
+  // Direct Cloudinary URLs can appear after restore/repair. Uploaded photos use
+  // the dedicated madrasah_photos folder and sanitized one-segment public IDs.
+  if (/^https?:\/\//i.test(raw) && raw.includes('/madrasah_photos/')) {
+    try {
+      const parsed = new URL(raw);
+      const match = parsed.pathname.match(/\/madrasah_photos\/([^/]+)$/);
+      if (match && match[1]) {
+        const decoded = decodeURIComponent(match[1]).replace(/\.[a-zA-Z0-9]+$/, '');
+        return decoded ? normalizeCloudinaryPhotoId(decoded) : null;
+      }
+    } catch (_) {}
+  }
+
+  return null;
+}
+
 function collectReferencedPhotoIds(): Set<string> {
   const candidates = new Set<string>();
   const addPhotoId = (value: any) => {
-    if (typeof value !== 'string') return;
-    let photoId = value.trim();
-    if (!photoId || photoId.startsWith('http') || photoId.startsWith('data:image/')) return;
-    if (photoId.startsWith('/api/photos/')) {
-      photoId = photoId.replace('/api/photos/', '').split('?')[0].trim();
-    }
+    const photoId = getCloudinaryPhotoIdFromReference(value);
     if (photoId) candidates.add(photoId);
   };
-  const addHistory = (history: any) => {
-    if (!Array.isArray(history)) return;
-    for (const entry of history) {
-      addPhotoId(typeof entry === 'string' ? entry : entry?.photo);
+  const scanDeep = (value: any, depth = 0) => {
+    if (depth > 8 || value === null || value === undefined) return;
+    if (typeof value === 'string') {
+      addPhotoId(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) scanDeep(item, depth + 1);
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const item of Object.values(value)) scanDeep(item, depth + 1);
     }
   };
 
-  (students || []).forEach((student: any) => {
-    addPhotoId(student?.photo);
-    addHistory(student?.photoHistory || student?.photo_history);
-  });
-  (teachers || []).forEach((teacher: any) => {
-    addPhotoId(teacher?.photo);
-    addHistory(teacher?.photoHistory || teacher?.photo_history);
-  });
-  (attendance || []).forEach((item: any) => addPhotoId(item?.photo));
-  (teacherAttendance || []).forEach((item: any) => addPhotoId(item?.photo));
-  (questions || []).forEach((item: any) => {
-    addPhotoId(item?.imageUrl);
-    addPhotoId(item?.image);
-  });
-  addPhotoId(appSettings?.schoolLogo);
-  addPhotoId(appSettings?.schoolLogoUrl);
+  // Scan all known durable structures that can hold photo/image references.
+  scanDeep(students || []);
+  scanDeep(teachers || []);
+  scanDeep(attendance || []);
+  scanDeep(teacherAttendance || []);
+  scanDeep(questions || []);
+  scanDeep(lkpdList || []);
+  scanDeep(lessonPlans || []);
+  scanDeep(generatedExams || []);
+  scanDeep(eduGames || []);
+  scanDeep(appSettings || {});
   return candidates;
 }
 
@@ -6604,211 +6628,286 @@ app.post("/api/teacher-attendance/update", async (req, res) => {
   }
 });
 
-// Smart photo cleanup endpoint for admin (preserves profile photos, photo history, and latest attendance photos)
-app.post("/api/admin/cleanup-photos", async (req, res) => {
-  if (!db) {
-    return res.status(400).json({ success: false, message: "Firebase is not configured." });
+// Cloudinary Smart Cleanup: remove only old attendance photos that are no longer needed.
+// It is deliberately conservative: no generic cross-tenant orphan deletion is performed because
+// legacy Cloudinary public IDs are not tenant-prefixed.
+function cleanupPhotoTimestamp(record: any): number {
+  if (!record) return 0;
+  const values = [record.timestamp, record.createdAt, record.updatedAt, record.date];
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value < 100000000000 ? value * 1000 : value;
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 1000000000) {
+      return numeric < 100000000000 ? numeric * 1000 : numeric;
+    }
+    const parsed = Date.parse(String(value));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function cleanupPersonKey(record: any, kind: 'student' | 'teacher'): string {
+  if (!record) return '';
+  if (kind === 'teacher') {
+    return String(record.teacherId || record.nip || record.username || '').trim();
+  }
+  return String(record.studentId || record.nis || record.username || '').trim();
+}
+
+function buildLatestAttendancePhotoMap(list: any[], kind: 'student' | 'teacher', req: any): Map<string, any> {
+  const latest = new Map<string, any>();
+  for (const record of (Array.isArray(list) ? list : [])) {
+    if (!record || !isItemForCurrentMadrasah(record, req)) continue;
+    const photoId = getCloudinaryPhotoIdFromReference(record.photo);
+    const personKey = cleanupPersonKey(record, kind);
+    if (!photoId || !personKey) continue;
+    const existing = latest.get(personKey);
+    if (!existing || cleanupPhotoTimestamp(record) > cleanupPhotoTimestamp(existing)) {
+      latest.set(personKey, record);
+    }
+  }
+  return latest;
+}
+
+function isOldCleanupCandidate(record: any, kind: 'student' | 'teacher', latest: Map<string, any>, req: any, cutoff: number): boolean {
+  if (!record || !isItemForCurrentMadrasah(record, req)) return false;
+  const photoId = getCloudinaryPhotoIdFromReference(record.photo);
+  const personKey = cleanupPersonKey(record, kind);
+  if (!photoId || !personKey) return false;
+  if (latest.get(personKey) === record) return false; // Always retain newest photo for this person.
+  const ts = cleanupPhotoTimestamp(record);
+  return ts > 0 && ts < cutoff;
+}
+
+function collectNonAttendanceProtectedPhotoIds(): Set<string> {
+  const protectedIds = new Set<string>();
+  const scanDeep = (value: any, depth = 0) => {
+    if (depth > 8 || value === null || value === undefined) return;
+    if (typeof value === 'string') {
+      const id = getCloudinaryPhotoIdFromReference(value);
+      if (id) protectedIds.add(id);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) scanDeep(item, depth + 1);
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const item of Object.values(value)) scanDeep(item, depth + 1);
+    }
+  };
+
+  // Protect every non-attendance durable reference, across ALL tenants.
+  scanDeep(students || []);
+  scanDeep(teachers || []);
+  scanDeep(questions || []);
+  scanDeep(lkpdList || []);
+  scanDeep(lessonPlans || []);
+  scanDeep(generatedExams || []);
+  scanDeep(eduGames || []);
+  scanDeep(appSettings || {});
+  return protectedIds;
+}
+
+async function destroyCloudinaryPhotoId(photoId: string): Promise<'deleted' | 'missing' | 'failed'> {
+  if (!process.env.CLOUDINARY_CLOUD_NAME) return 'failed';
+  const normalized = normalizeCloudinaryPhotoId(photoId);
+  if (!normalized) return 'failed';
+  const fullId = `madrasah_photos/${normalized}`;
+  try {
+    const result: any = await new Promise((resolve, reject) => {
+      cloudinary.uploader.destroy(fullId, { resource_type: 'image', invalidate: true }, (error: any, response: any) => {
+        if (error) reject(error);
+        else resolve(response);
+      });
+    });
+    const outcome = String(result?.result || '').toLowerCase();
+    if (outcome === 'ok') return 'deleted';
+    if (outcome === 'not found') return 'missing';
+    console.warn(`[Smart Cleanup] Unexpected Cloudinary delete result for ${fullId}:`, outcome || result);
+    return 'failed';
+  } catch (err: any) {
+    console.warn(`[Smart Cleanup] Cloudinary delete failed for ${fullId}:`, err?.message || err);
+    return 'failed';
+  }
+}
+
+async function runCloudinaryAttendanceCleanup(req: any, teacherOnly = false) {
+  if (!process.env.CLOUDINARY_CLOUD_NAME) {
+    throw new Error('Cloudinary belum dikonfigurasi. Pembersihan tidak dijalankan.');
   }
 
-  let deletedCount = 0;
-  const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-  const docIdsToDelete: string[] = [];
+  const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  const studentList = Array.isArray(attendance) ? attendance : [];
+  const teacherList = Array.isArray(teacherAttendance) ? teacherAttendance : [];
+  const latestStudents = buildLatestAttendancePhotoMap(studentList, 'student', req);
+  const latestTeachers = buildLatestAttendancePhotoMap(teacherList, 'teacher', req);
 
-  try {
-    // Collect all photo URLs and doc IDs that must NEVER be deleted (active profiles and profile history)
-    const protectedPhotoUrls = new Set<string>();
-    const protectedDocIds = new Set<string>();
-
-    const markProtected = (url: any) => {
-      if (!url) return;
-      const str = typeof url === 'string' ? url : (url.photo || '');
-      if (str && typeof str === 'string') {
-        protectedPhotoUrls.add(str);
-        if (str.startsWith('/api/photos/')) {
-          const docId = str.replace('/api/photos/', '').trim();
-          if (docId) protectedDocIds.add(docId);
-        }
-      }
-    };
-
-    (students || []).forEach(s => {
-      if (s) {
-        markProtected(s.photo);
-        if (Array.isArray(s.photoHistory)) s.photoHistory.forEach(markProtected);
-        if (Array.isArray(s.photo_history)) s.photo_history.forEach(markProtected);
-      }
-    });
-
-    (teachers || []).forEach(t => {
-      if (t) {
-        markProtected(t.photo);
-        if (Array.isArray(t.photoHistory)) t.photoHistory.forEach(markProtected);
-        if (Array.isArray(t.photo_history)) t.photo_history.forEach(markProtected);
-      }
-    });
-
-    // 1. Process student attendance synchronously to identify old photos to delete
-    await updateStoreKeyWithLock('attendance', (currentVal) => {
-      const list = Array.isArray(currentVal) ? currentVal : [];
-      
-      const studentGroups: { [studentId: string]: any[] } = {};
-      list.forEach(record => {
-        if (record && record.studentId && record.photo && record.photo.startsWith('/api/photos/')) {
-          const sId = String(record.studentId);
-          if (!studentGroups[sId]) studentGroups[sId] = [];
-          studentGroups[sId].push(record);
-        }
-      });
-
-      for (const sId in studentGroups) {
-        const records = studentGroups[sId];
-        records.sort((a, b) => {
-          const tsA = getRecordTimestamp(a.id, a);
-          const tsB = getRecordTimestamp(b.id, b);
-          return tsB - tsA;
-        });
-
-        // Index 0 is the newest, keep it completely intact. Process index 1 and beyond
-        for (let i = 1; i < records.length; i++) {
-          const rec = records[i];
-          const ts = getRecordTimestamp(rec.id, rec);
-          
-          if (ts > 0 && ts < thirtyDaysAgo) {
-            const photoUrl = rec.photo;
-            const docId = photoUrl.replace('/api/photos/', '').trim();
-            // ONLY delete the underlying storage document if it is NOT protected as a profile photo or in photo history
-            if (docId && !protectedDocIds.has(docId) && !protectedPhotoUrls.has(photoUrl)) {
-              docIdsToDelete.push(docId);
-            }
-            rec.photo = ''; // Clear photo reference in old attendance record
-          }
-        }
-      }
-
-      return list;
-    });
-
-    // 3. Delete collected old photo documents from Firestore (ensuring none are protected)
-    for (const docId of docIdsToDelete) {
-      if (protectedDocIds.has(docId)) continue;
-      try {
-        await deleteDoc(doc(db, 'photos', docId));
-        deletedCount++;
-      } catch (e) {
-        console.error(`Failed to delete old photo doc ${docId}:`, e);
+  const candidateIds = new Set<string>();
+  if (!teacherOnly) {
+    for (const record of studentList) {
+      if (isOldCleanupCandidate(record, 'student', latestStudents, req, cutoff)) {
+        const id = getCloudinaryPhotoIdFromReference(record.photo);
+        if (id) candidateIds.add(id);
       }
     }
+  }
+  for (const record of teacherList) {
+    if (isOldCleanupCandidate(record, 'teacher', latestTeachers, req, cutoff)) {
+      const id = getCloudinaryPhotoIdFromReference(record.photo);
+      if (id) candidateIds.add(id);
+    }
+  }
 
-    // 4. Calculate remaining active photos stored in system
-    const studentProfilePhotos = (students || []).filter(s => s && s.photo && String(s.photo).trim() !== '').length;
-    const teacherProfilePhotos = (teachers || []).filter(t => t && t.photo && String(t.photo).trim() !== '').length;
-    const studentAttendancePhotos = (attendance || []).filter(a => a && a.photo && String(a.photo).trim() !== '').length;
-    const teacherAttendancePhotos = (teacherAttendance || []).filter(a => a && a.photo && String(a.photo).trim() !== '').length;
-    const remainingCount = studentProfilePhotos + teacherProfilePhotos + studentAttendancePhotos + teacherAttendancePhotos;
+  // Protect profile/history/question/logo/etc references globally.
+  const protectedIds = collectNonAttendanceProtectedPhotoIds();
 
-    res.json({
-      success: true,
-      message: deletedCount > 0 
-        ? `Pembersihan berhasil! Sebanyak ${deletedCount} foto usang berhasil dihapus. ${remainingCount} foto penting tetap aman tersimpan.`
-        : `Semua data foto sudah bersih dan optimal! Tidak ada foto usang (>30 hari) yang perlu dihapus. ${remainingCount} foto penting tetap aktif tersimpan.`,
-      deletedCount,
-      remainingCount,
-      details: {
-        studentProfilePhotos,
-        teacherProfilePhotos,
-        studentAttendancePhotos,
-        teacherAttendancePhotos
+  // Also protect attendance references that are NOT eligible candidates, including
+  // latest photos, recent photos, unknown-date photos, and every other tenant.
+  for (const record of studentList) {
+    const id = getCloudinaryPhotoIdFromReference(record?.photo);
+    if (!id) continue;
+    if (!isOldCleanupCandidate(record, 'student', latestStudents, req, cutoff)) protectedIds.add(id);
+  }
+  for (const record of teacherList) {
+    const id = getCloudinaryPhotoIdFromReference(record?.photo);
+    if (!id) continue;
+    if (!isOldCleanupCandidate(record, 'teacher', latestTeachers, req, cutoff)) protectedIds.add(id);
+  }
+
+  const safeIds = [...candidateIds].filter(id => !protectedIds.has(id));
+  const removableIds = new Set<string>();
+  let deletedCount = 0;
+  let alreadyMissingCount = 0;
+  let failedCount = 0;
+
+  for (const id of safeIds) {
+    const result = await destroyCloudinaryPhotoId(id);
+    if (result === 'deleted') {
+      deletedCount++;
+      removableIds.add(id);
+    } else if (result === 'missing') {
+      alreadyMissingCount++;
+      removableIds.add(id);
+    } else {
+      failedCount++;
+    }
+  }
+
+  let clearedStudentRefs = 0;
+  let clearedTeacherRefs = 0;
+
+  if (!teacherOnly && removableIds.size > 0) {
+    await updateStoreKeyWithLock('attendance', (currentVal) => {
+      const list = Array.isArray(currentVal) ? currentVal : [];
+      const latest = buildLatestAttendancePhotoMap(list, 'student', req);
+      for (const record of list) {
+        if (!isOldCleanupCandidate(record, 'student', latest, req, cutoff)) continue;
+        const id = getCloudinaryPhotoIdFromReference(record.photo);
+        if (id && removableIds.has(id)) {
+          record.photo = '';
+          clearedStudentRefs++;
+        }
       }
+      return list;
     });
+  }
 
+  if (removableIds.size > 0) {
+    await updateStoreKeyWithLock('teacherAttendance', (currentVal) => {
+      const list = Array.isArray(currentVal) ? currentVal : [];
+      const latest = buildLatestAttendancePhotoMap(list, 'teacher', req);
+      for (const record of list) {
+        if (!isOldCleanupCandidate(record, 'teacher', latest, req, cutoff)) continue;
+        const id = getCloudinaryPhotoIdFromReference(record.photo);
+        if (id && removableIds.has(id)) {
+          record.photo = '';
+          clearedTeacherRefs++;
+        }
+      }
+      return list;
+    });
+  }
+
+  // Remove stale map aliases only after Cloudinary confirms deletion/missing.
+  let mapChanged = false;
+  if (removableIds.size > 0) {
+    for (const key of Object.keys(photoCloudinaryMap || {})) {
+      const keyId = normalizeCloudinaryPhotoId(key);
+      const valueId = getCloudinaryPhotoIdFromReference(photoCloudinaryMap[key]);
+      if (removableIds.has(keyId) || (valueId && removableIds.has(valueId))) {
+        delete photoCloudinaryMap[key];
+        mapChanged = true;
+      }
+    }
+    if (mapChanged) await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
+  }
+
+  const tenantStudents = filterByMadrasah(students || [], req);
+  const tenantTeachers = filterByMadrasah(teachers || [], req);
+  const currentAttendance = filterByMadrasah((getMemoryKeyValue('attendance') || attendance || []), req);
+  const currentTeacherAttendance = filterByMadrasah((getMemoryKeyValue('teacherAttendance') || teacherAttendance || []), req);
+  const studentProfilePhotos = tenantStudents.filter((s: any) => Boolean(getCloudinaryPhotoIdFromReference(s?.photo))).length;
+  const teacherProfilePhotos = tenantTeachers.filter((t: any) => Boolean(getCloudinaryPhotoIdFromReference(t?.photo))).length;
+  const studentAttendancePhotos = currentAttendance.filter((a: any) => Boolean(getCloudinaryPhotoIdFromReference(a?.photo))).length;
+  const teacherAttendancePhotos = currentTeacherAttendance.filter((a: any) => Boolean(getCloudinaryPhotoIdFromReference(a?.photo))).length;
+
+  let remainingCount = studentProfilePhotos + teacherProfilePhotos + studentAttendancePhotos + teacherAttendancePhotos;
+  try {
+    remainingCount = (await listActualCloudinaryPhotos()).size;
+  } catch (_) {}
+
+  return {
+    deletedCount,
+    remainingCount,
+    details: {
+      studentProfilePhotos,
+      teacherProfilePhotos,
+      studentAttendancePhotos,
+      teacherAttendancePhotos,
+      candidateAssets: candidateIds.size,
+      protectedAssets: candidateIds.size - safeIds.length,
+      alreadyMissingCount,
+      failedCount,
+      clearedStudentRefs,
+      clearedTeacherRefs,
+      policy: 'older_than_30_days_keep_latest_per_person'
+    }
+  };
+}
+
+app.post("/api/admin/cleanup-photos", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const result = await runCloudinaryAttendanceCleanup(req, false);
+    return res.json({
+      success: true,
+      message: result.deletedCount > 0
+        ? `Pembersihan Cloudinary selesai. ${result.deletedCount} aset foto absensi lama dihapus dengan aman.`
+        : 'Pembersihan Cloudinary selesai. Tidak ada aset foto absensi lama yang aman untuk dihapus.',
+      ...result
+    });
   } catch (err: any) {
-    console.error("Cleanup error:", err);
-    res.status(500).json({ success: false, message: "Terjadi kesalahan sistem saat melakukan pembersihan." });
+    console.error('[Smart Cleanup] Failed:', err?.message || err);
+    return res.status(500).json({ success: false, message: err?.message || 'Pembersihan Cloudinary gagal.' });
   }
 });
 
-app.post("/api/admin/cleanup-teacher-photos", async (req, res) => {
-  if (!db) {
-    return res.status(400).json({ success: false, message: "Firebase is not configured." });
-  }
-  
-  let deletedCount = 0;
-  const docIdsToDelete: string[] = [];
-  
+app.post("/api/admin/cleanup-teacher-photos", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
-    // Collect protected profile photo URLs to avoid deleting the teacher's profile photos
-    const protectedPhotoUrls = new Set<string>();
-    const protectedDocIds = new Set<string>();
-    
-    (teachers || []).forEach(t => {
-      if (t) {
-        if (t.photo && typeof t.photo === 'string') {
-          protectedPhotoUrls.add(t.photo);
-          if (t.photo.startsWith('/api/photos/')) {
-            const docId = t.photo.replace('/api/photos/', '').trim();
-            if (docId) protectedDocIds.add(docId);
-          }
-        }
-        if (Array.isArray(t.photoHistory)) {
-          t.photoHistory.forEach((p: any) => {
-            const str = typeof p === 'string' ? p : (p.photo || '');
-            if (str && typeof str === 'string') {
-              protectedPhotoUrls.add(str);
-              if (str.startsWith('/api/photos/')) {
-                const docId = str.replace('/api/photos/', '').trim();
-                if (docId) protectedDocIds.add(docId);
-              }
-            }
-          });
-        }
-        if (Array.isArray(t.photo_history)) {
-          t.photo_history.forEach((p: any) => {
-            const str = typeof p === 'string' ? p : (p.photo || '');
-            if (str && typeof str === 'string') {
-              protectedPhotoUrls.add(str);
-              if (str.startsWith('/api/photos/')) {
-                const docId = str.replace('/api/photos/', '').trim();
-                if (docId) protectedDocIds.add(docId);
-              }
-            }
-          });
-        }
-      }
-    });
-    
-    // Process teacher attendance synchronously to collect all photos to delete and clear them
-    await updateStoreKeyWithLock('teacherAttendance', (currentVal) => {
-      const list = Array.isArray(currentVal) ? currentVal : [];
-      list.forEach(record => {
-        if (record && record.photo && record.photo.startsWith('/api/photos/')) {
-          const photoUrl = record.photo;
-          const docId = photoUrl.replace('/api/photos/', '').trim();
-          if (docId && !protectedDocIds.has(docId) && !protectedPhotoUrls.has(photoUrl)) {
-            docIdsToDelete.push(docId);
-          }
-          record.photo = ''; // Clear photo in attendance record
-        }
-      });
-      return list;
-    });
-    
-    // Delete from Firestore
-    for (const docId of docIdsToDelete) {
-      try {
-        await deleteDoc(doc(db, 'photos', docId));
-        deletedCount++;
-      } catch (e) {
-        console.error(`Failed to delete teacher attendance photo doc ${docId}:`, e);
-      }
-    }
-    
-    res.json({
+    const result = await runCloudinaryAttendanceCleanup(req, true);
+    return res.json({
       success: true,
-      message: `Berhasil menghapus ${deletedCount} foto absensi guru dari penyimpanan.`
+      message: result.deletedCount > 0
+        ? `Pembersihan foto absensi guru selesai. ${result.deletedCount} aset lama dihapus; foto terbaru setiap guru tetap dipertahankan.`
+        : 'Tidak ada foto absensi guru lama yang aman untuk dihapus.',
+      ...result
     });
   } catch (err: any) {
-    console.error("Teacher cleanup error:", err);
-    res.status(500).json({ success: false, message: "Terjadi kesalahan sistem saat membersihkan foto guru." });
+    console.error('[Teacher Smart Cleanup] Failed:', err?.message || err);
+    return res.status(500).json({ success: false, message: err?.message || 'Pembersihan foto guru gagal.' });
   }
 });
 

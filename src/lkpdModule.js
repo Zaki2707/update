@@ -15,26 +15,18 @@ window.getLkpdStorageKey = function() {
     return 'madrasah_' + activeMId + '_lkpdList';
 };
 
-// Ensure appState has lkpdList initialized
+// Ensure appState has lkpdList initialized.
+// The backend/RAM is authoritative; full LKPD payloads are intentionally not
+// restored from localStorage because custom images can exceed browser quota.
 function initLkpdState() {
     if (!window.appState) return [];
+    try {
+        const legacyKey = window.getLkpdStorageKey();
+        localStorage.removeItem(legacyKey);
+        localStorage.removeItem('madrasah_lkpdList');
+    } catch (_) {}
     if (!Array.isArray(window.appState.lkpdList)) {
-        try {
-            const storageKey = window.getLkpdStorageKey();
-            const saved = JSON.parse(localStorage.getItem(storageKey));
-            if (Array.isArray(saved)) {
-                window.appState.lkpdList = saved;
-            } else {
-                window.appState.lkpdList = [];
-                if (typeof window.safeSetLocalStorage === 'function') {
-                    window.safeSetLocalStorage(storageKey, window.appState.lkpdList);
-                } else {
-                    localStorage.setItem(storageKey, JSON.stringify(window.appState.lkpdList));
-                }
-            }
-        } catch (e) {
-            window.appState.lkpdList = [];
-        }
+        window.appState.lkpdList = [];
     }
     return window.appState.lkpdList;
 }
@@ -42,7 +34,7 @@ function initLkpdState() {
 // Persist LKPD state
 window.saveLkpdState = async function() {
     if (!window.appState || !Array.isArray(window.appState.lkpdList)) return;
-    
+
     // Safety lock: if the list is empty and user is student, DO NOT save or sync to prevent wiping server state.
     const isTeacherOrAdmin = window.appState.currentUser && ['teacher', 'guru', 'admin', 'administrator', 'BOSS'].includes(window.appState.currentUser.role || window.appState.role);
     if (window.appState.lkpdList.length === 0 && !isTeacherOrAdmin) {
@@ -50,19 +42,13 @@ window.saveLkpdState = async function() {
         return;
     }
 
+    // Purge legacy browser copies. Cloud SQL/local backend remains authoritative.
     try {
-        const storageKey = window.getLkpdStorageKey();
-        // Use safeSetLocalStorage to handle QuotaExceededError more gracefully
-        if (typeof window.safeSetLocalStorage === 'function') {
-            window.safeSetLocalStorage(storageKey, window.appState.lkpdList);
-        } else {
-            try {
-                localStorage.setItem(storageKey, JSON.stringify(window.appState.lkpdList));
-            } catch (e) {
-                console.warn("LocalStorage quota exceeded for LKPD list");
-            }
-        }
+        localStorage.removeItem(window.getLkpdStorageKey());
+        localStorage.removeItem('madrasah_lkpdList');
+    } catch (_) {}
 
+    try {
         if (typeof window.saveState === 'function') {
             window.saveState('lkpdList');
         } else {
