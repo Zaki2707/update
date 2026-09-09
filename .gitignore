@@ -17,3 +17,7 @@ uploads/*
 !uploads/attendance_photos/
 uploads/attendance_photos/*
 !uploads/attendance_photos/.gitkeep
+
+# Local load-test credentials/results must stay outside Git.
+tests/accounts.local.json
+tests/*.local.json
