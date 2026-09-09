@@ -8146,6 +8146,8 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
   if (!authUser) return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
   const sId = resolveStudentId(req, authUser);
   const { examId, answers } = req.body;
+  const authRole = String(authUser.role || '').toLowerCase();
+  const isStaffForceFinish = req.body?.forceFinish === true && ['teacher', 'guru', 'admin', 'bos', 'superadmin'].includes(authRole);
   if (!sId || !examId) return res.status(400).json({ success: false, message: "studentId and examId required" });
 
   const eId = String(examId);
@@ -8155,7 +8157,9 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
   if (completedExams[key] || forceFinishedExams[key]) {
     return res.status(409).json({ success: false, message: "Ujian sudah pernah diselesaikan." });
   }
-  if (!activeExamSessions[key]) {
+  // Normal student submit still requires an active session. Staff Force Finish may recover
+  // an interrupted attempt from already-persisted answers even when the live session is gone.
+  if (!activeExamSessions[key] && !isStaffForceFinish) {
     return res.status(409).json({ success: false, message: "Session ujian tidak aktif sehingga finalisasi ditolak." });
   }
 
@@ -8169,7 +8173,12 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
   if (answers && typeof answers === 'object' && !Array.isArray(answers)) {
     for (const [qid, val] of Object.entries(answers)) if (allowedIds.has(String(qid))) incomingAnswers[String(qid)] = val;
   }
-  studentExamAnswers[key] = { ...(studentExamAnswers[key] || {}), ...incomingAnswers };
+  // Never replace persisted answers with an empty client payload. For Force Finish, also
+  // recover any latest in-memory session answers before server-side scoring.
+  const savedSessionAnswers = (isStaffForceFinish && activeExamSessions[key] && activeExamSessions[key].answers && typeof activeExamSessions[key].answers === 'object')
+    ? activeExamSessions[key].answers
+    : {};
+  studentExamAnswers[key] = { ...(studentExamAnswers[key] || {}), ...savedSessionAnswers, ...incomingAnswers };
   const finalAns = studentExamAnswers[key] || {};
 
   let correctPGCount = 0;
@@ -8195,7 +8204,9 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
     isGraded: essayQuestions.length === 0,
     correctPGCount,
     totalPGCount: pgQuestions.length,
-    essayGrades: {}
+    totalEssayCount: essayQuestions.length,
+    essayGrades: {},
+    submissionType: isStaffForceFinish ? 'force_finish' : 'normal'
   };
 
   // Persist authoritative result first; only then mark the attempt completed and clear the live session.
@@ -8204,13 +8215,38 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
     saveDeltaDb('studentExamAnswers', key, studentExamAnswers[key]),
     saveDeltaDb('studentExamGrades', key, finalGrade)
   ]);
-  completedExams[key] = true;
-  await saveDeltaDb('completedExams', key, true);
+  const completionValue: any = isStaffForceFinish ? 'force_finish' : true;
+  completedExams[key] = completionValue;
+  const completionWrites: Promise<any>[] = [saveDeltaDb('completedExams', key, completionValue)];
+  if (isStaffForceFinish) {
+    forceFinishedExams[key] = true;
+    completionWrites.push(saveDeltaDb('forceFinishedExams', key, true));
+  }
+  await Promise.all(completionWrites);
+
   delete activeExamSessions[key];
   await saveDeltaDb('activeExamSessions', key, null);
 
-  broadcastExamEvent({ type: "exam_finish", examId: eId, studentId: sId, grade: finalGrade });
-  res.json({ success: true, message: "Ujian berhasil diselesaikan dan dinilai oleh server", grade: finalGrade });
+  const answeredCount = Object.values(finalAns).filter((value: any) => value !== undefined && value !== null && String(value).trim() !== '').length;
+  broadcastExamEvent({
+    type: "exam_finish",
+    examId: eId,
+    studentId: sId,
+    grade: finalGrade,
+    forceFinished: isStaffForceFinish,
+    answered: answeredCount,
+    total: masterQuestions.length
+  });
+  res.json({
+    success: true,
+    message: isStaffForceFinish
+      ? "Force Finish berhasil. Jawaban tersimpan dipertahankan dan dinilai oleh server."
+      : "Ujian berhasil diselesaikan dan dinilai oleh server",
+    grade: finalGrade,
+    forceFinished: isStaffForceFinish,
+    answeredCount,
+    totalQuestions: masterQuestions.length
+  });
 });
 
 // Phase 1 Endpoint: Summarized Teacher Monitoring (GET /api/exams/:examId/monitor)

@@ -407,6 +407,29 @@ function getExamQuestions(ex, studentId = null) {
     return generalQuestions;
 }
 
+async function syncEvaluasiStateFromServer() {
+    const res = await fetch('/api/exam-monitoring-state', { cache: 'no-store' });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || !data.success) return false;
+
+    // This endpoint returns a complete tenant-scoped snapshot for staff. Replace the maps
+    // instead of merging so sessions removed by server do not survive as stale local cache.
+    appState.activeExamSessions = data.activeExamSessions || {};
+    appState.completedExams = data.completedExams || {};
+    appState.forceFinishedExams = data.forceFinishedExams || {};
+    appState.studentExamGrades = data.studentExamGrades || {};
+    appState.studentExamAnswers = data.studentExamAnswers || {};
+    appState.studentExamQuestions = data.studentExamQuestions || data.studentQuestions || {};
+
+    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+    safeSetStorage('madrasah_completed_exams', appState.completedExams);
+    safeSetStorage('madrasah_force_finished_exams', appState.forceFinishedExams);
+    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
+    safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
+    return true;
+}
+
 function stopEvaluasiPolling() {
     if (window.__evaluasiPollInterval) {
         clearInterval(window.__evaluasiPollInterval);
@@ -423,46 +446,18 @@ function startEvaluasiPolling() {
             return;
         }
         try {
-            const res = await fetch('/api/exam-monitoring-state');
-            const data = await res.json();
-            if (data && data.success) {
-                let hasChanges = false;
-                if (data.activeExamSessions) {
-                    appState.activeExamSessions = data.activeExamSessions;
-                    safeSetStorage('madrasah_active_exam_sessions', data.activeExamSessions);
-                    hasChanges = true;
-                }
-                if (data.completedExams && (Object.keys(data.completedExams).length > 0 || !appState.completedExams || Object.keys(appState.completedExams).length === 0)) {
-                    appState.completedExams = data.completedExams;
-                    safeSetStorage('madrasah_completed_exams', data.completedExams);
-                    hasChanges = true;
-                }
-                if (data.forceFinishedExams) {
-                    appState.forceFinishedExams = data.forceFinishedExams;
-                    safeSetStorage('madrasah_force_finished_exams', data.forceFinishedExams);
-                    hasChanges = true;
-                }
-                if (data.studentExamGrades && (Object.keys(data.studentExamGrades).length > 0 || !appState.studentExamGrades || Object.keys(appState.studentExamGrades).length === 0)) {
-                    appState.studentExamGrades = data.studentExamGrades;
-                    safeSetStorage('madrasah_student_exam_grades', data.studentExamGrades);
-                    hasChanges = true;
-                }
-                if (data.studentExamAnswers && (Object.keys(data.studentExamAnswers).length > 0 || !appState.studentExamAnswers || Object.keys(appState.studentExamAnswers).length === 0)) {
-                    appState.studentExamAnswers = data.studentExamAnswers;
-                    safeSetStorage('madrasah_student_exam_answers', data.studentExamAnswers);
-                    hasChanges = true;
-                }
-
-                const isModalOpen = document.querySelector('.modal-open, #koreksi-modal, #modal-container:not(.hidden)');
-                const isInputActive = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
-                if (!isModalOpen && !isInputActive && hasChanges) {
-                    const containerEl = document.getElementById('view-container');
-                    if (containerEl && appState.lastAssessmentSubTab === 'evaluasi') {
-                        renderAssessmentModule(containerEl, 'evaluasi', appState.evaluasiSelectedExamId);
-                    }
+            const hasChanges = await syncEvaluasiStateFromServer();
+            const isModalOpen = document.querySelector('.modal-open, #koreksi-modal, #modal-container:not(.hidden)');
+            const isInputActive = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+            if (!isModalOpen && !isInputActive && hasChanges) {
+                const containerEl = document.getElementById('view-container');
+                if (containerEl && appState.lastAssessmentSubTab === 'evaluasi') {
+                    renderAssessmentModule(containerEl, 'evaluasi', appState.evaluasiSelectedExamId);
                 }
             }
-        } catch (e) {}
+        } catch (e) {
+            console.warn('Evaluasi polling sync gagal:', e);
+        }
     }, 10000);
 }
 
@@ -594,6 +589,24 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
             }
         }
         startEvaluasiPolling();
+
+        // Sync immediately when entering Evaluation; the 10s poll remains only as a fallback.
+        const evalSyncNow = Date.now();
+        const evalLastSync = Number(window.__evaluasiImmediateSyncAt || 0);
+        if (!window.__evaluasiImmediateSyncInProgress && (evalSyncNow - evalLastSync) > 1500) {
+            window.__evaluasiImmediateSyncInProgress = true;
+            window.__evaluasiImmediateSyncAt = evalSyncNow;
+            setTimeout(() => {
+                syncEvaluasiStateFromServer()
+                    .then(synced => {
+                        if (!synced || appState.lastAssessmentSubTab !== 'evaluasi') return;
+                        const viewContainer = document.getElementById('view-container');
+                        if (viewContainer) renderAssessmentModule(viewContainer, 'evaluasi', appState.evaluasiSelectedExamId || null);
+                    })
+                    .catch(err => console.warn('Sinkron awal Evaluasi gagal:', err))
+                    .finally(() => { window.__evaluasiImmediateSyncInProgress = false; });
+            }, 0);
+        }
     } else {
         stopEvaluasiPolling();
     }
@@ -6600,129 +6613,48 @@ async function adminForceSubmitExam(studentId, explicitExamId = null) {
         return;
     }
 
-    const ex = (appState.exams || []).find(e => String(e.id) === String(examId));
-    if (!ex) {
-        showToast('Ujian tidak ditemukan!', 'error');
-        return;
-    }
-
     const st = (appState.students || []).find(s => String(s.id) === String(studentId));
     if (!st) {
         showToast('Siswa tidak ditemukan!', 'error');
         return;
     }
 
-    const key1 = studentId + '_' + examId;
-    const key2 = String(studentId) + '_' + String(examId);
-
-    // Fetch the absolute latest student answer status from the server first before forcing finish!
     try {
-        const monRes = await fetch('/api/exam-monitoring-state');
-        const monData = await monRes.json();
-        if (monData && monData.success) {
-            if (monData.studentExamAnswers) {
-                appState.studentExamAnswers = { ...(appState.studentExamAnswers || {}), ...monData.studentExamAnswers };
-                safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
-            }
-            if (monData.activeExamSessions) {
-                appState.activeExamSessions = { ...(appState.activeExamSessions || {}), ...monData.activeExamSessions };
-                safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
-            }
-            if (monData.studentExamGrades) {
-                appState.studentExamGrades = { ...(appState.studentExamGrades || {}), ...monData.studentExamGrades };
-                safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
+        // Do not send answers from browser cache. The server merges its persisted answers
+        // with the authoritative live session and scores that exact saved state.
+        const response = await fetch('/api/exam/attempt/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                studentId: st.id,
+                examId,
+                forceFinish: true
+            })
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.success) {
+            showToast((data && data.message) || 'Force Finish gagal. Jawaban siswa tidak diubah.', 'error');
+            return;
+        }
+
+        await syncEvaluasiStateFromServer().catch(() => false);
+
+        const answered = Number.isFinite(Number(data.answeredCount)) ? Number(data.answeredCount) : null;
+        const total = Number.isFinite(Number(data.totalQuestions)) ? Number(data.totalQuestions) : null;
+        const progressText = answered !== null && total !== null ? ` (${answered}/${total} jawaban tersimpan)` : '';
+        showToast(`Ujian ${st.name} berhasil di-Force Finish dan dinilai dari jawaban yang tersimpan${progressText}.`, 'success');
+
+        const containerEl = document.getElementById('view-container');
+        if (containerEl) {
+            if (appState.lastAssessmentSubTab === 'monitoring' && appState.activeMonitoringExamId) {
+                renderAssessmentModule(containerEl, 'monitoring', appState.activeMonitoringExamId);
+            } else {
+                renderAssessmentModule(containerEl, 'evaluasi', examId);
             }
         }
     } catch (e) {
-        console.warn("Could not fetch latest exam state before force submit (network/offline):", e.message || e);
-    }
-
-    if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers')) || {};
-    let answers = appState.studentExamAnswers[key1] || appState.studentExamAnswers[key2] || {};
-
-    if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
-
-    if (Object.keys(answers).length === 0) {
-        if (appState.activeExamSessions[key1]?.answers) {
-            answers = appState.activeExamSessions[key1].answers;
-        } else if (appState.activeExamSessions[key2]?.answers) {
-            answers = appState.activeExamSessions[key2].answers;
-        }
-    }
-
-    appState.studentExamAnswers[key1] = answers;
-    appState.studentExamAnswers[key2] = answers;
-    safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
-
-    if (!appState.completedExams) appState.completedExams = JSON.parse(localStorage.getItem('madrasah_completed_exams')) || {};
-    appState.completedExams[key1] = 'force_finish';
-    appState.completedExams[key2] = 'force_finish';
-    safeSetStorage('madrasah_completed_exams', appState.completedExams);
-
-    if (!appState.forceFinishedExams) appState.forceFinishedExams = JSON.parse(localStorage.getItem('madrasah_force_finished_exams')) || {};
-    appState.forceFinishedExams[key1] = true;
-    appState.forceFinishedExams[key2] = true;
-    safeSetStorage('madrasah_force_finished_exams', appState.forceFinishedExams);
-
-    const questions = getExamQuestions(ex, studentId);
-    if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions')) || {};
-    appState.studentExamQuestions[key1] = questions;
-    appState.studentExamQuestions[key2] = questions;
-    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
-
-    const pgQuestions = questions.filter(q => q.type !== 'esay' && q.type !== 'essay');
-    const essayQuestions = questions.filter(q => q.type === 'esay' || q.type === 'essay');
-
-    let correctPGCount = 0;
-    pgQuestions.forEach(q => {
-        const userAns = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
-        if (isCorrectAnswer(q, userAns)) correctPGCount++;
-    });
-
-    const pgScore = pgQuestions.length > 0 ? (correctPGCount / pgQuestions.length) * 100 : 100;
-
-    if (!appState.studentExamGrades) appState.studentExamGrades = JSON.parse(localStorage.getItem('madrasah_student_exam_grades')) || {};
-    
-    let existingGrade = appState.studentExamGrades[key1] || appState.studentExamGrades[key2] || {};
-    
-    const gradeObj = {
-        pgScore: Math.round(pgScore),
-        essayScore: existingGrade.essayScore || 0,
-        finalScore: essayQuestions.length === 0 ? Math.round(pgScore) : (existingGrade.finalScore || null),
-        isGraded: essayQuestions.length === 0 ? true : (existingGrade.isGraded || false),
-        correctPGCount,
-        totalPGCount: pgQuestions.length,
-        essayGrades: existingGrade.essayGrades || {},
-        submissionType: 'force_finish'
-    };
-
-    appState.studentExamGrades[key1] = gradeObj;
-    appState.studentExamGrades[key2] = gradeObj;
-    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
-
-    if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
-    delete appState.activeExamSessions[key1];
-    delete appState.activeExamSessions[key2];
-    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
-
-    syncExamStateToServer({
-        completed: { [key1]: 'force_finish', [key2]: 'force_finish' },
-        forceFinished: { [key1]: true, [key2]: true },
-        answers: { [key1]: answers, [key2]: answers },
-        sessionKey: key1,
-        sessionData: null,
-        gradesObj: { [key1]: gradeObj, [key2]: gradeObj }
-    });
-
-    showToast(`Ujian untuk siswa ${st.name} berhasil diselesaikan secara paksa oleh Admin!`, 'success');
-
-    const containerEl = document.getElementById('view-container');
-    if (containerEl) {
-        if (appState.lastAssessmentSubTab === 'monitoring' && appState.activeMonitoringExamId) {
-            renderAssessmentModule(containerEl, 'monitoring', appState.activeMonitoringExamId);
-        } else {
-            renderAssessmentModule(containerEl, 'evaluasi', examId);
-        }
+        console.error('Force Finish gagal:', e);
+        showToast('Force Finish gagal terhubung ke server. Jawaban siswa tetap aman dan tidak dihapus.', 'error');
     }
 }
 
@@ -6732,7 +6664,7 @@ function confirmAdminForceSubmitExam(studentId, explicitExamId = null) {
     const stName = st ? st.name : 'siswa ini';
 
     if (typeof showConfirmModal === 'function') {
-        showConfirmModal(`Apakah Anda yakin ingin menyelesaikan ujian secara paksa (<b>Force Finish</b>) untuk <b>${stName}</b>? Ujian akan langsung ditutup dan jawaban yang telah tersimpan saat ini akan dinilai.`, async () => {
+        showConfirmModal(`Apakah Anda yakin ingin menyelesaikan ujian secara paksa (<b>Force Finish</b>) untuk <b>${stName}</b>? Semua jawaban yang SUDAH tersimpan akan dipertahankan dan dinilai oleh server. Soal yang belum dijawab tetap dianggap kosong; jawaban yang ada tidak akan dihapus.`, async () => {
             await adminForceSubmitExam(studentId, examId);
         });
     } else {
@@ -7120,28 +7052,16 @@ async function runSingleStudentAutoKoreksiAI(studentId) {
 
 async function refreshEvaluasiData(classId, examId) {
     showToast('Memperbarui data nilai dari server...', 'info');
+    let synced = false;
     try {
-        const monRes = await fetch('/api/exam-monitoring-state').then(r => r.json()).catch(() => null);
-        if (monRes && monRes.success) {
-            if (monRes.completedExams) appState.completedExams = { ...(appState.completedExams || {}), ...monRes.completedExams };
-            if (monRes.studentExamGrades) appState.studentExamGrades = { ...(appState.studentExamGrades || {}), ...monRes.studentExamGrades };
-            if (monRes.studentExamAnswers) appState.studentExamAnswers = { ...(appState.studentExamAnswers || {}), ...monRes.studentExamAnswers };
-            if (monRes.activeExamSessions) appState.activeExamSessions = { ...(appState.activeExamSessions || {}), ...monRes.activeExamSessions };
-            const serverStudentQuestions = monRes.studentExamQuestions || monRes.studentQuestions;
-            if (serverStudentQuestions) appState.studentExamQuestions = { ...(appState.studentExamQuestions || {}), ...serverStudentQuestions };
-            safeSetStorage('madrasah_completed_exams', appState.completedExams || {});
-            safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades || {});
-            safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers || {});
-            safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions || {});
-            safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions || {});
-        }
+        synced = await syncEvaluasiStateFromServer();
     } catch (e) {
         console.warn('Refresh error:', e);
     }
     if (classId) appState.evaluasiSelectedClassId = classId;
     if (examId) appState.evaluasiSelectedExamId = examId;
     renderAssessmentModule(document.getElementById('view-container'), 'evaluasi', examId || null);
-    showToast('Data nilai berhasil diperbarui!', 'success');
+    showToast(synced ? 'Data nilai berhasil diperbarui!' : 'Data server belum dapat diperbarui. Menampilkan cache terakhir.', synced ? 'success' : 'warning');
 }
 
 async function runAutoKoreksiNonAI(classId, examId) {
