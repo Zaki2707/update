@@ -6628,9 +6628,11 @@ app.post("/api/teacher-attendance/update", async (req, res) => {
   }
 });
 
-// Cloudinary Smart Cleanup: remove only old attendance photos that are no longer needed.
-// It is deliberately conservative: no generic cross-tenant orphan deletion is performed because
-// legacy Cloudinary public IDs are not tenant-prefixed.
+// Cloudinary Smart Cleanup: exact per-person retention policy.
+// For each person in the active tenant, retain only the active profile photo and
+// the newest attendance photo. Older profile-history and attendance photo refs
+// are removed; Cloudinary assets are deleted only when no durable reference
+// anywhere in the application still needs them.
 function cleanupPhotoTimestamp(record: any): number {
   if (!record) return 0;
   const values = [record.timestamp, record.createdAt, record.updatedAt, record.date];
@@ -6651,64 +6653,84 @@ function cleanupPhotoTimestamp(record: any): number {
 
 function cleanupPersonKey(record: any, kind: 'student' | 'teacher'): string {
   if (!record) return '';
-  if (kind === 'teacher') {
-    return String(record.teacherId || record.nip || record.username || '').trim();
-  }
-  return String(record.studentId || record.nis || record.username || '').trim();
+  return kind === 'teacher'
+    ? String(record.teacherId || record.nip || record.username || '').trim()
+    : String(record.studentId || record.nis || record.username || '').trim();
+}
+
+function historyPhotoValue(entry: any): any {
+  return typeof entry === 'string' ? entry : entry?.photo;
 }
 
 function buildLatestAttendancePhotoMap(list: any[], kind: 'student' | 'teacher', req: any): Map<string, any> {
   const latest = new Map<string, any>();
   for (const record of (Array.isArray(list) ? list : [])) {
-    if (!record || !isItemForCurrentMadrasah(record, req)) continue;
-    const photoId = getCloudinaryPhotoIdFromReference(record.photo);
+    if (!record || !isItemForCurrentMadrasah(record, req) || !record.photo) continue;
     const personKey = cleanupPersonKey(record, kind);
-    if (!photoId || !personKey) continue;
+    if (!personKey) continue;
     const existing = latest.get(personKey);
-    if (!existing || cleanupPhotoTimestamp(record) > cleanupPhotoTimestamp(existing)) {
+    if (!existing || cleanupPhotoTimestamp(record) >= cleanupPhotoTimestamp(existing)) {
       latest.set(personKey, record);
     }
   }
   return latest;
 }
 
-function isOldCleanupCandidate(record: any, kind: 'student' | 'teacher', latest: Map<string, any>, req: any, cutoff: number): boolean {
-  if (!record || !isItemForCurrentMadrasah(record, req)) return false;
-  const photoId = getCloudinaryPhotoIdFromReference(record.photo);
+function isExtraAttendancePhoto(record: any, kind: 'student' | 'teacher', latest: Map<string, any>, req: any): boolean {
+  if (!record || !record.photo || !isItemForCurrentMadrasah(record, req)) return false;
   const personKey = cleanupPersonKey(record, kind);
-  if (!photoId || !personKey) return false;
-  if (latest.get(personKey) === record) return false; // Always retain newest photo for this person.
-  const ts = cleanupPhotoTimestamp(record);
-  return ts > 0 && ts < cutoff;
+  if (!personKey) return false;
+  return latest.get(personKey) !== record;
 }
 
-function collectNonAttendanceProtectedPhotoIds(): Set<string> {
+function collectCleanupProtectedIds(req: any, latestStudents: Map<string, any>, latestTeachers: Map<string, any>, teacherOnly: boolean): Set<string> {
   const protectedIds = new Set<string>();
+  const add = (value: any) => {
+    const id = getCloudinaryPhotoIdFromReference(value);
+    if (id) protectedIds.add(id);
+  };
   const scanDeep = (value: any, depth = 0) => {
     if (depth > 8 || value === null || value === undefined) return;
-    if (typeof value === 'string') {
-      const id = getCloudinaryPhotoIdFromReference(value);
-      if (id) protectedIds.add(id);
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) scanDeep(item, depth + 1);
-      return;
-    }
-    if (typeof value === 'object') {
-      for (const item of Object.values(value)) scanDeep(item, depth + 1);
-    }
+    if (typeof value === 'string') { add(value); return; }
+    if (Array.isArray(value)) { for (const item of value) scanDeep(item, depth + 1); return; }
+    if (typeof value === 'object') { for (const item of Object.values(value)) scanDeep(item, depth + 1); }
   };
 
-  // Protect every non-attendance durable reference, across ALL tenants.
-  scanDeep(students || []);
-  scanDeep(teachers || []);
+  // Active profile photos are always retained globally.
+  for (const person of (students || [])) add(person?.photo);
+  for (const person of (teachers || [])) add(person?.photo);
+
+  // Profile history belonging to other tenants is untouched. During teacher-only
+  // cleanup, student history in the active tenant is also untouched.
+  for (const person of (students || [])) {
+    if (!isItemForCurrentMadrasah(person, req) || teacherOnly) scanDeep(person?.photoHistory || []);
+  }
+  for (const person of (teachers || [])) {
+    if (!isItemForCurrentMadrasah(person, req)) scanDeep(person?.photoHistory || []);
+  }
+
+  // Protect every non-profile durable image reference.
   scanDeep(questions || []);
   scanDeep(lkpdList || []);
   scanDeep(lessonPlans || []);
   scanDeep(generatedExams || []);
   scanDeep(eduGames || []);
   scanDeep(appSettings || {});
+  scanDeep(exams || []);
+  scanDeep(studentExamQuestions || {});
+  scanDeep(activeExamSessions || {});
+
+  // Attendance of other tenants is always protected. In the active tenant only
+  // the newest attendance photo per person is protected.
+  for (const record of (attendance || [])) {
+    if (!isItemForCurrentMadrasah(record, req) || teacherOnly) add(record?.photo);
+  }
+  for (const record of (teacherAttendance || [])) {
+    if (!isItemForCurrentMadrasah(record, req)) add(record?.photo);
+  }
+  for (const record of latestStudents.values()) add(record?.photo);
+  for (const record of latestTeachers.values()) add(record?.photo);
+
   return protectedIds;
 }
 
@@ -6720,19 +6742,32 @@ async function destroyCloudinaryPhotoId(photoId: string): Promise<'deleted' | 'm
   try {
     const result: any = await new Promise((resolve, reject) => {
       cloudinary.uploader.destroy(fullId, { resource_type: 'image', invalidate: true }, (error: any, response: any) => {
-        if (error) reject(error);
-        else resolve(response);
+        if (error) reject(error); else resolve(response);
       });
     });
     const outcome = String(result?.result || '').toLowerCase();
     if (outcome === 'ok') return 'deleted';
     if (outcome === 'not found') return 'missing';
-    console.warn(`[Smart Cleanup] Unexpected Cloudinary delete result for ${fullId}:`, outcome || result);
+    console.warn(`[Cloudinary Cleanup] Unexpected delete result for ${fullId}:`, outcome || result);
     return 'failed';
   } catch (err: any) {
-    console.warn(`[Smart Cleanup] Cloudinary delete failed for ${fullId}:`, err?.message || err);
+    console.warn(`[Cloudinary Cleanup] Delete failed for ${fullId}:`, err?.message || err);
     return 'failed';
   }
+}
+
+async function removePhotoMapAliases(ids: Set<string>) {
+  if (!ids.size) return;
+  let changed = false;
+  for (const key of Object.keys(photoCloudinaryMap || {})) {
+    const keyId = normalizeCloudinaryPhotoId(key);
+    const valueId = getCloudinaryPhotoIdFromReference(photoCloudinaryMap[key]);
+    if (ids.has(keyId) || (valueId && ids.has(valueId))) {
+      delete photoCloudinaryMap[key];
+      changed = true;
+    }
+  }
+  if (changed) await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
 }
 
 async function runCloudinaryAttendanceCleanup(req: any, teacherOnly = false) {
@@ -6740,125 +6775,149 @@ async function runCloudinaryAttendanceCleanup(req: any, teacherOnly = false) {
     throw new Error('Cloudinary belum dikonfigurasi. Pembersihan tidak dijalankan.');
   }
 
-  const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
   const studentList = Array.isArray(attendance) ? attendance : [];
   const teacherList = Array.isArray(teacherAttendance) ? teacherAttendance : [];
   const latestStudents = buildLatestAttendancePhotoMap(studentList, 'student', req);
   const latestTeachers = buildLatestAttendancePhotoMap(teacherList, 'teacher', req);
-
   const candidateIds = new Set<string>();
+
   if (!teacherOnly) {
     for (const record of studentList) {
-      if (isOldCleanupCandidate(record, 'student', latestStudents, req, cutoff)) {
+      if (isExtraAttendancePhoto(record, 'student', latestStudents, req)) {
         const id = getCloudinaryPhotoIdFromReference(record.photo);
         if (id) candidateIds.add(id);
       }
     }
+    for (const person of (students || [])) {
+      if (!isItemForCurrentMadrasah(person, req)) continue;
+      const currentId = getCloudinaryPhotoIdFromReference(person?.photo);
+      for (const entry of (Array.isArray(person?.photoHistory) ? person.photoHistory : [])) {
+        const id = getCloudinaryPhotoIdFromReference(historyPhotoValue(entry));
+        if (id && id !== currentId) candidateIds.add(id);
+      }
+    }
   }
+
   for (const record of teacherList) {
-    if (isOldCleanupCandidate(record, 'teacher', latestTeachers, req, cutoff)) {
+    if (isExtraAttendancePhoto(record, 'teacher', latestTeachers, req)) {
       const id = getCloudinaryPhotoIdFromReference(record.photo);
       if (id) candidateIds.add(id);
     }
   }
-
-  // Protect profile/history/question/logo/etc references globally.
-  const protectedIds = collectNonAttendanceProtectedPhotoIds();
-
-  // Also protect attendance references that are NOT eligible candidates, including
-  // latest photos, recent photos, unknown-date photos, and every other tenant.
-  for (const record of studentList) {
-    const id = getCloudinaryPhotoIdFromReference(record?.photo);
-    if (!id) continue;
-    if (!isOldCleanupCandidate(record, 'student', latestStudents, req, cutoff)) protectedIds.add(id);
-  }
-  for (const record of teacherList) {
-    const id = getCloudinaryPhotoIdFromReference(record?.photo);
-    if (!id) continue;
-    if (!isOldCleanupCandidate(record, 'teacher', latestTeachers, req, cutoff)) protectedIds.add(id);
+  for (const person of (teachers || [])) {
+    if (!isItemForCurrentMadrasah(person, req)) continue;
+    const currentId = getCloudinaryPhotoIdFromReference(person?.photo);
+    for (const entry of (Array.isArray(person?.photoHistory) ? person.photoHistory : [])) {
+      const id = getCloudinaryPhotoIdFromReference(historyPhotoValue(entry));
+      if (id && id !== currentId) candidateIds.add(id);
+    }
   }
 
-  const safeIds = [...candidateIds].filter(id => !protectedIds.has(id));
+  const protectedIds = collectCleanupProtectedIds(req, latestStudents, latestTeachers, teacherOnly);
+  const deleteIds = [...candidateIds].filter(id => !protectedIds.has(id));
   const removableIds = new Set<string>();
   let deletedCount = 0;
   let alreadyMissingCount = 0;
   let failedCount = 0;
 
-  for (const id of safeIds) {
+  for (const id of deleteIds) {
     const result = await destroyCloudinaryPhotoId(id);
-    if (result === 'deleted') {
-      deletedCount++;
-      removableIds.add(id);
-    } else if (result === 'missing') {
-      alreadyMissingCount++;
-      removableIds.add(id);
-    } else {
-      failedCount++;
-    }
+    if (result === 'deleted') { deletedCount++; removableIds.add(id); }
+    else if (result === 'missing') { alreadyMissingCount++; removableIds.add(id); }
+    else failedCount++;
   }
+
+  // A candidate asset protected by a retained reference may still be removed from
+  // old history/attendance rows because the underlying asset remains in use.
+  const resolvedIds = new Set<string>(removableIds);
+  for (const id of candidateIds) if (protectedIds.has(id)) resolvedIds.add(id);
 
   let clearedStudentRefs = 0;
   let clearedTeacherRefs = 0;
+  let trimmedStudentHistory = 0;
+  let trimmedTeacherHistory = 0;
 
-  if (!teacherOnly && removableIds.size > 0) {
+  if (!teacherOnly) {
     await updateStoreKeyWithLock('attendance', (currentVal) => {
       const list = Array.isArray(currentVal) ? currentVal : [];
       const latest = buildLatestAttendancePhotoMap(list, 'student', req);
       for (const record of list) {
-        if (!isOldCleanupCandidate(record, 'student', latest, req, cutoff)) continue;
+        if (!isExtraAttendancePhoto(record, 'student', latest, req)) continue;
         const id = getCloudinaryPhotoIdFromReference(record.photo);
-        if (id && removableIds.has(id)) {
-          record.photo = '';
-          clearedStudentRefs++;
-        }
+        if (!id || resolvedIds.has(id)) { record.photo = ''; clearedStudentRefs++; }
       }
       return list;
     });
-  }
 
-  if (removableIds.size > 0) {
-    await updateStoreKeyWithLock('teacherAttendance', (currentVal) => {
+    await updateStoreKeyWithLock('students', (currentVal) => {
       const list = Array.isArray(currentVal) ? currentVal : [];
-      const latest = buildLatestAttendancePhotoMap(list, 'teacher', req);
-      for (const record of list) {
-        if (!isOldCleanupCandidate(record, 'teacher', latest, req, cutoff)) continue;
-        const id = getCloudinaryPhotoIdFromReference(record.photo);
-        if (id && removableIds.has(id)) {
-          record.photo = '';
-          clearedTeacherRefs++;
+      for (const person of list) {
+        if (!isItemForCurrentMadrasah(person, req)) continue;
+        const currentPhoto = person?.photo || '';
+        const currentId = getCloudinaryPhotoIdFromReference(currentPhoto);
+        const history = Array.isArray(person?.photoHistory) ? person.photoHistory : [];
+        const kept: any[] = [];
+        let keptCurrent = false;
+        for (const entry of history) {
+          const value = historyPhotoValue(entry);
+          const id = getCloudinaryPhotoIdFromReference(value);
+          const isCurrent = (currentPhoto && value === currentPhoto) || (currentId && id === currentId);
+          if (isCurrent && !keptCurrent) { kept.push(entry); keptCurrent = true; continue; }
+          if (!id || resolvedIds.has(id)) { trimmedStudentHistory++; continue; }
+          kept.push(entry); // failed Cloudinary deletion: retain reference for retry.
         }
+        person.photoHistory = kept;
       }
       return list;
     });
   }
 
-  // Remove stale map aliases only after Cloudinary confirms deletion/missing.
-  let mapChanged = false;
-  if (removableIds.size > 0) {
-    for (const key of Object.keys(photoCloudinaryMap || {})) {
-      const keyId = normalizeCloudinaryPhotoId(key);
-      const valueId = getCloudinaryPhotoIdFromReference(photoCloudinaryMap[key]);
-      if (removableIds.has(keyId) || (valueId && removableIds.has(valueId))) {
-        delete photoCloudinaryMap[key];
-        mapChanged = true;
-      }
+  await updateStoreKeyWithLock('teacherAttendance', (currentVal) => {
+    const list = Array.isArray(currentVal) ? currentVal : [];
+    const latest = buildLatestAttendancePhotoMap(list, 'teacher', req);
+    for (const record of list) {
+      if (!isExtraAttendancePhoto(record, 'teacher', latest, req)) continue;
+      const id = getCloudinaryPhotoIdFromReference(record.photo);
+      if (!id || resolvedIds.has(id)) { record.photo = ''; clearedTeacherRefs++; }
     }
-    if (mapChanged) await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
-  }
+    return list;
+  });
+
+  await updateStoreKeyWithLock('teachers', (currentVal) => {
+    const list = Array.isArray(currentVal) ? currentVal : [];
+    for (const person of list) {
+      if (!isItemForCurrentMadrasah(person, req)) continue;
+      const currentPhoto = person?.photo || '';
+      const currentId = getCloudinaryPhotoIdFromReference(currentPhoto);
+      const history = Array.isArray(person?.photoHistory) ? person.photoHistory : [];
+      const kept: any[] = [];
+      let keptCurrent = false;
+      for (const entry of history) {
+        const value = historyPhotoValue(entry);
+        const id = getCloudinaryPhotoIdFromReference(value);
+        const isCurrent = (currentPhoto && value === currentPhoto) || (currentId && id === currentId);
+        if (isCurrent && !keptCurrent) { kept.push(entry); keptCurrent = true; continue; }
+        if (!id || resolvedIds.has(id)) { trimmedTeacherHistory++; continue; }
+        kept.push(entry);
+      }
+      person.photoHistory = kept;
+    }
+    return list;
+  });
+
+  await removePhotoMapAliases(removableIds);
 
   const tenantStudents = filterByMadrasah(students || [], req);
   const tenantTeachers = filterByMadrasah(teachers || [], req);
   const currentAttendance = filterByMadrasah((getMemoryKeyValue('attendance') || attendance || []), req);
   const currentTeacherAttendance = filterByMadrasah((getMemoryKeyValue('teacherAttendance') || teacherAttendance || []), req);
-  const studentProfilePhotos = tenantStudents.filter((s: any) => Boolean(getCloudinaryPhotoIdFromReference(s?.photo))).length;
-  const teacherProfilePhotos = tenantTeachers.filter((t: any) => Boolean(getCloudinaryPhotoIdFromReference(t?.photo))).length;
-  const studentAttendancePhotos = currentAttendance.filter((a: any) => Boolean(getCloudinaryPhotoIdFromReference(a?.photo))).length;
-  const teacherAttendancePhotos = currentTeacherAttendance.filter((a: any) => Boolean(getCloudinaryPhotoIdFromReference(a?.photo))).length;
+  const studentProfilePhotos = tenantStudents.filter((s: any) => Boolean(s?.photo)).length;
+  const teacherProfilePhotos = tenantTeachers.filter((t: any) => Boolean(t?.photo)).length;
+  const studentAttendancePhotos = currentAttendance.filter((a: any) => Boolean(a?.photo)).length;
+  const teacherAttendancePhotos = currentTeacherAttendance.filter((a: any) => Boolean(a?.photo)).length;
 
   let remainingCount = studentProfilePhotos + teacherProfilePhotos + studentAttendancePhotos + teacherAttendancePhotos;
-  try {
-    remainingCount = (await listActualCloudinaryPhotos()).size;
-  } catch (_) {}
+  try { remainingCount = (await listActualCloudinaryPhotos()).size; } catch (_) {}
 
   return {
     deletedCount,
@@ -6869,12 +6928,14 @@ async function runCloudinaryAttendanceCleanup(req: any, teacherOnly = false) {
       studentAttendancePhotos,
       teacherAttendancePhotos,
       candidateAssets: candidateIds.size,
-      protectedAssets: candidateIds.size - safeIds.length,
+      protectedSharedAssets: [...candidateIds].filter(id => protectedIds.has(id)).length,
       alreadyMissingCount,
       failedCount,
       clearedStudentRefs,
       clearedTeacherRefs,
-      policy: 'older_than_30_days_keep_latest_per_person'
+      trimmedStudentHistory,
+      trimmedTeacherHistory,
+      policy: 'keep_active_profile_and_latest_attendance_per_person'
     }
   };
 }
@@ -6884,9 +6945,7 @@ app.post("/api/admin/cleanup-photos", requireAuth, requireRole(['admin', 'bos', 
     const result = await runCloudinaryAttendanceCleanup(req, false);
     return res.json({
       success: true,
-      message: result.deletedCount > 0
-        ? `Pembersihan Cloudinary selesai. ${result.deletedCount} aset foto absensi lama dihapus dengan aman.`
-        : 'Pembersihan Cloudinary selesai. Tidak ada aset foto absensi lama yang aman untuk dihapus.',
+      message: `Smart Cleanup selesai. ${result.deletedCount} aset Cloudinary ekstra dihapus; per ID hanya foto profil aktif dan foto absensi terbaru yang dipertahankan.`,
       ...result
     });
   } catch (err: any) {
@@ -6900,14 +6959,77 @@ app.post("/api/admin/cleanup-teacher-photos", requireAuth, requireRole(['admin',
     const result = await runCloudinaryAttendanceCleanup(req, true);
     return res.json({
       success: true,
-      message: result.deletedCount > 0
-        ? `Pembersihan foto absensi guru selesai. ${result.deletedCount} aset lama dihapus; foto terbaru setiap guru tetap dipertahankan.`
-        : 'Tidak ada foto absensi guru lama yang aman untuk dihapus.',
+      message: `Pembersihan guru selesai. ${result.deletedCount} aset ekstra dihapus; tiap guru mempertahankan foto profil aktif dan foto absensi terbaru.`,
       ...result
     });
   } catch (err: any) {
     console.error('[Teacher Smart Cleanup] Failed:', err?.message || err);
     return res.status(500).json({ success: false, message: err?.message || 'Pembersihan foto guru gagal.' });
+  }
+});
+
+function isAllowedManagedImageDataUrl(value: any): boolean {
+  if (typeof value !== 'string' || value.length < 32 || value.length > 3000000) return false;
+  return /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(value);
+}
+
+async function releaseManagedPhotoRefs(refs: any[]): Promise<{ deleted: number; protected: number; failed: number }> {
+  const protectedIds = collectReferencedPhotoIds();
+  const ids = new Set<string>();
+  for (const ref of (Array.isArray(refs) ? refs : [])) {
+    const id = getCloudinaryPhotoIdFromReference(ref);
+    if (id) ids.add(id);
+  }
+  const removed = new Set<string>();
+  let deleted = 0, protectedCount = 0, failed = 0;
+  for (const id of ids) {
+    if (protectedIds.has(id)) { protectedCount++; continue; }
+    const outcome = await destroyCloudinaryPhotoId(id);
+    if (outcome === 'deleted' || outcome === 'missing') { removed.add(id); if (outcome === 'deleted') deleted++; }
+    else failed++;
+  }
+  await removePhotoMapAliases(removed);
+  return { deleted, protected: protectedCount, failed };
+}
+
+app.post('/api/lkpd-assets/upload', requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const { dataUrl } = req.body || {};
+    if (!isAllowedManagedImageDataUrl(dataUrl)) return res.status(400).json({ success: false, message: 'Gambar LKPD harus PNG/JPG/WebP dan maksimal sekitar 2 MB.' });
+    const ref = await saveBase64ToFirestore(dataUrl);
+    return res.json({ success: true, ref });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Gagal mengunggah gambar LKPD.' });
+  }
+});
+
+app.post('/api/lkpd-assets/release', requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const result = await releaseManagedPhotoRefs([req.body?.ref]);
+    return res.json({ success: true, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Gagal melepas aset LKPD.' });
+  }
+});
+
+app.post('/api/theme-assets/upload', requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const { dataUrl } = req.body || {};
+    if (!isAllowedManagedImageDataUrl(dataUrl)) return res.status(400).json({ success: false, message: 'Aset tema harus PNG/JPG/WebP dan maksimal sekitar 2 MB.' });
+    const ref = await saveBase64ToFirestore(dataUrl);
+    return res.json({ success: true, ref });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Gagal mengunggah aset tema.' });
+  }
+});
+
+app.post('/api/theme-assets/release', requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const refs = Array.isArray(req.body?.refs) ? req.body.refs.slice(0, 8) : [];
+    const result = await releaseManagedPhotoRefs(refs);
+    return res.json({ success: true, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Gagal melepas aset tema.' });
   }
 });
 

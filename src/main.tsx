@@ -22,6 +22,7 @@ import './cbtModules.js';
 import './pedagogyNonAIEngine.js';
 import './modulAjarModule.js';
 import './settingsAndMisc.js';
+import './themePackageModule.js';
 import './assessmentModule.js';
 import './chatModule.js';
 import './calendarModule.js';

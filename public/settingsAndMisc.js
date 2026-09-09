@@ -818,7 +818,7 @@ function renderSettingModule(container) {
                             <i class="fa-solid fa-wand-magic-sparkles text-indigo-600"></i>
                             <span>Pembersihan Foto Pintar (Smart Cleanup)</span>
                         </h2>
-                        <p class="text-xs text-slate-400 mt-0.5">Optimalkan kapasitas Cloudinary dengan menghapus foto absensi lama (>30 hari) secara aman, sambil mempertahankan minimal 1 foto terbaru setiap siswa & guru serta seluruh foto yang masih direferensikan.</p>
+                        <p class="text-xs text-slate-400 mt-0.5">Rapikan Cloudinary per ID pengguna: pertahankan 1 foto profil aktif dan 1 foto absensi terbaru setiap siswa/guru, lalu hapus foto riwayat dan absensi ekstra yang sudah tidak dipakai.</p>
                     </div>
                 </div>
 
@@ -828,7 +828,7 @@ function renderSettingModule(container) {
                         <span>Aturan Pembersihan Cerdas</span>
                     </div>
                     <p class="text-xs text-slate-600 leading-relaxed">
-                        Sistem akan mencari foto absensi yang berusia <strong>lebih dari 30 hari</strong>. Foto-foto usang tersebut akan dihapus secara permanen dari Cloudinary untuk menghemat ruang, <strong>KECUALI</strong> jika foto tersebut adalah foto terbaru orang tersebut atau masih direferensikan oleh data penting lain. Dengan metode ini, <strong>seluruh siswa & guru dijamin akan tetap memiliki minimal 1 foto verifikasi terbaru di dalam sistem</strong>. Data teks kehadiran (tanggal, jam, keterangan) tidak akan dihapus!
+                        Sistem bekerja berdasarkan <strong>ID siswa/guru</strong>. Setiap orang mempertahankan <strong>1 foto profil aktif + 1 foto absensi terbaru</strong>. Foto profil riwayat dan foto absensi lainnya dilepas dari data lama dan aset Cloudinary dihapus bila tidak dipakai di tempat lain. <strong>Data teks absensi tetap dipertahankan.</strong>
                     </p>
 
                     <div class="pt-2 flex flex-col gap-3">
@@ -1226,29 +1226,12 @@ function updateAdminAttendanceDate(newDate) {
 window.updateAdminAttendanceDate = updateAdminAttendanceDate;
 
 async function clearAllAttendanceRecords() {
-    if (!confirm("Apakah Anda yakin ingin melakukan Pembersihan Pintar (Smart Cleanup)?\n\nSistem akan:\n1. Menyisakan HANYA 1 data absensi terbaru untuk setiap Siswa & Guru.\n2. Menghapus foto profil & foto absen lama yang menumpuk di gudang Firebase.\n\nLanjutkan?")) return;
-    
-    // Show loading state
-    const btn = document.getElementById('btn-clear-attendance');
-    const originalText = btn ? btn.innerHTML : '';
-    if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Membersihkan...';
-    
-    try {
-        const res = await fetch('/api/attendance/clear-all', { method: 'POST' });
-        const data = await res.json();
-        
-        if (data.success) {
-            alert(data.message);
-            window.location.reload();
-        } else {
-            showToast('Gagal: ' + (data.message || 'Error server'), 'error');
-        }
-    } catch (e) {
-        console.warn('Gagal melakukan pembersihan pintar:', e);
-        showToast('Terjadi kesalahan jaringan saat membersihkan.', 'error');
-    } finally {
-        if (btn) btn.innerHTML = originalText;
+    // Legacy UI entry now delegates to the safe Cloudinary Smart Cleanup.
+    // It must never delete historical attendance text rows.
+    if (typeof window.runSmartPhotoCleanup === 'function') {
+        return window.runSmartPhotoCleanup();
     }
+    showToast('Buka Pengaturan > Smart Cleanup untuk menjalankan pembersihan foto aman.', 'info');
 }
 window.clearAllAttendanceRecords = clearAllAttendanceRecords;
 
@@ -3311,6 +3294,9 @@ async function loadDataFromServer() {
             if (res.settings) {
                 appState.settings = res.settings;
                 if (window.applyLoginCustomization) window.applyLoginCustomization();
+                if (window.applyThemePackage && appState.settings.theme === 'package' && appState.settings.themePackage) {
+                    window.applyThemePackage(appState.settings.themePackage);
+                }
             }
             if (res.lessonPlans) appState.lessonPlans = res.lessonPlans;
             if (res.grades) {
@@ -4411,8 +4397,8 @@ async function runSmartPhotoCleanup() {
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                             <div class="flex items-center justify-between p-3 rounded-xl bg-rose-50/80 border border-rose-100">
                                 <div>
-                                    <p class="text-[11px] font-medium text-rose-600">Foto Usang Terhapus</p>
-                                    <p class="text-xs text-rose-500">Usia &gt; 30 hari (bukan foto terakhir)</p>
+                                    <p class="text-[11px] font-medium text-rose-600">Aset Foto Ekstra Terhapus</p>
+                                    <p class="text-xs text-rose-500">Selain profil aktif &amp; absensi terbaru</p>
                                 </div>
                                 <span class="text-lg font-black text-rose-700 font-mono">${deleted}</span>
                             </div>
@@ -4451,7 +4437,7 @@ async function runSmartPhotoCleanup() {
 }
 
 async function runTeacherPhotoCleanup() {
-    if (!confirm("Apakah Anda yakin ingin membersihkan foto absensi guru lama?\n\nSistem akan:\n1. Memeriksa aset foto absensi guru di Cloudinary.\n2. Menghapus hanya foto berusia >30 hari yang aman dan tetap menyisakan minimal 1 foto terbaru setiap guru.\n3. Mempertahankan foto yang masih dipakai oleh profil, riwayat, atau data penting lain.\n\nAset yang benar-benar usang akan dihapus permanen. Lanjutkan?")) return;
+    if (!confirm("Apakah Anda yakin ingin merapikan foto guru?\n\nSistem akan:\n1. Menyisakan 1 foto profil aktif setiap guru.\n2. Menyisakan 1 foto absensi terbaru setiap guru.\n3. Menghapus referensi foto riwayat/absensi ekstra dan aset Cloudinary yang tidak lagi dipakai.\n\nData teks absensi tidak dihapus. Lanjutkan?")) return;
     
     const btn = document.querySelector('button[onclick="runTeacherPhotoCleanup()"]');
     const statusContainer = document.getElementById('cleanup-status-container');

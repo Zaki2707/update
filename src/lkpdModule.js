@@ -63,6 +63,30 @@ window.saveLkpdState = async function() {
     }
 };
 
+async function uploadManagedLkpdImage(dataUrl) {
+    const res = await fetch('/api/lkpd-assets/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success || !data.ref) throw new Error(data.message || 'Gagal mengunggah gambar LKPD.');
+    return data.ref;
+}
+
+async function releaseManagedLkpdImage(ref) {
+    if (!ref || typeof ref !== 'string' || ref.startsWith('data:image/')) return;
+    try {
+        await fetch('/api/lkpd-assets/release', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ref })
+        });
+    } catch (err) {
+        console.warn('Gagal melepas aset LKPD lama:', err);
+    }
+}
+
 // ============================================================================
 // SVG THEMES FOR LKPD WORKSHEETS
 // ============================================================================
@@ -973,33 +997,28 @@ window.handleSaveLkpdForm = async function(event, lkpdId) {
 };
 
 window.deleteLkpd = async function(lkpdId) {
-    if (typeof showConfirmModal === 'function') {
-        showConfirmModal("Apakah Anda yakin ingin menghapus kartu LKPD ini beserta seluruh jawaban siswa?", async () => {
-            const lkpds = initLkpdState();
-            const idx = lkpds.findIndex(l => l.id === lkpdId);
-            if (idx !== -1) {
-                lkpds.splice(idx, 1);
-                await saveLkpdState();
-                showToast("Kartu LKPD telah dihapus.", "success");
-                const container = document.getElementById('view-container');
-                if (container && typeof window.renderAssessmentModule === 'function') {
-                    window.renderAssessmentModule(container, 'lkpd');
-                }
-            }
-        });
-    } else {
-        if (!confirm("Apakah Anda yakin ingin menghapus kartu LKPD ini beserta seluruh jawaban siswa?")) return;
+    const performDelete = async () => {
         const lkpds = initLkpdState();
         const idx = lkpds.findIndex(l => l.id === lkpdId);
-        if (idx !== -1) {
-            lkpds.splice(idx, 1);
-            await saveLkpdState();
-            showToast("Kartu LKPD telah dihapus.", "success");
-            const container = document.getElementById('view-container');
-            if (container && typeof window.renderAssessmentModule === 'function') {
-                window.renderAssessmentModule(container, 'lkpd');
-            }
+        if (idx === -1) return;
+        const oldImage = lkpds[idx]?.customImage;
+        lkpds.splice(idx, 1);
+        await saveLkpdState();
+        // Release only after the LKPD list is durably updated. The server refuses
+        // deletion if the same asset is still referenced elsewhere.
+        await releaseManagedLkpdImage(oldImage);
+        showToast("Kartu LKPD dan aset gambar yang tidak lagi dipakai telah dihapus.", "success");
+        const container = document.getElementById('view-container');
+        if (container && typeof window.renderAssessmentModule === 'function') {
+            window.renderAssessmentModule(container, 'lkpd');
         }
+    };
+
+    if (typeof showConfirmModal === 'function') {
+        showConfirmModal("Apakah Anda yakin ingin menghapus kartu LKPD ini beserta seluruh jawaban siswa dan gambar khususnya?", performDelete);
+    } else {
+        if (!confirm("Apakah Anda yakin ingin menghapus kartu LKPD ini beserta seluruh jawaban siswa dan gambar khususnya?")) return;
+        await performDelete();
     }
 };
 
@@ -1246,9 +1265,11 @@ window.selectLkpdTheme = async function(lkpdId, themeKey) {
     const lkpds = initLkpdState();
     const lkpd = lkpds.find(l => l.id === lkpdId);
     if (!lkpd) return;
+    const oldImage = lkpd.customImage;
     lkpd.theme = themeKey;
     lkpd.customImage = null;
     await saveLkpdState();
+    await releaseManagedLkpdImage(oldImage);
     openManageLkpdModal(lkpdId);
 };
 
@@ -1292,30 +1313,44 @@ window.resetLkpdToTheme = async function(lkpdId) {
     const lkpds = initLkpdState();
     const lkpd = lkpds.find(l => l.id === lkpdId);
     if (!lkpd) return;
+    const oldImage = lkpd.customImage;
     lkpd.customImage = null;
     await saveLkpdState();
+    await releaseManagedLkpdImage(oldImage);
     openManageLkpdModal(lkpdId);
 };
 
 window.handleImportLkpdImage = function(event, lkpdId) {
     const file = event.target.files[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
-        showToast("Harap pilih file gambar (JPG, PNG, WebP, SVG).", "error");
+    const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+    if (!allowed.includes(file.type)) {
+        showToast("Gunakan gambar PNG, JPG, atau WebP. SVG tidak diizinkan untuk aset terkelola.", "error");
+        return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+        showToast("Ukuran gambar maksimal 2 MB.", "error");
         return;
     }
 
     const reader = new FileReader();
     reader.onload = async function(e) {
-        const base64 = e.target.result;
-        const lkpds = initLkpdState();
-        const lkpd = lkpds.find(l => l.id === lkpdId);
-        if (!lkpd) return;
-
-        lkpd.customImage = base64;
-        await saveLkpdState();
-        showToast("Gambar lembar kerja kustom berhasil diimpor!", "success");
-        openManageLkpdModal(lkpdId);
+        try {
+            const base64 = e.target.result;
+            const lkpds = initLkpdState();
+            const lkpd = lkpds.find(l => l.id === lkpdId);
+            if (!lkpd) return;
+            const oldImage = lkpd.customImage;
+            const managedRef = await uploadManagedLkpdImage(base64);
+            lkpd.customImage = managedRef;
+            await saveLkpdState();
+            await releaseManagedLkpdImage(oldImage);
+            showToast("Gambar LKPD berhasil disimpan ke penyimpanan terkelola.", "success");
+            openManageLkpdModal(lkpdId);
+        } catch (err) {
+            console.error('Gagal mengunggah gambar LKPD:', err);
+            showToast(err.message || 'Gagal mengunggah gambar LKPD.', 'error');
+        }
     };
     reader.readAsDataURL(file);
 };
