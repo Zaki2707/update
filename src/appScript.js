@@ -1430,7 +1430,7 @@ async function initAppSession() {
     } catch(e) {}
 
     if (!appState.currentUser && !savedUserData) {
-        console.log('TIDAK ADA SESI LOGIN TERSIMPAN.');
+        // Normal login-page state: do not start authenticated background work.
         return;
     }
 
@@ -1532,10 +1532,18 @@ async function handleLogin(e) {
     }
 
     try {
+        const portalPath = String(window.location.pathname || '');
+        const portalSlug = portalPath.startsWith('/m/') ? portalPath.substring(3).split('/')[0] : '';
+        const loginTenant = window.__activeTenant || null;
         const response = await fetch('/api/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: u, password: p })
+            body: JSON.stringify({
+                username: u,
+                password: p,
+                madrasahId: loginTenant?.id || '',
+                madrasahSlug: loginTenant?.slug || portalSlug || ''
+            })
         });
 
         const data = await response.json();

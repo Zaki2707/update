@@ -1,7 +1,24 @@
 window.appState = window.appState || {};
 if (!window.appState.chats) window.appState.chats = [];
 
+function getChatAuthToken() {
+    const currentToken = window.appState?.currentUser?.token;
+    if (currentToken) return String(currentToken);
+    try {
+        const saved = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
+        return saved?.token ? String(saved.token) : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function hasAuthenticatedChatSession() {
+    return Boolean(getChatAuthToken());
+}
+window.hasAuthenticatedChatSession = hasAuthenticatedChatSession;
+
 async function loadChats() {
+    if (!hasAuthenticatedChatSession()) return false;
     try {
         const res = await fetch('/api/chats');
         if (res.ok) {
@@ -420,14 +437,14 @@ window.sendChatMessage = async function(e, senderId, receiverId, targetId, targe
 
 // Global initialization
 if (typeof window !== 'undefined') {
-    // Initial load
+    // Initial load only after an authenticated session exists.
     setTimeout(() => {
-        loadChats();
+        if (hasAuthenticatedChatSession()) loadChats();
     }, 1000);
     
-    // Poll globally every 45 seconds for notifications when tab is visible
+    // Poll globally only while authenticated; the login page must stay silent.
     setInterval(() => {
-        if (document.visibilityState === 'visible' && window.appState?.settings?.chatEnabled) {
+        if (document.visibilityState === 'visible' && window.appState?.settings?.chatEnabled && hasAuthenticatedChatSession()) {
             loadChats();
         }
     }, 45000);

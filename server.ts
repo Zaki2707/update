@@ -4322,6 +4322,31 @@ function isBossRuntimeEnabled(): boolean {
 // 2. Auth Login
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
+  const requestedTenantRaw = String(
+    req.body?.madrasahId ||
+    req.body?.madrasahSlug ||
+    req.query?.madrasahId ||
+    req.headers['x-madrasah-id'] ||
+    ''
+  ).trim();
+  const requestedTenant = requestedTenantRaw && requestedTenantRaw !== 'BOSS'
+    ? madrasahs.find((m: any) =>
+        String(m.id) === requestedTenantRaw ||
+        String(m.slug).toLowerCase() === requestedTenantRaw.toLowerCase()
+      )
+    : null;
+
+  if (requestedTenantRaw && requestedTenantRaw !== 'BOSS' && !requestedTenant) {
+    return res.status(404).json({ success: false, message: "Portal madrasah tidak ditemukan." });
+  }
+
+  const loginTenantMatches = (entity: any): boolean => {
+    if (!requestedTenant) return true;
+    const entityTenant = String(entity?.madrasahId || entity?.madrasahSlug || 'default');
+    return entityTenant === String(requestedTenant.id) ||
+      entityTenant.toLowerCase() === String(requestedTenant.slug || '').toLowerCase();
+  };
+
   if (!username || !password) {
     return res.status(400).json({ success: false, message: "Username dan password wajib diisi." });
   }
@@ -4359,6 +4384,7 @@ app.post("/api/login", async (req, res) => {
 
   // 2. Check Registered Madrasah Admin
   const foundMadrasah = madrasahs.find(m => 
+    (!requestedTenant || String(m.id) === String(requestedTenant.id) || String(m.slug).toLowerCase() === String(requestedTenant.slug || '').toLowerCase()) &&
     (String(m.adminUser || '').toLowerCase() === uLower || String(m.slug || '').toLowerCase() === uLower) &&
     verifyPassword(p, String(m.adminPass))
   );
@@ -4396,6 +4422,7 @@ app.post("/api/login", async (req, res) => {
       : "";
 
   if (
+    (!requestedTenant || String(requestedTenant.id) === 'default' || String(requestedTenant.slug) === 'default') &&
     adminPassVal &&
     (
       uLower === "admin" ||
@@ -4439,7 +4466,7 @@ app.post("/api/login", async (req, res) => {
   }
 
   // 4. Check Teachers
-  const teacher = teachers.find(t => (String(t.username || '').toLowerCase() === uLower || String(t.nip || '').toLowerCase() === uLower) && verifyPassword(p, String(t.password)));
+  const teacher = teachers.find(t => loginTenantMatches(t) && (String(t.username || '').toLowerCase() === uLower || String(t.nip || '').toLowerCase() === uLower) && verifyPassword(p, String(t.password)));
   if (teacher) {
     const teacherUser = {
       id: teacher.id,
@@ -4460,8 +4487,10 @@ app.post("/api/login", async (req, res) => {
 
   // 5. Check Students
   const studentCandidate = students.find(s =>
-    String(s.username || '').toLowerCase() === uLower ||
-    String(s.nis || '').toLowerCase() === uLower
+    loginTenantMatches(s) && (
+      String(s.username || '').toLowerCase() === uLower ||
+      String(s.nis || '').toLowerCase() === uLower
+    )
   );
   const student = studentCandidate &&
     await verifyPasswordAsync(p, String(studentCandidate.password))
