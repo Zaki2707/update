@@ -2002,13 +2002,24 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                     }
                                                 });
 
-                                                const totalAnsweredCount = (currentSession && currentSession.answeredCount !== undefined && currentSession.answeredCount > 0)
-                                                    ? currentSession.answeredCount
-                                                    : (answeredPGCount + answeredEssayCount);
+                                                // Completed attempts must show progress from authoritative stored answers,
+                                                // not only from a possibly stale local question package.
+                                                const storedAnsweredCount = studentAnswers
+                                                    ? Object.values(studentAnswers).filter(value => value !== undefined && value !== null && String(value).trim() !== '').length
+                                                    : 0;
+                                                const gradeTotalQuestions = gradeObj
+                                                    ? (Number(gradeObj.totalPGCount || 0) + Number(gradeObj.totalEssayCount || 0))
+                                                    : 0;
+
+                                                const totalAnsweredCount = (isCompleted && storedAnsweredCount > 0)
+                                                    ? storedAnsweredCount
+                                                    : ((currentSession && currentSession.answeredCount !== undefined && currentSession.answeredCount > 0)
+                                                        ? currentSession.answeredCount
+                                                        : Math.max(storedAnsweredCount, answeredPGCount + answeredEssayCount));
 
                                                 const totalQuestionsCount = (currentSession && currentSession.totalQuestions)
                                                     ? currentSession.totalQuestions
-                                                    : stQuestions.length;
+                                                    : (stQuestions.length || gradeTotalQuestions || storedAnsweredCount);
 
                                                 const isCurrentlyWorking = !isCompleted && Boolean(
                                                     (currentSession && (currentSession.status === 'active' || (currentSession.timeLeft !== undefined && currentSession.timeLeft > 0) || (currentSession.answeredCount && currentSession.answeredCount > 0))) ||
@@ -2077,7 +2088,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                                 <i class="fa-solid fa-circle-check text-[9px] text-emerald-600"></i>
                                                                 <span>Selesai</span>
                                                             </span>
-                                                            <span class="text-[9px] text-emerald-600/80 font-medium mt-0.5">Ujian Ditutup</span>
+                                                            <span class="text-[9px] text-emerald-600/80 font-medium mt-0.5">${totalAnsweredCount}/${totalQuestionsCount} Soal Terjawab</span>
                                                         </div>
                                                     `;
                                                 } else if (isCurrentlyWorking) {
@@ -2107,7 +2118,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                     pgScoreDisplay = `
                                                         <div class="flex flex-col items-center justify-center">
                                                             <span class="font-extrabold text-slate-800 text-xs">${score}%</span>
-                                                            <span class="text-[9px] text-slate-400 mt-0.5">${gradeObj?.correctPGCount !== undefined ? gradeObj.correctPGCount : correctPGCount}/${pgQuestions.length} Benar</span>
+                                                            <span class="text-[9px] text-slate-400 mt-0.5">${gradeObj?.correctPGCount !== undefined ? gradeObj.correctPGCount : correctPGCount}/${gradeObj?.totalPGCount !== undefined ? gradeObj.totalPGCount : pgQuestions.length} Benar</span>
                                                         </div>
                                                     `;
                                                 } else if (isCurrentlyWorking) {
@@ -7116,7 +7127,8 @@ async function refreshEvaluasiData(classId, examId) {
             if (monRes.studentExamGrades) appState.studentExamGrades = { ...(appState.studentExamGrades || {}), ...monRes.studentExamGrades };
             if (monRes.studentExamAnswers) appState.studentExamAnswers = { ...(appState.studentExamAnswers || {}), ...monRes.studentExamAnswers };
             if (monRes.activeExamSessions) appState.activeExamSessions = { ...(appState.activeExamSessions || {}), ...monRes.activeExamSessions };
-            if (monRes.studentQuestions) appState.studentExamQuestions = { ...(appState.studentExamQuestions || {}), ...monRes.studentQuestions };
+            const serverStudentQuestions = monRes.studentExamQuestions || monRes.studentQuestions;
+            if (serverStudentQuestions) appState.studentExamQuestions = { ...(appState.studentExamQuestions || {}), ...serverStudentQuestions };
             safeSetStorage('madrasah_completed_exams', appState.completedExams || {});
             safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades || {});
             safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers || {});
