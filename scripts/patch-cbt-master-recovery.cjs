@@ -23,7 +23,7 @@ text = replaceExact(text, oldResume, newResume, 'recover master on resume');
 
 const oldFinishMaster = `  const masterQuestions = studentExamMasterQuestions[key];\n  if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {\n    return res.status(409).json({ success: false, message: \"Kunci soal server tidak tersedia. Finalisasi ditolak agar nilai tidak salah; muat ulang paket soal lalu coba lagi.\" });\n  }`;
 
-const newFinishMaster = `  let masterQuestions = studentExamMasterQuestions[key];\n  if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {\n    masterQuestions = await recoverMissingExamMasterQuestions(key, context.exam);\n  }\n  if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {\n    return res.status(409).json({\n      success: false,\n      message: \"Kunci soal server tidak tersedia dan tidak dapat dipulihkan dengan aman. Jawaban siswa tetap tersimpan; finalisasi dibatalkan agar nilai tidak salah.\"\n    });\n  }`;
+const newFinishMaster = `  let masterQuestions = studentExamMasterQuestions[key];\n  if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {\n    masterQuestions = await recoverMissingExamMasterQuestions(key, context.exam);\n  }\n  if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {\n    return res.status(409).json({\n      success: false,\n      message: \"Kunci soal server tidak tersedia. Finalisasi ditolak karena kunci tidak dapat dipulihkan dengan aman; jawaban siswa tetap tersimpan agar nilai tidak salah.\"\n    });\n  }`;
 
 text = replaceExact(text, oldFinishMaster, newFinishMaster, 'recover master on finish');
 
