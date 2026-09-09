@@ -1,0 +1,55 @@
+name: One-shot Storage LKPD Theme Batch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-shot-storage-lkpd-theme-batch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - name: Apply batch patch
+        run: python scripts/patch-storage-lkpd-theme-batch.py
+      - name: Install dependencies
+        run: npm ci
+      - name: Security audit
+        run: npm run security:audit
+      - name: TypeScript check
+        run: npm run lint
+      - name: Production build
+        shell: bash
+        run: |
+          rm -rf dist
+          npm run build
+          test -f dist/server.cjs
+          git diff --check
+      - name: Verify source-public parity
+        shell: bash
+        run: |
+          cmp -s src/lkpdModule.js public/lkpdModule.js
+          cmp -s src/settingsAndMisc.js public/settingsAndMisc.js
+          cmp -s src/themePackageModule.js public/themePackageModule.js
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server.ts src/main.tsx src/lkpdModule.js public/lkpdModule.js src/settingsAndMisc.js public/settingsAndMisc.js src/themePackageModule.js public/themePackageModule.js
+          git diff --cached --quiet && exit 0
+          git commit -m 'feat: finalize smart cleanup lkpd assets and theme packages'
+          git push origin HEAD:main
