@@ -221,3 +221,14 @@ Jalankan kembali helper dengan password dummy yang benar.
 ## Setelah load test selesai
 
 800 siswa dummy tidak perlu dihapus langsung. Simpan sampai seluruh rangkaian 20 -> 800, recovery, dan final submission selesai. Setelah semua tes selesai dan hasilnya sudah dicatat, baru hapus data dummy jika memang tidak lagi diperlukan.
+
+
+## Recovery akun dummy setelah restore backup lama
+
+Backup lama dapat tidak membawa credential. Setelah backend terbaru ter-deploy, jalankan:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\reset-loadtest-passwords.ps1 -Tenant default
+```
+
+Script hanya memilih akun dengan pola username `loadtestNNN` dan NIS `LTNNN`. Proses dibatalkan otomatis bila jumlah target tidak sama dengan `ExpectedCount` (default 800). Password baru diminta secara tersembunyi dan tidak dicetak ke terminal.

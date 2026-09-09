@@ -932,6 +932,9 @@ function searchUserAccounts(query = '') {
                 </div>
                 <div class="flex items-center space-x-2">
                     <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-lg border ${u.badgeColor}">${u.roleLabel}</span>
+                    <button type="button" onclick="openResetPasswordModal('${u.id}', '${u.type}')" class="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold rounded-xl transition flex items-center space-x-1">
+                        <i class="fa-solid fa-key text-[10px]"></i><span>Reset Password</span>
+                    </button>
                     <button type="button" onclick="openEditRoleModal('${u.id}', '${u.type}', '${escapedName}')" class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-semibold rounded-xl transition flex items-center space-x-1">
                         <i class="fa-solid fa-user-gear text-[10px]"></i><span>Edit Peran</span>
                     </button>
@@ -939,6 +942,120 @@ function searchUserAccounts(query = '') {
             </div>
         `;
     }).join('');
+}
+
+function escapeAccountHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+function generateAdminTemporaryPassword() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+    const bytes = new Uint32Array(14);
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 0xffffffff);
+    let result = 'Mb#';
+    for (let i = 0; i < bytes.length; i++) result += alphabet[bytes[i] % alphabet.length];
+    return result;
+}
+
+function openResetPasswordModal(userId, currentType) {
+    const modal = document.getElementById('modal-container');
+    if (!modal) return;
+    const source = currentType === 'teacher' ? (appState.teachers || []) : (appState.students || []);
+    const user = source.find(item => String(item.id) === String(userId));
+    if (!user) {
+        showToast('Akun tidak ditemukan.', 'error');
+        return;
+    }
+    const generated = generateAdminTemporaryPassword();
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-fade-in">
+            <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-4">
+                <div class="flex justify-between items-center">
+                    <h3 class="font-bold text-slate-800">Reset Password Akun</h3>
+                    <button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+                <div class="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-800">
+                    Password lama tidak dapat ditampilkan karena disimpan sebagai hash. Admin dapat menetapkan password baru dan melihatnya sekali setelah reset.
+                </div>
+                <div>
+                    <p class="text-xs text-slate-400 font-semibold uppercase">Akun</p>
+                    <p class="text-sm font-bold text-slate-800">${escapeAccountHtml(user.name || user.username || user.id)}</p>
+                    <p class="text-xs font-mono text-slate-500">${escapeAccountHtml(user.username || '')}</p>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold uppercase text-slate-500">Password Baru</label>
+                    <div class="flex gap-2">
+                        <input id="admin-reset-password-input" type="text" value="${escapeAccountHtml(generated)}" autocomplete="new-password" class="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-mono">
+                        <button type="button" onclick="document.getElementById('admin-reset-password-input').value = generateAdminTemporaryPassword()" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-semibold">Acak</button>
+                    </div>
+                    <p class="text-[10px] text-slate-400">Password hanya terlihat pada proses reset ini dan tidak disimpan sebagai plaintext.</p>
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" onclick="closeModal()" class="px-4 py-2 bg-slate-100 rounded-xl text-xs font-semibold">Batal</button>
+                    <button type="button" onclick="resetAndShowUserPassword('${escapeAccountHtml(userId)}', '${escapeAccountHtml(currentType)}')" class="px-4 py-2 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700">Reset Password</button>
+                </div>
+            </div>
+        </div>`;
+}
+
+async function resetAndShowUserPassword(userId, currentType) {
+    const input = document.getElementById('admin-reset-password-input');
+    const newPassword = input ? String(input.value || '').trim() : '';
+    if (newPassword.length < 8) {
+        showToast('Password baru minimal 8 karakter.', 'error');
+        return;
+    }
+    const endpoint = currentType === 'teacher'
+        ? `/api/teachers/${encodeURIComponent(userId)}`
+        : `/api/students/${encodeURIComponent(userId)}`;
+    try {
+        const response = await fetch(endpoint, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: newPassword })
+        });
+        let data = null;
+        try { data = await response.json(); } catch (_) {}
+        if (!response.ok || !data || data.success === false) {
+            throw new Error((data && data.message) || `HTTP ${response.status}`);
+        }
+
+        const modal = document.getElementById('modal-container');
+        if (modal) {
+            modal.innerHTML = `
+                <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-fade-in">
+                    <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-4">
+                        <div class="text-center space-y-2">
+                            <i class="fa-solid fa-circle-check text-emerald-600 text-3xl"></i>
+                            <h3 class="font-bold text-slate-800">Password Berhasil Direset</h3>
+                            <p class="text-xs text-slate-500">Salin password ini sekarang. Setelah modal ditutup, password lama tidak dapat ditampilkan kembali.</p>
+                        </div>
+                        <div class="p-4 bg-slate-900 text-white rounded-2xl font-mono text-center text-sm break-all" id="admin-reset-password-result">${escapeAccountHtml(newPassword)}</div>
+                        <div class="flex justify-center gap-2">
+                            <button type="button" onclick="copyAdminResetPassword()" class="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">Salin Password</button>
+                            <button type="button" onclick="closeModal()" class="px-4 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-semibold">Tutup</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+        showToast('Password akun berhasil direset.', 'success');
+    } catch (err) {
+        showToast('Gagal reset password: ' + err.message, 'error');
+    }
+}
+
+async function copyAdminResetPassword() {
+    const el = document.getElementById('admin-reset-password-result');
+    if (!el) return;
+    try {
+        await navigator.clipboard.writeText(el.textContent || '');
+        showToast('Password disalin.', 'success');
+    } catch (_) {
+        showToast('Tidak dapat menyalin otomatis. Silakan salin manual.', 'error');
+    }
 }
 
 function openEditRoleModal(userId, currentType, userName) {
@@ -3874,7 +3991,7 @@ async function backupSystemData() {
         // Build backup payload with selected components
         const isOfflineBackupMode = (window.isOfflineMode === true || appState.isOfflineMode === true);
         const backupData = {
-            version: '2.1',
+            version: '2.2',
             timestamp: new Date().toISOString(),
             schoolName: schoolName,
             students: studentsList,
@@ -3897,6 +4014,43 @@ async function backupSystemData() {
             schoolLocationSettings: incSettings ? (appState.schoolLocationSettings || {}) : {},
             ...(isOfflineBackupMode ? { localStorageDump: {} } : {})
         };
+
+        // Disaster-recovery backup: merge tenant-scoped credential hashes from the server.
+        // appState intentionally excludes password fields.
+        if (incStudents) {
+            if (btn) btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Mengamankan credential akun...</span>`;
+            const credentialResponse = await fetch('/api/system/backup-credentials', {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                cache: 'no-store'
+            });
+            let credentialData = null;
+            try { credentialData = await credentialResponse.json(); } catch (_) {}
+            if (!credentialResponse.ok || !credentialData || credentialData.success === false) {
+                const detail = credentialData && credentialData.message ? credentialData.message : `HTTP ${credentialResponse.status}`;
+                throw new Error('Gagal mengambil credential backup: ' + detail);
+            }
+
+            const mergeAuth = (list, credentials) => {
+                const byId = new Map((credentials || []).map(c => [String(c.id || ''), c]));
+                const byUsername = new Map((credentials || []).filter(c => c.username).map(c => [String(c.username).toLowerCase(), c]));
+                return (list || []).map(item => {
+                    const record = byId.get(String(item.id || '')) || byUsername.get(String(item.username || '').toLowerCase());
+                    return record && record.authHash ? { ...item, password: record.authHash } : item;
+                });
+            };
+
+            backupData.students = mergeAuth(backupData.students, credentialData.students);
+            backupData.teachers = mergeAuth(backupData.teachers, credentialData.teachers);
+            backupData.credentialBackup = {
+                version: credentialData.version || 'credential-backup-v1',
+                hashOnly: true,
+                studentCount: Array.isArray(credentialData.students) ? credentialData.students.length : 0,
+                teacherCount: Array.isArray(credentialData.teachers) ? credentialData.teachers.length : 0,
+                missingStudents: Number(credentialData.missingStudents || 0),
+                missingTeachers: Number(credentialData.missingTeachers || 0)
+            };
+        }
 
         // Browser cache is not part of an online/Cloud Run backup.
         // Keep the legacy dump only for true offline installations.
@@ -4029,6 +4183,9 @@ async function restoreSystemData(event) {
         let teacherCount = restored.teachers ? restored.teachers.length : 0;
         let classCount = restored.classes ? restored.classes.length : 0;
         let examCount = restored.exams ? restored.exams.length : 0;
+        const missingStudentCredentialCount = restored.students ? restored.students.filter(item => !item || !item.password).length : 0;
+        const missingTeacherCredentialCount = restored.teachers ? restored.teachers.filter(item => !item || !item.password).length : 0;
+        const missingCredentialCount = missingStudentCredentialCount + missingTeacherCredentialCount;
 
         const cbStudents = document.getElementById('restore-cb-students');
         const cbAttendance = document.getElementById('restore-cb-attendance');
@@ -4055,6 +4212,7 @@ async function restoreSystemData(event) {
                     ${incCbt ? `<p>• Ujian CBT: <strong>${examCount}</strong></p>` : ''}
                     ${data.timestamp ? `<p>• Waktu Backup: <strong>${new Date(data.timestamp).toLocaleString('id-ID')}</strong></p>` : ''}
                 </div>
+                ${incStudents && missingCredentialCount > 0 ? `<p class="text-xs text-amber-700 font-semibold bg-amber-50 border border-amber-200 rounded-xl p-2.5">⚠ Backup ini tidak memiliki credential untuk <strong>${missingCredentialCount}</strong> akun. Data tetap dapat dipulihkan, tetapi akun baru tersebut perlu di-reset password oleh admin.</p>` : ''}
                 <p class="text-xs text-rose-600 font-semibold">Tindakan ini akan memulihkan data ke server dan memperbarui aplikasi.</p>
             </div>
         `;
@@ -4557,6 +4715,10 @@ window.updateSettingsLogoPreview = updateSettingsLogoPreview;
 window.searchUserAccounts = searchUserAccounts;
 window.openEditRoleModal = openEditRoleModal;
 window.saveUserRole = saveUserRole;
+window.openResetPasswordModal = openResetPasswordModal;
+window.resetAndShowUserPassword = resetAndShowUserPassword;
+window.generateAdminTemporaryPassword = generateAdminTemporaryPassword;
+window.copyAdminResetPassword = copyAdminResetPassword;
 
 
 // Automatically expose functions and state to window for global inline handlers
@@ -4568,6 +4730,10 @@ Object.assign(window, {
   searchUserAccounts,
   openEditRoleModal,
   saveUserRole,
+  openResetPasswordModal,
+  resetAndShowUserPassword,
+  generateAdminTemporaryPassword,
+  copyAdminResetPassword,
   selectPresetLogoIcon,
   setQuickLogoColor,
   handleLogoURLInput,
