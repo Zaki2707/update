@@ -23,28 +23,17 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           p = Path('src/assessmentModule.js')
-          s = p.read_text(encoding='utf-8')
-          old = """        } else {
-            row.style.display = 'none';
-        }
-    }
-}
-
-
-function evaluasiGetSelection() {"""
-          new = """        } else {
-            row.style.display = 'none';
-        }
-    }
-    evaluasiUpdateBulkControls();
-}
-
-
-function evaluasiGetSelection() {"""
-          count = s.count(old)
-          if count != 1:
-              raise SystemExit(f'Expected exactly one filter tail, found {count}')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          lines = p.read_text(encoding='utf-8').splitlines()
+          helper_idx = next(i for i, line in enumerate(lines) if line.strip() == 'function evaluasiGetSelection() {')
+          close_idx = helper_idx - 1
+          while close_idx >= 0 and not lines[close_idx].strip():
+              close_idx -= 1
+          if lines[close_idx].strip() != '}':
+              raise SystemExit('Could not locate filterEvaluasiStudentTable closing brace')
+          if close_idx > 0 and lines[close_idx - 1].strip() == 'evaluasiUpdateBulkControls();':
+              raise SystemExit('Selection refresh is already present')
+          lines.insert(close_idx, '    evaluasiUpdateBulkControls();')
+          p.write_text('\n'.join(lines) + '\n', encoding='utf-8')
           PY
 
       - name: Setup Node
