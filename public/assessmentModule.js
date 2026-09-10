@@ -1913,6 +1913,42 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                     </div>
                                 </div>
 
+
+                      <!-- Bulk Actions for Selected Students -->
+                      <div id="evaluasi-bulk-actions" class="bg-indigo-50/70 border border-indigo-200/80 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                          <div class="flex items-center gap-3">
+                              <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+                                  <i class="fa-solid fa-list-check"></i>
+                              </div>
+                              <div>
+                                  <p class="font-extrabold text-indigo-950 text-xs">Proses Siswa Terpilih</p>
+                                  <p class="text-[10px] text-indigo-700"><span id="evaluasi-selected-count" class="font-black">${evaluasiGetSelection().size}</span> siswa dipilih. Centang siswa pada tabel atau gunakan Pilih Semua.</p>
+                              </div>
+                          </div>
+                          <div class="flex flex-wrap gap-2">
+                              <button type="button" data-evaluasi-bulk onclick="bulkResetEvaluasiSelected()" class="px-3 py-2 bg-slate-700 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold text-[10px] flex items-center gap-1.5 transition" ${evaluasiGetSelection().size === 0 ? 'disabled' : ''}>
+                                  <i class="fa-solid fa-rotate-left"></i><span>Reset Ujian</span>
+                              </button>
+                              <button type="button" data-evaluasi-bulk onclick="bulkForceFinishEvaluasiSelected()" class="px-3 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold text-[10px] flex items-center gap-1.5 transition" ${evaluasiGetSelection().size === 0 ? 'disabled' : ''}>
+                                  <i class="fa-solid fa-flag-checkered"></i><span>Force Finish</span>
+                              </button>
+                              ${hasEssay ? `
+                              <button type="button" data-evaluasi-bulk onclick="bulkKoreksiEvaluasiSelected('keyword')" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold text-[10px] flex items-center gap-1.5 transition" ${evaluasiGetSelection().size === 0 ? 'disabled' : ''}>
+                                  <i class="fa-solid fa-calculator"></i><span>Koreksi Non-AI</span>
+                              </button>
+                              <button type="button" data-evaluasi-bulk onclick="bulkKoreksiEvaluasiSelected('ai')" class="px-3 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold text-[10px] flex items-center gap-1.5 transition" ${evaluasiGetSelection().size === 0 ? 'disabled' : ''}>
+                                  <i class="fa-solid fa-wand-magic-sparkles"></i><span>Koreksi AI</span>
+                              </button>
+                              ` : ''}
+                              <button type="button" data-evaluasi-bulk onclick="downloadSelectedEvaluasiAnswers()" class="px-3 py-2 bg-indigo-700 hover:bg-indigo-800 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold text-[10px] flex items-center gap-1.5 transition" ${evaluasiGetSelection().size === 0 ? 'disabled' : ''}>
+                                  <i class="fa-solid fa-download"></i><span>Download Jawaban</span>
+                              </button>
+                              <button type="button" data-evaluasi-bulk onclick="evaluasiClearSelection(); renderAssessmentModule(document.getElementById('view-container'), 'evaluasi', appState.evaluasiSelectedExamId || null)" class="px-3 py-2 bg-white hover:bg-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed text-indigo-800 border border-indigo-200 rounded-xl font-bold text-[10px] flex items-center gap-1.5 transition" ${evaluasiGetSelection().size === 0 ? 'disabled' : ''}>
+                                  <i class="fa-solid fa-xmark"></i><span>Batal Pilih</span>
+                              </button>
+                          </div>
+                      </div>
+
                                 <!-- Summary Cards -->
                                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                                     <div class="bg-blue-50/60 border border-blue-200/80 rounded-2xl p-3.5 flex items-center justify-between">
@@ -1958,6 +1994,9 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                     <table id="evaluasi-student-table" class="w-full text-xs text-left text-slate-600">
                                         <thead class="text-[10px] uppercase tracking-wider text-slate-400 bg-slate-50/60 border-b">
                                             <tr>
+                                                <th class="px-3 py-3.5 font-bold text-center w-10">
+                                                    <input type="checkbox" id="evaluasi-select-all" onchange="evaluasiToggleSelectAll(this.checked)" class="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer" title="Pilih semua siswa yang sedang terlihat">
+                                                </th>
                                                 <th class="px-4 py-3.5 font-bold text-center w-12">No</th>
                                                 <th class="px-4 py-3.5 font-bold">Nama Siswa</th>
                                                 <th class="px-4 py-3.5 font-bold text-center w-28">NIS</th>
@@ -2266,7 +2305,10 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                 }
 
                                                 return `
-                                                    <tr class="hover:bg-slate-50/60 transition">
+                                                    <tr class="hover:bg-slate-50/60 transition" data-evaluasi-student-id="${st.id}">
+                                                        <td class="px-3 py-4 text-center">
+                                                            <input type="checkbox" class="evaluasi-student-checkbox w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer" data-student-id="${st.id}" onchange="evaluasiToggleStudent('${st.id}', this.checked)" ${evaluasiGetSelection().has(String(st.id)) ? 'checked' : ''}>
+                                                        </td>
                                                         <td class="px-4 py-4 text-center font-bold text-slate-400">${idx + 1}</td>
                                                         <td class="px-4 py-4">
                                                             <div class="flex items-center space-x-2.5">
@@ -2284,7 +2326,14 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                         <td class="px-4 py-4 text-center">${pgScoreDisplay}</td>
                                                         <td class="px-4 py-4 text-center">${essayScoreDisplay}</td>
                                                         <td class="px-4 py-4 text-center bg-emerald-50/10 font-bold">${finalScoreDisplay}</td>
-                                                        <td class="px-4 py-4 text-center">${actionButtonsHTML}</td>
+                                                        <td class="px-4 py-4 text-center">
+                                                            <div class="flex flex-col items-center gap-1.5">
+                                                                ${actionButtonsHTML}
+                                                                <button type="button" onclick="openPreviewJawabanEvaluasi('${st.id}')" class="w-28 px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-xl text-[10px] flex items-center justify-center gap-1.5 transition cursor-pointer border border-indigo-200" title="Preview jawaban siswa tanpa mengubah nilai">
+                                                                    <i class="fa-solid fa-eye"></i><span>Preview Jawaban</span>
+                                                                </button>
+                                                            </div>
+                                                        </td>
                                                     </tr>
                                                 `;
                                             }).join('')}
@@ -6520,6 +6569,7 @@ function onEvaluasiFilterChange() {
     const examId = document.getElementById('eval-exam-select').value;
     appState.evaluasiSelectedClassId = classId;
     appState.evaluasiSelectedExamId = examId;
+    evaluasiClearSelection();
     
     // Refresh evaluation view
     renderAssessmentModule(document.getElementById('view-container'), 'evaluasi', null);
@@ -6542,6 +6592,261 @@ function filterEvaluasiStudentTable() {
             row.style.display = 'none';
         }
     }
+}
+
+
+function evaluasiGetSelection() {
+    if (!(window.__evaluasiSelectedStudentIds instanceof Set)) {
+        window.__evaluasiSelectedStudentIds = new Set();
+    }
+    return window.__evaluasiSelectedStudentIds;
+}
+
+function evaluasiGetSelectedIds() {
+    return Array.from(evaluasiGetSelection()).map(String);
+}
+
+function evaluasiUpdateBulkControls() {
+    const count = evaluasiGetSelection().size;
+    const countEl = document.getElementById('evaluasi-selected-count');
+    if (countEl) countEl.textContent = String(count);
+    document.querySelectorAll('[data-evaluasi-bulk]').forEach(btn => {
+        btn.disabled = count === 0;
+    });
+    const visibleBoxes = Array.from(document.querySelectorAll('.evaluasi-student-checkbox')).filter(cb => {
+        const row = cb.closest('tr');
+        return row && row.style.display !== 'none';
+    });
+    const selectAll = document.getElementById('evaluasi-select-all');
+    if (selectAll) {
+        const checkedVisible = visibleBoxes.filter(cb => cb.checked).length;
+        selectAll.checked = visibleBoxes.length > 0 && checkedVisible === visibleBoxes.length;
+        selectAll.indeterminate = checkedVisible > 0 && checkedVisible < visibleBoxes.length;
+    }
+}
+
+function evaluasiToggleStudent(studentId, checked) {
+    const set = evaluasiGetSelection();
+    const id = String(studentId);
+    if (checked) set.add(id); else set.delete(id);
+    evaluasiUpdateBulkControls();
+}
+
+function evaluasiToggleSelectAll(checked) {
+    const set = evaluasiGetSelection();
+    document.querySelectorAll('.evaluasi-student-checkbox').forEach(cb => {
+        const row = cb.closest('tr');
+        if (!row || row.style.display === 'none') return;
+        cb.checked = Boolean(checked);
+        const id = String(cb.dataset.studentId || '');
+        if (!id) return;
+        if (checked) set.add(id); else set.delete(id);
+    });
+    evaluasiUpdateBulkControls();
+}
+
+function evaluasiClearSelection() {
+    evaluasiGetSelection().clear();
+    document.querySelectorAll('.evaluasi-student-checkbox').forEach(cb => { cb.checked = false; });
+    evaluasiUpdateBulkControls();
+}
+
+async function evaluasiRunConcurrent(ids, worker, concurrency = 4) {
+    const queue = [...ids];
+    const results = [];
+    const count = Math.max(1, Math.min(Number(concurrency) || 4, 5, queue.length || 1));
+    const runners = Array.from({ length: count }, async () => {
+        while (queue.length > 0) {
+  const id = queue.shift();
+  try {
+      results.push(await worker(id));
+  } catch (error) {
+      results.push({ id, ok: false, error });
+  }
+        }
+    });
+    await Promise.all(runners);
+    return results;
+}
+
+function evaluasiConfirmBulk(message, callback) {
+    if (typeof showConfirmModal === 'function') {
+        showConfirmModal(message, callback);
+    } else if (window.confirm(String(message).replace(/<[^>]+>/g, ''))) {
+        callback();
+    }
+}
+
+function evaluasiClearLocalAttempt(studentId, examId) {
+    const keys = [String(studentId) + '_' + String(examId)];
+    const maps = [
+        'completedExams', 'forceFinishedExams', 'studentExamAnswers', 'studentExamQuestions',
+        'studentExamGrades', 'activeExamSessions', 'studentTabSwitches', 'studentOutOfTab',
+        'blockedStudents', 'studentLivecamFrames'
+    ];
+    maps.forEach(name => {
+        if (!appState[name]) return;
+        keys.forEach(key => delete appState[name][key]);
+        if (name === 'blockedStudents') delete appState[name][String(examId) + '_' + String(studentId)];
+    });
+    safeSetStorage('madrasah_completed_exams', appState.completedExams || {});
+    safeSetStorage('madrasah_force_finished_exams', appState.forceFinishedExams || {});
+    safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers || {});
+    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions || {});
+    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades || {});
+    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions || {});
+}
+
+async function evaluasiFinishBulkRefresh(message, type = 'success') {
+    try { await syncEvaluasiStateFromServer(); } catch (_) {}
+    evaluasiClearSelection();
+    const container = document.getElementById('view-container');
+    if (container) renderAssessmentModule(container, 'evaluasi', appState.evaluasiSelectedExamId || null);
+    if (message) showToast(message, type);
+}
+
+function bulkResetEvaluasiSelected() {
+    const ids = evaluasiGetSelectedIds();
+    const examId = appState.evaluasiSelectedExamId;
+    if (!examId || ids.length === 0) return showToast('Pilih siswa terlebih dahulu.', 'warning');
+    evaluasiConfirmBulk(`Reset ujian untuk <b>${ids.length} siswa terpilih</b>? Jawaban, status, pelanggaran, dan nilai attempt tersebut akan dihapus sehingga siswa dapat mengulang dari awal.`, async () => {
+        showToast(`Memproses reset ${ids.length} siswa...`, 'info');
+        const results = await evaluasiRunConcurrent(ids, async id => {
+  const response = await fetch('/api/reset-student-exam', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId: id, examId })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success === false) return { id, ok: false, message: data.message || `HTTP ${response.status}` };
+  evaluasiClearLocalAttempt(id, examId);
+  return { id, ok: true };
+        }, 4);
+        const ok = results.filter(r => r && r.ok).length;
+        const fail = results.length - ok;
+        await evaluasiFinishBulkRefresh(`Reset selesai: ${ok} berhasil${fail ? `, ${fail} gagal` : ''}.`, fail ? 'warning' : 'success');
+    });
+}
+
+function bulkForceFinishEvaluasiSelected() {
+    const ids = evaluasiGetSelectedIds();
+    const examId = appState.evaluasiSelectedExamId;
+    if (!examId || ids.length === 0) return showToast('Pilih siswa terlebih dahulu.', 'warning');
+    evaluasiConfirmBulk(`Force Finish untuk <b>${ids.length} siswa terpilih</b>? Server hanya mempertahankan dan menilai jawaban yang sudah tersimpan; jawaban kosong tidak akan dibuat-buat.`, async () => {
+        showToast(`Memproses Force Finish ${ids.length} siswa...`, 'info');
+        const completed = appState.completedExams || {};
+        const results = await evaluasiRunConcurrent(ids, async id => {
+  const key = String(id) + '_' + String(examId);
+  if (completed[key]) return { id, ok: true, skipped: true };
+  const response = await fetch('/api/exam/attempt/finish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId: id, examId, forceFinish: true })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 409 && /sudah/i.test(String(data.message || ''))) return { id, ok: true, skipped: true };
+  if (!response.ok || !data.success) return { id, ok: false, message: data.message || `HTTP ${response.status}` };
+  return { id, ok: true };
+        }, 4);
+        const ok = results.filter(r => r && r.ok && !r.skipped).length;
+        const skipped = results.filter(r => r && r.skipped).length;
+        const fail = results.length - ok - skipped;
+        await evaluasiFinishBulkRefresh(`Force Finish selesai: ${ok} berhasil${skipped ? `, ${skipped} dilewati (sudah selesai)` : ''}${fail ? `, ${fail} gagal` : ''}.`, fail ? 'warning' : 'success');
+    });
+}
+
+function bulkKoreksiEvaluasiSelected(method = 'ai') {
+    const ids = evaluasiGetSelectedIds();
+    const classId = appState.evaluasiSelectedClassId;
+    const examId = appState.evaluasiSelectedExamId;
+    if (!classId || !examId || ids.length === 0) return showToast('Pilih siswa terlebih dahulu.', 'warning');
+    const ex = (appState.exams || []).find(e => String(e.id) === String(examId));
+    const hasEssay = ex && getExamQuestions(ex).some(q => q.type === 'esay' || q.type === 'essay');
+    if (!hasEssay) return showToast('Ujian ini tidak memiliki soal esai. Nilai pilihan ganda sudah dinilai otomatis oleh server.', 'info');
+    const isNonAI = method === 'keyword';
+    evaluasiConfirmBulk(`Jalankan <b>${isNonAI ? 'Koreksi Non-AI' : 'Koreksi AI'}</b> untuk ${ids.length} siswa terpilih?`, async () => {
+        showToast(`Memproses ${isNonAI ? 'Koreksi Non-AI' : 'Koreksi AI'} untuk ${ids.length} siswa...`, 'info');
+        const results = await evaluasiRunConcurrent(ids, async id => {
+  const payload = { classId, examId, studentId: id };
+  if (isNonAI) payload.method = 'keyword';
+  const response = await fetch('/api/gemini/auto-koreksi', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) return { id, ok: false, message: data.message || `HTTP ${response.status}` };
+  return { id, ok: true };
+        }, isNonAI ? 4 : 3);
+        const ok = results.filter(r => r && r.ok).length;
+        const fail = results.length - ok;
+        await evaluasiFinishBulkRefresh(`${isNonAI ? 'Koreksi Non-AI' : 'Koreksi AI'} selesai: ${ok} berhasil${fail ? `, ${fail} gagal` : ''}.`, fail ? 'warning' : 'success');
+    });
+}
+
+function evaluasiEscapeHtml(value) {
+    return String(value === undefined || value === null ? '' : value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function openPreviewJawabanEvaluasi(studentId) {
+    const examId = appState.evaluasiSelectedExamId;
+    const st = (appState.students || []).find(s => String(s.id) === String(studentId));
+    const ex = (appState.exams || []).find(e => String(e.id) === String(examId));
+    if (!st || !ex) return showToast('Data siswa atau ujian tidak ditemukan.', 'error');
+    const key = String(st.id) + '_' + String(examId);
+    const allAnswers = appState.studentExamAnswers || JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
+    const activeSessions = appState.activeExamSessions || JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
+    const answers = allAnswers[key] || activeSessions[key]?.answers || {};
+    const questions = getExamQuestions(ex, st.id) || [];
+    const answered = questions.filter(q => {
+        const val = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
+        return val !== undefined && val !== null && String(val).trim() !== '';
+    }).length;
+    const items = questions.length ? questions.map((q, idx) => {
+        const raw = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
+        const has = raw !== undefined && raw !== null && String(raw).trim() !== '';
+        const isEssay = q.type === 'esay' || q.type === 'essay';
+        let responseHtml = '';
+        if (isEssay) {
+  responseHtml = `<div class="mt-3 p-4 bg-amber-50/60 border border-amber-200 rounded-2xl text-xs text-slate-800 whitespace-pre-wrap leading-relaxed">${has ? evaluasiEscapeHtml(raw) : '<span class="text-slate-400 italic">Tidak dijawab</span>'}</div>`;
+        } else {
+  responseHtml = `<div class="mt-3 grid grid-cols-1 gap-2">${(q.options || []).map((opt, oIdx) => {
+      const letter = String.fromCharCode(65 + oIdx);
+      const rawNorm = String(raw ?? '').trim();
+      const selected = rawNorm === String(opt).trim() || rawNorm.toUpperCase() === letter;
+      return `<div class="p-3 rounded-2xl border flex items-center gap-3 text-xs ${selected ? 'bg-indigo-50 border-indigo-400 text-indigo-950 font-bold' : 'bg-slate-50 border-slate-200 text-slate-600'}"><span class="w-7 h-7 rounded-xl flex items-center justify-center shrink-0 ${selected ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'}">${letter}</span><span class="flex-1">${evaluasiEscapeHtml(opt)}</span>${selected ? '<span class="text-[9px] uppercase text-indigo-700">Dipilih</span>' : ''}</div>`;
+  }).join('')}</div>`;
+        }
+        return `<div class="bg-white border border-slate-200 rounded-3xl p-5"><div class="flex items-center justify-between gap-2"><span class="text-[10px] font-black px-2.5 py-1 bg-slate-800 text-white rounded-xl">Soal ${idx + 1}</span><span class="text-[10px] font-bold ${has ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-slate-500 bg-slate-50 border-slate-200'} border px-2.5 py-1 rounded-xl">${has ? 'Terjawab' : 'Kosong'}</span></div><div class="mt-3 text-xs font-bold text-slate-800 leading-relaxed whitespace-pre-wrap">${evaluasiEscapeHtml(q.question || q.text || '')}</div>${responseHtml}</div>`;
+    }).join('') : `<div class="p-8 text-center text-slate-400 text-xs">Paket soal siswa belum tersedia.</div>`;
+
+    const modal = document.getElementById('modal-container');
+    if (!modal) return;
+    modal.innerHTML = `<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-3 sm:p-6"><div class="bg-slate-50 w-full max-w-4xl h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-slate-200"><div class="p-5 bg-white border-b flex items-center justify-between shrink-0"><div><h3 class="font-extrabold text-slate-800 text-sm flex items-center gap-2"><i class="fa-solid fa-eye text-indigo-600"></i> Preview Jawaban: ${evaluasiEscapeHtml(st.name)}</h3><p class="text-[10px] text-slate-500 mt-1">${evaluasiEscapeHtml(ex.title)} &bull; ${answered}/${questions.length} soal terjawab &bull; Mode baca saja</p></div><button type="button" onclick="closeModal()" class="w-9 h-9 rounded-full bg-slate-100 hover:bg-rose-100 text-slate-600"><i class="fa-solid fa-xmark"></i></button></div><div class="px-5 py-3 bg-indigo-50 border-b border-indigo-100 text-[10px] text-indigo-800 font-semibold">Preview menampilkan jawaban yang tersimpan untuk siswa ini, termasuk pilihan ganda. Preview tidak mengubah nilai atau status ujian.</div><div class="flex-1 overflow-y-auto p-5 space-y-4" id="evaluasi-answer-preview-content">${items}</div><div class="p-4 bg-white border-t flex justify-end"><button type="button" onclick="closeModal()" class="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-bold">Tutup</button></div></div></div>`;
+    if (typeof window.renderMathInElementSafely === 'function') window.renderMathInElementSafely(document.getElementById('evaluasi-answer-preview-content'));
+}
+
+function downloadSelectedEvaluasiAnswers() {
+    const selectedIds = evaluasiGetSelectedIds();
+    const classId = appState.evaluasiSelectedClassId;
+    const examId = appState.evaluasiSelectedExamId;
+    const cls = (appState.classes || []).find(c => String(c.id) === String(classId));
+    const ex = (appState.exams || []).find(e => String(e.id) === String(examId));
+    if (!cls || !ex || selectedIds.length === 0) return showToast('Pilih siswa terlebih dahulu.', 'warning');
+    window.__activePrintType = 'jawaban';
+    window.__activePrintParams = { scope: 'SELECTED', selectedIds, classId, examId };
+    const teacher = (appState.teachers || []).find(t => {
+        const mapels = Array.isArray(t.mapel) ? t.mapel : (t.mapel ? [t.mapel] : []);
+        return mapels.some(m => String(m).toLowerCase() === String(ex.subject || '').toLowerCase());
+    });
+    window.__printSettings = {
+        kopLine1: 'Yayasan Pendidikan Islam Madrasah',
+        kopLine2: appState.settings?.schoolName || 'Madrasah',
+        kopLine3: 'Portal Madrasah Terintegrasi',
+        footerPlaceDate: `Madrasah, ${new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+        footerRole: 'Guru Mata Pelajaran',
+        footerTeacherName: teacher ? teacher.name : (appState.currentUser?.name || 'Dewan Guru'),
+        footerTeacherNip: teacher?.nip || appState.currentUser?.nip || '-'
+    };
+    openDownloadPreviewModal();
 }
 
 function ensureEvaluasiDataPopulated(classId, examId) {
@@ -7476,10 +7781,15 @@ function generateReportHTML() {
     } else if (type === 'jawaban') {
         const scope = params.scope;
         const clsStudents = appState.students.filter(st => String(st.classId) === String(classId));
-        const targetStudents = scope === 'ALL' ? clsStudents : clsStudents.filter(st => st.id === scope);
+        const selectedIds = Array.isArray(params.selectedIds) ? new Set(params.selectedIds.map(String)) : null;
+        const targetStudents = scope === 'ALL'
+            ? clsStudents
+            : (scope === 'SELECTED' && selectedIds
+                ? clsStudents.filter(st => selectedIds.has(String(st.id)))
+                : clsStudents.filter(st => String(st.id) === String(scope)));
 
-        const answers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers')) || {};
-        const grades = JSON.parse(localStorage.getItem('madrasah_student_exam_grades')) || {};
+        const answers = appState.studentExamAnswers || JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
+        const grades = appState.studentExamGrades || JSON.parse(localStorage.getItem('madrasah_student_exam_grades') || '{}') || {};
 
         let printableHTML = '';
 
@@ -7848,6 +8158,14 @@ window.toggleStudentLivecamMode = toggleStudentLivecamMode;
 // Evaluasi window globals
 window.toggleEvaluasiSelectForm = toggleEvaluasiSelectForm;
 window.onEvaluasiFilterChange = onEvaluasiFilterChange;
+window.evaluasiToggleStudent = evaluasiToggleStudent;
+window.evaluasiToggleSelectAll = evaluasiToggleSelectAll;
+window.evaluasiClearSelection = evaluasiClearSelection;
+window.bulkResetEvaluasiSelected = bulkResetEvaluasiSelected;
+window.bulkForceFinishEvaluasiSelected = bulkForceFinishEvaluasiSelected;
+window.bulkKoreksiEvaluasiSelected = bulkKoreksiEvaluasiSelected;
+window.openPreviewJawabanEvaluasi = openPreviewJawabanEvaluasi;
+window.downloadSelectedEvaluasiAnswers = downloadSelectedEvaluasiAnswers;
 window.openKoreksiModal = openKoreksiModal;
 window.clickKoreksiBelum = clickKoreksiBelum;
 window.runAutoKoreksiNonAI = runAutoKoreksiNonAI;

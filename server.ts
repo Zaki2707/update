@@ -2906,7 +2906,7 @@ function ensureHydrated() {
   return hydratePromise;
 }
 
-const DB_CACHE_TTL_MS = 900000; // 15 minutes cache TTL to prevent full-table DB scans under high concurrent load
+const DB_CACHE_TTL_MS = isOnlineMode ? Number.POSITIVE_INFINITY : 900000; // ONLINE single-instance state is hydrated at boot; never block hot API paths on periodic full-table scans
 let dbFetchPromise: Promise<void> | null = null;
 
 async function refreshInmemoryState(force = false) {
