@@ -39,7 +39,6 @@ jobs:
           npm run build
           git diff --check
           test -f dist/server.cjs
-          grep -Fq 'if (isOnlineMode) {' server.ts
           grep -Fq 'Explicit DELETE endpoints are the only supported destructive path for master data.' server.ts
           grep -Fq 'return [...otherItems, ...Array.from(currentMap.values())];' server.ts
           grep -Fq '[Master Sync Guard]' server.ts
@@ -66,3 +65,5 @@ jobs:
           git diff --cached --check
           git commit -m "fix: make online master sync non-destructive"
           git push origin HEAD:main
+
+# retry after narrowing patch target to merge tail only
