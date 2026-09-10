@@ -1,0 +1,57 @@
+name: One-time Recovery Matcher V2 Fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-time-recovery-matcher-v2-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply recovery matcher v2 patch
+        run: python scripts/one-time-recovery-matcher-v2-fix.py
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate application
+        run: |
+          npm audit --audit-level=high
+          npm run lint
+          npm run security:audit
+          npm run build
+          git diff --check
+          test -f dist/server.cjs
+          grep -Fq "master-recovery-missing-only-v2" server.ts
+          grep -Fq "findUnusedExistingRecoveryMatch" server.ts
+          grep -Fq "usedExistingIndexes" server.ts
+          grep -Fq "n(a.code) === n(b.code)" server.ts
+          grep -Fq "n(a.name) === n(b.name)" server.ts
+
+      - name: Commit validated source and remove temporary patch files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/one-time-recovery-matcher-v2-fix.py
+          git rm .github/workflows/one-time-recovery-matcher-v2-fix.yml
+          git add server.ts
+          git diff --cached --check
+          git commit -m "fix: make recovery matcher strict and one-to-one"
+          git push origin HEAD:main
