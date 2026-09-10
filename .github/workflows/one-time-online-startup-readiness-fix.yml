@@ -1,0 +1,58 @@
+name: One-time Online Startup Readiness Fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-time-online-startup-readiness-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply startup readiness patch
+        run: python scripts/one-time-online-startup-readiness-fix.py
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate application
+        run: |
+          npm audit --audit-level=high
+          npm run lint
+          npm run security:audit
+          npm run build
+          git diff --check
+          test -f dist/server.cjs
+          grep -Fq 'async function initializeOnlineRuntimeBeforeListen()' server.ts
+          grep -Fq 'await initializeOnlineRuntimeBeforeListen();' server.ts
+          grep -Fq 'hasHydratedPersistentState = true;' server.ts
+          grep -Fq 'app.get("/readyz"' server.ts
+          grep -Fq "ONLINE_STARTUP_NOT_READY" server.ts
+          grep -Fq "startServer().catch" server.ts
+
+      - name: Commit validated source and remove temporary patch files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/one-time-online-startup-readiness-fix.py
+          git rm .github/workflows/one-time-online-startup-readiness-fix.yml
+          git add server.ts
+          git diff --cached --check
+          git commit -m "fix: wait for Cloud SQL readiness before serving online traffic"
+          git push origin HEAD:main
