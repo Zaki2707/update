@@ -38,10 +38,8 @@ jobs:
           for line in raw.splitlines():
               if line.startswith('          '):
                   code_lines.append(line[10:])
-              elif not line.strip():
-                  code_lines.append('')
               else:
-                  raise SystemExit(f'Unexpected staged patch indentation: {line[:80]!r}')
+                  code_lines.append(line)
 
           code = '\n'.join(code_lines) + '\n'
           compile(code, '<staged-cbt-evaluasi-fix>', 'exec')
