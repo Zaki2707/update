@@ -7824,6 +7824,113 @@ async function recoverMissingExamMasterQuestions(key: string, matchedExam: any):
   return rebuilt;
 }
 
+
+function isMasterMultipleChoiceAnswerCorrect(question: any, studentAnswer: any): boolean {
+  if (!question || question.type === 'esay' || question.type === 'essay') return false;
+  if (studentAnswer === undefined || studentAnswer === null || String(studentAnswer).trim() === '') return false;
+
+  const normStudent = String(studentAnswer).trim().toLowerCase();
+  const normKey = String(question.correctOptionText || question.answer || '').trim().toLowerCase();
+  if (!normKey) return false;
+  if (normStudent === normKey) return true;
+
+  if (Array.isArray(question.options) && /^[a-e]$/i.test(normStudent)) {
+    const idx = normStudent.toUpperCase().charCodeAt(0) - 65;
+    const selectedOption = question.options[idx];
+    if (selectedOption !== undefined && String(selectedOption).trim().toLowerCase() === normKey) return true;
+  }
+
+  return false;
+}
+
+function scoreMasterMultipleChoice(masterQuestions: any[], answers: Record<string, any>) {
+  const pgQuestions = (Array.isArray(masterQuestions) ? masterQuestions : []).filter((q: any) => q.type !== 'esay' && q.type !== 'essay');
+  let correctPGCount = 0;
+  for (const q of pgQuestions) {
+    const value = answers && answers[q.id] !== undefined ? answers[q.id] : answers?.[String(q.id)];
+    if (isMasterMultipleChoiceAnswerCorrect(q, value)) correctPGCount++;
+  }
+  return {
+    correctPGCount,
+    totalPGCount: pgQuestions.length,
+    pgScore: pgQuestions.length > 0 ? Math.round((correctPGCount / pgQuestions.length) * 100) : 0
+  };
+}
+
+app.get("/api/exam/review", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const authUser = req.user || getAuthUser(req);
+    const studentId = String(req.query.studentId || '').trim();
+    const examId = String(req.query.examId || '').trim();
+    if (!authUser || !studentId || !examId) {
+      return res.status(400).json({ success: false, message: "studentId dan examId wajib diisi." });
+    }
+
+    const context = getExamAttemptContext(req, authUser, studentId, examId);
+    if (rejectExamAttemptContext(res, context)) return;
+
+    const key = studentId + '_' + examId;
+    let masterQuestions = studentExamMasterQuestions[key];
+    if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
+      masterQuestions = await recoverMissingExamMasterQuestions(key, context.exam);
+    }
+    if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Paket kunci authoritative untuk attempt siswa ini belum tersedia atau tidak dapat dipulihkan dengan aman."
+      });
+    }
+
+    const persistedAnswers = studentExamAnswers[key] && typeof studentExamAnswers[key] === 'object' ? studentExamAnswers[key] : {};
+    const liveAnswers = activeExamSessions[key]?.answers && typeof activeExamSessions[key].answers === 'object' ? activeExamSessions[key].answers : {};
+    const answers = { ...persistedAnswers, ...liveAnswers };
+    const pgSummary = scoreMasterMultipleChoice(masterQuestions, answers);
+
+    const reviewQuestions = masterQuestions.map((q: any, idx: number) => {
+      const studentAnswer = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
+      const answered = studentAnswer !== undefined && studentAnswer !== null && String(studentAnswer).trim() !== '';
+      const isEssay = q.type === 'esay' || q.type === 'essay';
+      const correctAnswer = isEssay
+        ? String(q.answer || '').trim()
+        : String(q.correctOptionText || q.answer || '').trim();
+      let correctOptionIndex = -1;
+      if (!isEssay && Array.isArray(q.options) && correctAnswer) {
+        correctOptionIndex = q.options.findIndex((opt: any) => String(opt).trim().toLowerCase() === correctAnswer.toLowerCase());
+      }
+
+      return {
+        id: q.id,
+        number: idx + 1,
+        question: q.question,
+        options: Array.isArray(q.options) ? q.options : [],
+        type: q.type || 'mc',
+        imageUrl: q.imageUrl || q.image || null,
+        studentAnswer: studentAnswer === undefined ? null : studentAnswer,
+        answered,
+        correctAnswer,
+        correctOptionIndex,
+        correctOptionLetter: correctOptionIndex >= 0 ? String.fromCharCode(65 + correctOptionIndex) : null,
+        isCorrect: isEssay ? null : isMasterMultipleChoiceAnswerCorrect(q, studentAnswer)
+      };
+    });
+
+    return res.json({
+      success: true,
+      studentId,
+      examId,
+      questions: reviewQuestions,
+      answeredCount: reviewQuestions.filter((q: any) => q.answered).length,
+      correctPGCount: pgSummary.correctPGCount,
+      totalPGCount: pgSummary.totalPGCount,
+      pgScore: pgSummary.pgScore,
+      grade: studentExamGrades[key] || null
+    });
+  } catch (error: any) {
+    console.error('[Exam Review Error]:', error);
+    return res.status(500).json({ success: false, message: error?.message || 'Gagal memuat review jawaban.' });
+  }
+});
+
 app.post("/api/exam/attempt/start-questions", async (req, res) => {
   const authUser = getAuthUser(req);
   if (!authUser) {
@@ -8374,18 +8481,11 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
   const essayQuestions = masterQuestions.filter((q: any) => q.type === 'esay' || q.type === 'essay');
   pgQuestions.forEach((q: any) => {
     const uAns = finalAns[q.id] !== undefined ? finalAns[q.id] : finalAns[String(q.id)];
-    if (uAns === undefined || uAns === null) return;
-    const normUAns = String(uAns).trim().toLowerCase();
-    // Prefer resolved correct option text because q.answer may be the pre-shuffle letter.
-    const normKey = String(q.correctOptionText || q.answer || '').trim().toLowerCase();
-    if (normUAns === normKey) correctPGCount++;
-    else if (Array.isArray(q.options) && /^[a-e]$/i.test(normUAns)) {
-      const idx = normUAns.toUpperCase().charCodeAt(0) - 65;
-      if (q.options[idx] && String(q.options[idx]).trim().toLowerCase() === normKey) correctPGCount++;
-    }
+    if (isMasterMultipleChoiceAnswerCorrect(q, uAns)) correctPGCount++;
   });
 
   const pgScore = pgQuestions.length > 0 ? Math.round((correctPGCount / pgQuestions.length) * 100) : 0;
+
   const finalGrade = {
     pgScore,
     essayScore: 0,

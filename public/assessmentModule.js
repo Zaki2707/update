@@ -6787,42 +6787,81 @@ function evaluasiEscapeHtml(value) {
         .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
-function openPreviewJawabanEvaluasi(studentId) {
+async function fetchEvaluasiReview(studentId, examId) {
+    const response = await fetch(`/api/exam/review?studentId=${encodeURIComponent(studentId)}&examId=${encodeURIComponent(examId)}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+        throw new Error(data.message || `HTTP ${response.status}`);
+    }
+    return data;
+}
+
+function evaluasiReviewOptionState(question, option, optionIndex) {
+    const studentRaw = String(question.studentAnswer ?? '').trim();
+    const letter = String.fromCharCode(65 + optionIndex);
+    const selected = studentRaw === String(option).trim() || studentRaw.toUpperCase() === letter;
+    const isKey = Number(question.correctOptionIndex) === optionIndex || String(question.correctAnswer || '').trim().toLowerCase() === String(option).trim().toLowerCase();
+    return { selected, isKey, letter };
+}
+
+async function openPreviewJawabanEvaluasi(studentId) {
     const examId = appState.evaluasiSelectedExamId;
     const st = (appState.students || []).find(s => String(s.id) === String(studentId));
     const ex = (appState.exams || []).find(e => String(e.id) === String(examId));
     if (!st || !ex) return showToast('Data siswa atau ujian tidak ditemukan.', 'error');
-    const key = String(st.id) + '_' + String(examId);
-    const allAnswers = appState.studentExamAnswers || JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
-    const activeSessions = appState.activeExamSessions || JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
-    const answers = allAnswers[key] || activeSessions[key]?.answers || {};
-    const questions = getExamQuestions(ex, st.id) || [];
-    const answered = questions.filter(q => {
-        const val = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
-        return val !== undefined && val !== null && String(val).trim() !== '';
-    }).length;
-    const items = questions.length ? questions.map((q, idx) => {
-        const raw = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
-        const has = raw !== undefined && raw !== null && String(raw).trim() !== '';
-        const isEssay = q.type === 'esay' || q.type === 'essay';
-        let responseHtml = '';
-        if (isEssay) {
-  responseHtml = `<div class="mt-3 p-4 bg-amber-50/60 border border-amber-200 rounded-2xl text-xs text-slate-800 whitespace-pre-wrap leading-relaxed">${has ? evaluasiEscapeHtml(raw) : '<span class="text-slate-400 italic">Tidak dijawab</span>'}</div>`;
-        } else {
-  responseHtml = `<div class="mt-3 grid grid-cols-1 gap-2">${(q.options || []).map((opt, oIdx) => {
-      const letter = String.fromCharCode(65 + oIdx);
-      const rawNorm = String(raw ?? '').trim();
-      const selected = rawNorm === String(opt).trim() || rawNorm.toUpperCase() === letter;
-      return `<div class="p-3 rounded-2xl border flex items-center gap-3 text-xs ${selected ? 'bg-indigo-50 border-indigo-400 text-indigo-950 font-bold' : 'bg-slate-50 border-slate-200 text-slate-600'}"><span class="w-7 h-7 rounded-xl flex items-center justify-center shrink-0 ${selected ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'}">${letter}</span><span class="flex-1">${evaluasiEscapeHtml(opt)}</span>${selected ? '<span class="text-[9px] uppercase text-indigo-700">Dipilih</span>' : ''}</div>`;
-  }).join('')}</div>`;
-        }
-        return `<div class="bg-white border border-slate-200 rounded-3xl p-5"><div class="flex items-center justify-between gap-2"><span class="text-[10px] font-black px-2.5 py-1 bg-slate-800 text-white rounded-xl">Soal ${idx + 1}</span><span class="text-[10px] font-bold ${has ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-slate-500 bg-slate-50 border-slate-200'} border px-2.5 py-1 rounded-xl">${has ? 'Terjawab' : 'Kosong'}</span></div><div class="mt-3 text-xs font-bold text-slate-800 leading-relaxed whitespace-pre-wrap">${evaluasiEscapeHtml(q.question || q.text || '')}</div>${responseHtml}</div>`;
-    }).join('') : `<div class="p-8 text-center text-slate-400 text-xs">Paket soal siswa belum tersedia.</div>`;
 
-    const modal = document.getElementById('modal-container');
-    if (!modal) return;
-    modal.innerHTML = `<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-3 sm:p-6"><div class="bg-slate-50 w-full max-w-4xl h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-slate-200"><div class="p-5 bg-white border-b flex items-center justify-between shrink-0"><div><h3 class="font-extrabold text-slate-800 text-sm flex items-center gap-2"><i class="fa-solid fa-eye text-indigo-600"></i> Preview Jawaban: ${evaluasiEscapeHtml(st.name)}</h3><p class="text-[10px] text-slate-500 mt-1">${evaluasiEscapeHtml(ex.title)} &bull; ${answered}/${questions.length} soal terjawab &bull; Mode baca saja</p></div><button type="button" onclick="closeModal()" class="w-9 h-9 rounded-full bg-slate-100 hover:bg-rose-100 text-slate-600"><i class="fa-solid fa-xmark"></i></button></div><div class="px-5 py-3 bg-indigo-50 border-b border-indigo-100 text-[10px] text-indigo-800 font-semibold">Preview menampilkan jawaban yang tersimpan untuk siswa ini, termasuk pilihan ganda. Preview tidak mengubah nilai atau status ujian.</div><div class="flex-1 overflow-y-auto p-5 space-y-4" id="evaluasi-answer-preview-content">${items}</div><div class="p-4 bg-white border-t flex justify-end"><button type="button" onclick="closeModal()" class="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-bold">Tutup</button></div></div></div>`;
-    if (typeof window.renderMathInElementSafely === 'function') window.renderMathInElementSafely(document.getElementById('evaluasi-answer-preview-content'));
+    try {
+        const review = await fetchEvaluasiReview(st.id, examId);
+        const questions = Array.isArray(review.questions) ? review.questions : [];
+        const items = questions.length ? questions.map((q, idx) => {
+            const isEssay = q.type === 'esay' || q.type === 'essay';
+            let statusLabel = q.answered ? 'Terjawab' : 'Kosong';
+            let statusClass = q.answered ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-slate-500 bg-slate-50 border-slate-200';
+            let responseHtml = '';
+
+            if (isEssay) {
+                responseHtml = `
+                    <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div class="p-4 bg-amber-50/60 border border-amber-200 rounded-2xl text-xs text-slate-800">
+                            <p class="text-[9px] font-black uppercase tracking-wider text-amber-700 mb-2">Jawaban Siswa</p>
+                            <div class="whitespace-pre-wrap leading-relaxed">${q.answered ? evaluasiEscapeHtml(q.studentAnswer) : '<span class="text-slate-400 italic">Tidak dijawab</span>'}</div>
+                        </div>
+                        <div class="p-4 bg-emerald-50/60 border border-emerald-200 rounded-2xl text-xs text-slate-800">
+                            <p class="text-[9px] font-black uppercase tracking-wider text-emerald-700 mb-2">Kunci Jawaban / Rujukan Guru</p>
+                            <div class="whitespace-pre-wrap leading-relaxed">${q.correctAnswer ? evaluasiEscapeHtml(q.correctAnswer) : '<span class="text-slate-400 italic">Kunci kosong</span>'}</div>
+                        </div>
+                    </div>`;
+            } else {
+                if (q.answered) {
+                    statusLabel = q.isCorrect ? 'Benar' : 'Salah';
+                    statusClass = q.isCorrect ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-rose-700 bg-rose-50 border-rose-200';
+                }
+                responseHtml = `<div class="mt-3 grid grid-cols-1 gap-2">${(q.options || []).map((opt, oIdx) => {
+                    const state = evaluasiReviewOptionState(q, opt, oIdx);
+                    let cls = 'bg-slate-50 border-slate-200 text-slate-600';
+                    if (state.selected && state.isKey) cls = 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold';
+                    else if (state.selected) cls = 'bg-rose-50 border-rose-400 text-rose-950 font-bold';
+                    else if (state.isKey) cls = 'bg-emerald-50/70 border-emerald-300 text-emerald-900 font-semibold';
+                    const badge = state.selected && state.isKey
+                        ? '<span class="text-[9px] uppercase text-emerald-700 font-black">Dipilih • Kunci</span>'
+                        : (state.selected
+                            ? '<span class="text-[9px] uppercase text-rose-700 font-black">Dipilih</span>'
+                            : (state.isKey ? '<span class="text-[9px] uppercase text-emerald-700 font-black">Kunci Jawaban</span>' : ''));
+                    return `<div class="p-3 rounded-2xl border flex items-center gap-3 text-xs ${cls}"><span class="w-7 h-7 rounded-xl flex items-center justify-center shrink-0 ${state.isKey ? 'bg-emerald-600 text-white' : (state.selected ? 'bg-rose-600 text-white' : 'bg-slate-200 text-slate-600')}">${state.letter}</span><span class="flex-1">${evaluasiEscapeHtml(opt)}</span>${badge}</div>`;
+                }).join('')}</div>`;
+            }
+
+            return `<div class="bg-white border border-slate-200 rounded-3xl p-5"><div class="flex items-center justify-between gap-2"><span class="text-[10px] font-black px-2.5 py-1 bg-slate-800 text-white rounded-xl">Soal ${idx + 1}</span><span class="text-[10px] font-bold ${statusClass} border px-2.5 py-1 rounded-xl">${statusLabel}</span></div><div class="mt-3 text-xs font-bold text-slate-800 leading-relaxed whitespace-pre-wrap">${evaluasiEscapeHtml(q.question || '')}</div>${responseHtml}</div>`;
+        }).join('') : `<div class="p-8 text-center text-slate-400 text-xs">Paket review siswa belum tersedia.</div>`;
+
+        const modal = document.getElementById('modal-container');
+        if (!modal) return;
+        modal.innerHTML = `<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-3 sm:p-6"><div class="bg-slate-50 w-full max-w-4xl h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-slate-200"><div class="p-5 bg-white border-b flex items-center justify-between shrink-0"><div><h3 class="font-extrabold text-slate-800 text-sm flex items-center gap-2"><i class="fa-solid fa-eye text-indigo-600"></i> Preview Jawaban: ${evaluasiEscapeHtml(st.name)}</h3><p class="text-[10px] text-slate-500 mt-1">${evaluasiEscapeHtml(ex.title)} &bull; ${review.answeredCount || 0}/${questions.length} soal terjawab &bull; PG benar ${review.correctPGCount || 0}/${review.totalPGCount || 0}</p></div><button type="button" onclick="closeModal()" class="w-9 h-9 rounded-full bg-slate-100 hover:bg-rose-100 text-slate-600"><i class="fa-solid fa-xmark"></i></button></div><div class="px-5 py-3 bg-indigo-50 border-b border-indigo-100 text-[10px] text-indigo-800 font-semibold">Review ini memakai kunci authoritative server. Pilihan hijau adalah kunci jawaban; pilihan merah adalah jawaban siswa yang salah. Mode baca saja dan tidak mengubah nilai.</div><div class="flex-1 overflow-y-auto p-5 space-y-4" id="evaluasi-answer-preview-content">${items}</div><div class="p-4 bg-white border-t flex justify-end"><button type="button" onclick="closeModal()" class="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-bold">Tutup</button></div></div></div>`;
+        if (typeof window.renderMathInElementSafely === 'function') window.renderMathInElementSafely(document.getElementById('evaluasi-answer-preview-content'));
+    } catch (error) {
+        console.error('[Evaluasi Review Error]:', error);
+        showToast(`Gagal memuat review jawaban: ${error.message || error}`, 'error');
+    }
 }
 
 function downloadSelectedEvaluasiAnswers() {
@@ -7037,7 +7076,7 @@ function confirmStudentExamSubmit() {
     }
 }
 
-function openKoreksiModal(studentId) {
+async function openKoreksiModal(studentId) {
     const classId = appState.evaluasiSelectedClassId;
     const examId = appState.evaluasiSelectedExamId;
     const st = appState.students.find(s => String(s.id) === String(studentId));
@@ -7046,119 +7085,118 @@ function openKoreksiModal(studentId) {
 
     const key1 = studentId + '_' + examId;
     const key2 = String(studentId) + '_' + String(examId);
-
-    const questions = getExamQuestions(ex, studentId);
-
-    const allAnswers = appState.studentExamAnswers || JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
-    const activeSess = (appState.activeExamSessions && (appState.activeExamSessions[key1] || appState.activeExamSessions[key2])) || {};
-
-    const studentAnswers = allAnswers[key1] || allAnswers[key2] || activeSess.answers || {};
-
     const grades = appState.studentExamGrades || JSON.parse(localStorage.getItem('madrasah_student_exam_grades') || '{}') || {};
-    const gradeObj = grades[key1] || grades[key2] || { essayGrades: {} };
-    const currentEssayGrades = gradeObj.essayGrades || {};
-    const currentEssayExplanations = gradeObj.essayExplanations || {};
+    let gradeObj = grades[key1] || grades[key2] || { essayGrades: {} };
 
-    let modalHTML = `
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
-            <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-6 space-y-4 my-8 max-h-[90vh] overflow-y-auto">
-                <div class="flex justify-between items-center pb-2 border-b border-slate-100">
-                    <div>
-                        <h3 class="font-extrabold text-slate-800 text-sm uppercase tracking-wide">Koreksi Jawaban: ${st.name}</h3>
-                        <p class="text-[10px] text-slate-400 font-medium">Ujian: ${ex.title}</p>
-                    </div>
-                    <button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-slate-400 hover:text-slate-600"></i></button>
-                </div>
-
-                <form onsubmit="saveKoreksi(event, '${st.id}')" class="space-y-4 text-xs sm:text-sm">
-                    <div class="space-y-4">
-                        ${questions.map((q, idx) => {
-                            const ansVal = studentAnswers[q.id] !== undefined ? studentAnswers[q.id] : (studentAnswers[String(q.id)] !== undefined ? studentAnswers[String(q.id)] : '');
-                            const isCorrect = isCorrectAnswer(q, ansVal);
-
-                            let qBody = '';
-                            if (q.type !== 'esay' && q.type !== 'essay') {
-                                qBody = `
-                                    <div class="mt-2 space-y-1.5 pl-4 border-l-2 border-slate-200">
-                                        ${(q.options || []).map(opt => {
-                                            const isStudentAns = String(ansVal).trim() === String(opt).trim();
-                                            const isKey = isOptionAnswerKey(q, opt);
-                                            let bgClass = 'bg-slate-50 border-slate-100';
-                                            if (isStudentAns) {
-                                                bgClass = isCorrect ? 'bg-emerald-50 border-emerald-300 font-bold text-emerald-900' : 'bg-rose-50 border-rose-300 font-bold text-rose-900';
-                                            } else if (isKey) {
-                                                bgClass = 'bg-emerald-50/55 border-emerald-100/50 text-emerald-800 font-semibold';
-                                            }
-                                            return `
-                                                <div class="p-2.5 rounded-xl border flex justify-between items-center text-xs ${bgClass}">
-                                                    <span>${opt}</span>
-                                                    ${isStudentAns ? `<span class="text-[9px] font-bold uppercase ${isCorrect ? 'text-emerald-700' : 'text-rose-700'}">${isCorrect ? 'Benar (✓)' : 'Salah (✗)'}</span>` : ''}
-                                                    ${!isStudentAns && isKey ? '<span class="text-[9px] text-emerald-600 font-bold uppercase">Kunci Jawab</span>' : ''}
-                                                </div>
-                                            `;
-                                        }).join('')}
-                                    </div>
-                                `;
-                            } else {
-                                const expText = currentEssayExplanations[q.id] || currentEssayExplanations[String(q.id)];
-                                qBody = `
-                                    <div class="mt-2 space-y-3 pl-4 border-l-2 border-slate-200">
-                                        <div class="p-3 bg-amber-50/50 border border-amber-100 rounded-2xl text-xs">
-                                            <p class="font-bold text-amber-800 uppercase tracking-wider text-[9px] mb-1">Jawaban Siswa (Esay):</p>
-                                            <p class="leading-relaxed whitespace-pre-wrap">${ansVal ? ansVal : '<span class="italic text-slate-400">Tidak menjawab</span>'}</p>
-                                        </div>
-                                        <div class="p-3 bg-emerald-50/40 border border-emerald-100 rounded-2xl text-xs">
-                                            <p class="font-bold text-emerald-800 uppercase tracking-wider text-[9px] mb-1">Kunci Jawaban Guru / Bahan Rujukan:</p>
-                                            <p class="leading-relaxed whitespace-pre-wrap">${q.answer || '-'}</p>
-                                        </div>
-                                        ${expText ? `
-                                        <div class="p-3 bg-purple-50 border border-purple-100 rounded-2xl text-xs space-y-1">
-                                            <p class="font-bold text-purple-800 uppercase tracking-wider text-[9px] flex items-center gap-1"><i class="fa-solid fa-wand-magic-sparkles text-purple-600"></i> Penjelasan AI Auto-Koreksi:</p>
-                                            <p class="leading-relaxed italic text-slate-700">${expText}</p>
-                                        </div>
-                                        ` : ''}
-                                        <div class="flex items-center space-x-3 bg-slate-50 border border-slate-100 p-3 rounded-xl">
-                                            <label class="text-[10px] font-bold text-slate-600 uppercase">Beri Nilai Esay (0-100):</label>
-                                            <div class="relative w-24">
-                                                <input type="number" min="0" max="100" name="essay-grade-${q.id}" required value="${(currentEssayGrades[q.id] !== undefined ? currentEssayGrades[q.id] : (currentEssayGrades[String(q.id)] !== undefined ? currentEssayGrades[String(q.id)] : ''))}" class="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl font-bold focus:outline-none focus:ring-1 focus:ring-emerald-500 text-xs text-center" placeholder="0 - 100">
-                                                <span class="absolute right-3 top-2 text-[10px] font-bold text-slate-400">%</span>
-                                            </div>
-                                            <span class="text-[10px] text-slate-400">Persentase kontribusi</span>
-                                        </div>
-                                    </div>
-                                `;
-                            }
-
-                            return `
-                                <div class="bg-white border border-slate-100 p-4 rounded-2xl space-y-2">
-                                    <div class="flex justify-between items-center text-[10px] font-semibold text-slate-400">
-                                        <span>PERTANYAAN ${idx + 1}</span>
-                                        <span class="px-2 py-0.5 bg-slate-100 rounded text-[9px] font-bold uppercase tracking-wide text-slate-600">${q.type === 'esay' || q.type === 'essay' ? 'Esay' : 'Pilihan Ganda'}</span>
-                                    </div>
-                                    <p class="font-bold text-slate-800 text-xs leading-relaxed">${q.question}</p>
-                                    ${qBody}
-                                </div>
-                            `;
-                        }).join('')}
-                    </div>
-
-                    <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100">
-                        <button type="button" onclick="closeModal()" class="px-4 py-2 bg-slate-100 rounded-xl text-xs font-bold text-slate-600">Batal</button>
-                        <button type="submit" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/10 cursor-pointer transition">
-                            <i class="fa-solid fa-cloud-arrow-up"></i><span>Simpan Koreksi</span>
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    `;
-
-    const modal = document.getElementById('modal-container');
-    if (modal) {
-        modal.innerHTML = modalHTML;
-        if (typeof window.renderMathInElementSafely === 'function') {
-            window.renderMathInElementSafely(modal);
+    try {
+        const review = await fetchEvaluasiReview(st.id, examId);
+        const questions = Array.isArray(review.questions) ? review.questions : [];
+        if (review.grade) {
+            gradeObj = { ...gradeObj, ...review.grade };
+            if (!appState.studentExamGrades) appState.studentExamGrades = {};
+            appState.studentExamGrades[key1] = gradeObj;
+            appState.studentExamGrades[key2] = gradeObj;
         }
+        const currentEssayGrades = gradeObj.essayGrades || {};
+        const currentEssayExplanations = gradeObj.essayExplanations || {};
+
+        let modalHTML = `
+            <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
+                <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-6 space-y-4 my-8 max-h-[90vh] overflow-y-auto">
+                    <div class="flex justify-between items-center pb-2 border-b border-slate-100">
+                        <div>
+                            <h3 class="font-extrabold text-slate-800 text-sm uppercase tracking-wide">Koreksi Jawaban: ${evaluasiEscapeHtml(st.name)}</h3>
+                            <p class="text-[10px] text-slate-400 font-medium">Ujian: ${evaluasiEscapeHtml(ex.title)} • PG benar ${review.correctPGCount || 0}/${review.totalPGCount || 0}</p>
+                        </div>
+                        <button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-slate-400 hover:text-slate-600"></i></button>
+                    </div>
+
+                    <div class="p-3 bg-indigo-50 border border-indigo-100 rounded-2xl text-[10px] text-indigo-800 font-semibold">Status Benar/Salah dan kunci pilihan ganda di bawah dihitung langsung dari paket master authoritative server, sama dengan penilaian final CBT.</div>
+
+                    <form onsubmit="saveKoreksi(event, '${st.id}')" class="space-y-4 text-xs sm:text-sm">
+                        <div class="space-y-4">
+                            ${questions.map((q, idx) => {
+                                const ansVal = q.studentAnswer ?? '';
+                                const isEssay = q.type === 'esay' || q.type === 'essay';
+                                let qBody = '';
+
+                                if (!isEssay) {
+                                    qBody = `
+                                        <div class="mt-2 space-y-1.5 pl-4 border-l-2 border-slate-200">
+                                            ${(q.options || []).map((opt, oIdx) => {
+                                                const state = evaluasiReviewOptionState(q, opt, oIdx);
+                                                let bgClass = 'bg-slate-50 border-slate-100';
+                                                if (state.selected && state.isKey) bgClass = 'bg-emerald-50 border-emerald-300 font-bold text-emerald-900';
+                                                else if (state.selected) bgClass = 'bg-rose-50 border-rose-300 font-bold text-rose-900';
+                                                else if (state.isKey) bgClass = 'bg-emerald-50/70 border-emerald-200 text-emerald-800 font-semibold';
+                                                return `
+                                                    <div class="p-2.5 rounded-xl border flex justify-between items-center gap-2 text-xs ${bgClass}">
+                                                        <span><b>${state.letter}.</b> ${evaluasiEscapeHtml(opt)}</span>
+                                                        <span class="shrink-0">
+                                                            ${state.selected ? `<span class="text-[9px] font-bold uppercase ${q.isCorrect ? 'text-emerald-700' : 'text-rose-700'}">${q.isCorrect ? 'Benar (✓)' : 'Salah (✗)'}</span>` : ''}
+                                                            ${state.isKey ? '<span class="ml-2 text-[9px] text-emerald-700 font-black uppercase">Kunci Jawab</span>' : ''}
+                                                        </span>
+                                                    </div>`;
+                                            }).join('')}
+                                        </div>`;
+                                } else {
+                                    const expText = currentEssayExplanations[q.id] || currentEssayExplanations[String(q.id)];
+                                    qBody = `
+                                        <div class="mt-2 space-y-3 pl-4 border-l-2 border-slate-200">
+                                            <div class="p-3 bg-amber-50/50 border border-amber-100 rounded-2xl text-xs">
+                                                <p class="font-bold text-amber-800 uppercase tracking-wider text-[9px] mb-1">Jawaban Siswa (Esai):</p>
+                                                <p class="leading-relaxed whitespace-pre-wrap">${q.answered ? evaluasiEscapeHtml(ansVal) : '<span class="italic text-slate-400">Tidak menjawab</span>'}</p>
+                                            </div>
+                                            <div class="p-3 bg-emerald-50/40 border border-emerald-100 rounded-2xl text-xs">
+                                                <p class="font-bold text-emerald-800 uppercase tracking-wider text-[9px] mb-1">Kunci Jawaban Guru / Bahan Rujukan:</p>
+                                                <p class="leading-relaxed whitespace-pre-wrap">${q.correctAnswer ? evaluasiEscapeHtml(q.correctAnswer) : '-'}</p>
+                                            </div>
+                                            ${expText ? `
+                                            <div class="p-3 bg-purple-50 border border-purple-100 rounded-2xl text-xs space-y-1">
+                                                <p class="font-bold text-purple-800 uppercase tracking-wider text-[9px] flex items-center gap-1"><i class="fa-solid fa-wand-magic-sparkles text-purple-600"></i> Penjelasan AI Auto-Koreksi:</p>
+                                                <p class="leading-relaxed italic text-slate-700">${evaluasiEscapeHtml(expText)}</p>
+                                            </div>` : ''}
+                                            <div class="flex items-center space-x-3 bg-slate-50 border border-slate-100 p-3 rounded-xl">
+                                                <label class="text-[10px] font-bold text-slate-600 uppercase">Beri Nilai Esai (0-100):</label>
+                                                <div class="relative w-24">
+                                                    <input type="number" min="0" max="100" name="essay-grade-${q.id}" required value="${(currentEssayGrades[q.id] !== undefined ? currentEssayGrades[q.id] : (currentEssayGrades[String(q.id)] !== undefined ? currentEssayGrades[String(q.id)] : ''))}" class="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl font-bold focus:outline-none focus:ring-1 focus:ring-emerald-500 text-xs text-center" placeholder="0 - 100">
+                                                    <span class="absolute right-3 top-2 text-[10px] font-bold text-slate-400">%</span>
+                                                </div>
+                                                <span class="text-[10px] text-slate-400">Persentase kontribusi</span>
+                                            </div>
+                                        </div>`;
+                                }
+
+                                return `
+                                    <div class="bg-white border border-slate-100 p-4 rounded-2xl space-y-2">
+                                        <div class="flex justify-between items-center text-[10px] font-semibold text-slate-400">
+                                            <span>PERTANYAAN ${idx + 1}</span>
+                                            <span class="px-2 py-0.5 bg-slate-100 rounded text-[9px] font-bold uppercase tracking-wide text-slate-600">${isEssay ? 'Esai' : 'Pilihan Ganda'}</span>
+                                        </div>
+                                        <p class="font-bold text-slate-800 text-xs leading-relaxed">${evaluasiEscapeHtml(q.question || '')}</p>
+                                        ${qBody}
+                                    </div>`;
+                            }).join('')}
+                        </div>
+
+                        <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+                            <button type="button" onclick="closeModal()" class="px-4 py-2 bg-slate-100 rounded-xl text-xs font-bold text-slate-600">Batal</button>
+                            <button type="submit" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/10 cursor-pointer transition">
+                                <i class="fa-solid fa-cloud-arrow-up"></i><span>Simpan Koreksi Esai</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>`;
+
+        const modal = document.getElementById('modal-container');
+        if (modal) {
+            modal.innerHTML = modalHTML;
+            if (typeof window.renderMathInElementSafely === 'function') window.renderMathInElementSafely(modal);
+        }
+    } catch (error) {
+        console.error('[Open Koreksi Review Error]:', error);
+        showToast(`Gagal memuat kunci authoritative: ${error.message || error}`, 'error');
     }
 }
 
