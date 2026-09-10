@@ -1,0 +1,77 @@
+name: One-time Evaluasi Selection Polish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch search selection state
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/assessmentModule.js')
+          s = p.read_text(encoding='utf-8')
+          old = """        } else {
+            row.style.display = 'none';
+        }
+    }
+}
+
+
+function evaluasiGetSelection() {"""
+          new = """        } else {
+            row.style.display = 'none';
+        }
+    }
+    evaluasiUpdateBulkControls();
+}
+
+
+function evaluasiGetSelection() {"""
+          count = s.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one filter tail, found {count}')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate
+        run: |
+          npm run lint
+          npm run security:audit
+          npm run build
+          git diff --check
+          test -f dist/server.cjs
+          cmp -s src/assessmentModule.js public/assessmentModule.js
+
+      - name: Commit validated polish and remove workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/one-time-evaluasi-selection-polish.yml
+          git add src/assessmentModule.js public/assessmentModule.js
+          git diff --cached --check
+          git commit -m "fix: keep evaluasi bulk selection in sync with search"
+          git push origin HEAD:main
