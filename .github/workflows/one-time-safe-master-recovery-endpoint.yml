@@ -1,0 +1,57 @@
+name: One-time Safe Master Recovery Endpoint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-time-safe-master-recovery-endpoint.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply safe recovery endpoint patch
+        run: python scripts/one-time-safe-master-recovery-endpoint.py
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate application
+        run: |
+          npm audit --audit-level=high
+          npm run lint
+          npm run security:audit
+          npm run build
+          git diff --check
+          test -f dist/server.cjs
+          grep -Fq "/api/system/recover-master-missing" server.ts
+          grep -Fq "master-recovery-missing-only-v1" server.ts
+          grep -Fq "Existing records are NEVER replaced here" server.ts
+          grep -Fq "beforeCounts" server.ts
+          grep -Fq "afterCounts" server.ts
+
+      - name: Commit validated source and remove temporary patch files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/one-time-safe-master-recovery-endpoint.py
+          git rm .github/workflows/one-time-safe-master-recovery-endpoint.yml
+          git add server.ts
+          git diff --cached --check
+          git commit -m "fix: add missing-only master data recovery endpoint"
+          git push origin HEAD:main
