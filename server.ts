@@ -1037,6 +1037,9 @@ let activeDbSource: "SQL_HOST" | "DATABASE_URL" | "NONE" = "NONE";
 let dbConnectionErrorMsg: string | null = null;
 let dbInitPromise: Promise<void> | null = null;
 let isRecreatingPool = false;
+let onlineRuntimeReady = !isOnlineMode;
+let onlineRuntimeReadyAt: string | null = isOnlineMode ? null : new Date().toISOString();
+let onlineRuntimeStartupError: string | null = null;
 
 function triggerPoolRecreation() {
   if (isRecreatingPool) return;
@@ -2674,6 +2677,8 @@ function applyExtendedDbState(dbData: Record<string, any>) {
   if (dbData['usedActivationKeys'] !== undefined) usedActivationKeys = dbData['usedActivationKeys'];
 }
 
+let hasHydratedPersistentState = false;
+
 // Hydrate from Database or local storage on startup
 async function hydrate() {
   // First load local store as fallback baseline
@@ -2773,6 +2778,7 @@ async function hydrate() {
       return;
     }
     await runOneTimeMigrations();
+    hasHydratedPersistentState = true;
     console.log("Database URL / SQL_HOST not set. Using local JSON store.");
     return;
   }
@@ -2879,6 +2885,7 @@ async function hydrate() {
     applyExtendedDbState(dbData);
 
     await runOneTimeMigrations();
+    hasHydratedPersistentState = true;
 
     console.log("All data hydrated successfully from PostgreSQL.");
     try {
@@ -2904,6 +2911,69 @@ function ensureHydrated() {
     hydratePromise = hydrate();
   }
   return hydratePromise;
+}
+
+async function initializeOnlineRuntimeBeforeListen() {
+  if (!isOnlineMode) return;
+
+  const maxAttempts = 3;
+  let lastErrorMessage = 'Cloud SQL belum siap.';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      // Reuse the module-level initialization first. If it finished without a pool,
+      // create a fresh initialization attempt instead of waiting for a status-page probe.
+      if (dbInitPromise) await dbInitPromise;
+      if (!pool || isDbQuotaExceeded) {
+        isDbQuotaExceeded = false;
+        dbInitPromise = determineAndInitPool();
+        await dbInitPromise;
+      }
+      if (!pool || isDbQuotaExceeded) {
+        throw new Error('Cloud SQL pool belum tersedia.');
+      }
+
+      // A connected socket is not enough: the in-memory source of truth used by the
+      // application must also be fully reconstructed from app_store before traffic.
+      hasHydratedPersistentState = false;
+      hydratePromise = null;
+      await ensureHydrated();
+      if (!hasHydratedPersistentState) {
+        throw new Error('Cloud SQL terhubung tetapi hydration app_store belum selesai.');
+      }
+
+      await pool.query('SELECT 1');
+      onlineRuntimeReady = true;
+      onlineRuntimeReadyAt = new Date().toISOString();
+      onlineRuntimeStartupError = null;
+      console.log(`[Startup Readiness] Cloud SQL + app_store hydration READY (attempt ${attempt}/${maxAttempts}).`);
+      return;
+    } catch (err: any) {
+      lastErrorMessage = err?.message || String(err);
+      onlineRuntimeReady = false;
+      onlineRuntimeStartupError = lastErrorMessage;
+      console.warn(`[Startup Readiness] Attempt ${attempt}/${maxAttempts} belum siap: ${lastErrorMessage}`);
+
+      // If the current pool cannot answer a probe, dispose it so the next attempt
+      // creates a clean pool. This is startup-only and does not alter normal CBT recovery.
+      if (pool) {
+        try {
+          await pool.query('SELECT 1');
+        } catch (_) {
+          const failedPool = pool;
+          pool = null;
+          try { await failedPool.end(); } catch (_) {}
+        }
+      }
+
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+      }
+    }
+  }
+
+  onlineRuntimeStartupError = lastErrorMessage;
+  throw new Error('ONLINE_STARTUP_NOT_READY: Cloud SQL dan hydration belum siap setelah retry startup.');
 }
 
 const DB_CACHE_TTL_MS = isOnlineMode ? Number.POSITIVE_INFINITY : 900000; // ONLINE single-instance state is hydrated at boot; never block hot API paths on periodic full-table scans
@@ -3024,8 +3094,18 @@ app.use(async (req, res, next) => {
 // 1. Health check
 app.get("/health", (req, res) => res.status(200).send("OK"));
 app.get("/healthz", (req, res) => res.status(200).send("OK"));
+app.get("/readyz", (req, res) => {
+  const ready = !isOnlineMode || Boolean(onlineRuntimeReady && hasHydratedPersistentState && pool && !isDbQuotaExceeded);
+  return res.status(ready ? 200 : 503).json({
+    status: ready ? 'ready' : 'starting',
+    ready,
+    mode: storageMode,
+    readyAt: onlineRuntimeReadyAt
+  });
+});
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok" });
+  const ready = !isOnlineMode || Boolean(onlineRuntimeReady && hasHydratedPersistentState && pool && !isDbQuotaExceeded);
+  res.json({ status: ready ? "ok" : "starting", ready, mode: storageMode, readyAt: onlineRuntimeReadyAt });
 });
 
 app.get("/api/check-connection", async (req, res) => {
@@ -14482,6 +14562,13 @@ app.get("/api/realtime-stream", (req: any, res) => {
 // Vite Middleware / Static File Serving
 // ----------------------------------------------------
 async function startServer() {
+  // ONLINE Cloud Run must not expose its listening port until Cloud SQL is usable
+  // and authoritative app_store state has been hydrated into memory. This removes
+  // the cold-start window where mutating CBT APIs could receive 503 DB-unavailable.
+  if (isOnlineMode) {
+    await initializeOnlineRuntimeBeforeListen();
+  }
+
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -14638,5 +14725,11 @@ async function startServer() {
 }
 
 if (!process.env.VERCEL) {
-  startServer();
+  startServer().catch((err: any) => {
+    onlineRuntimeReady = false;
+    onlineRuntimeStartupError = err?.message || String(err);
+    console.error('[Startup Fatal] Server tidak dibuka karena runtime online belum siap:', onlineRuntimeStartupError);
+    process.exitCode = 1;
+    setTimeout(() => process.exit(1), 100);
+  });
 }
