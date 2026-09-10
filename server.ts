@@ -5437,6 +5437,20 @@ function mergeTenantEntityListData(globalList: any[], incomingData: any[], req: 
     mergedIncoming.push(merged);
   }
 
+  if (isOnlineMode) {
+    // ONLINE is server-authoritative. A browser can legitimately hold only a filtered,
+    // stale, or partially loaded list, so omission must NEVER mean deletion.
+    // Explicit DELETE endpoints are the only supported destructive path for master data.
+    for (const item of mergedIncoming) {
+      currentMap.set(String(item.id), item);
+    }
+    if (mergedIncoming.length < currentExisting.length) {
+      console.warn(`[Master Sync Guard] Preserving omitted ${kind} records in online mode (${mergedIncoming.length} incoming, ${currentExisting.length} existing).`);
+    }
+    return [...otherItems, ...Array.from(currentMap.values())];
+  }
+
+  // Preserve legacy offline behavior. Offline CRUD continues to use its local/server flow.
   return [...otherItems, ...mergedIncoming];
 }
 
