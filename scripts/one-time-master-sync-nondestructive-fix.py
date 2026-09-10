@@ -3,47 +3,13 @@ from pathlib import Path
 p = Path('server.ts')
 s = p.read_text(encoding='utf-8')
 
-old = '''  const currentExisting = globalList.filter(item => isItemForCurrentMadrasah(item, req));
-  const currentMap = new Map(currentExisting.filter(Boolean).map((item: any) => [String(item.id), item]));
-  const otherItems = globalList.filter(item => !isItemForCurrentMadrasah(item, req));
-  const mergedIncoming: any[] = [];
-
-  for (const rawItem of incomingData) {
-    if (!rawItem || rawItem.id === undefined || rawItem.id === null) continue;
-    const existing: any = currentMap.get(String(rawItem.id));
-    let merged: any = existing ? { ...existing, ...rawItem } : { ...rawItem };
-
-    if ((kind === 'teacher' || kind === 'student') && existing?.password && !rawItem.password) {
-      merged.password = existing.password;
-    }
-
-    delete merged.madrasahId;
-    delete merged.madrasahSlug;
-    merged = tagNewRecord(merged, req);
-    mergedIncoming.push(merged);
+needle = '''    mergedIncoming.push(merged);
   }
 
   return [...otherItems, ...mergedIncoming];
-'''
+}'''
 
-new = '''  const currentExisting = globalList.filter(item => isItemForCurrentMadrasah(item, req));
-  const currentMap = new Map(currentExisting.filter(Boolean).map((item: any) => [String(item.id), item]));
-  const otherItems = globalList.filter(item => !isItemForCurrentMadrasah(item, req));
-  const mergedIncoming: any[] = [];
-
-  for (const rawItem of incomingData) {
-    if (!rawItem || rawItem.id === undefined || rawItem.id === null) continue;
-    const existing: any = currentMap.get(String(rawItem.id));
-    let merged: any = existing ? { ...existing, ...rawItem } : { ...rawItem };
-
-    if ((kind === 'teacher' || kind === 'student') && existing?.password && !rawItem.password) {
-      merged.password = existing.password;
-    }
-
-    delete merged.madrasahId;
-    delete merged.madrasahSlug;
-    merged = tagNewRecord(merged, req);
-    mergedIncoming.push(merged);
+replacement = '''    mergedIncoming.push(merged);
   }
 
   if (isOnlineMode) {
@@ -61,12 +27,20 @@ new = '''  const currentExisting = globalList.filter(item => isItemForCurrentMad
 
   // Preserve legacy offline behavior. Offline CRUD continues to use its local/server flow.
   return [...otherItems, ...mergedIncoming];
-'''
+}'''
 
-count = s.count(old)
+start = s.find('function mergeTenantEntityListData(')
+if start < 0:
+    raise SystemExit('mergeTenantEntityListData not found')
+end = s.find('\n}\n', start)
+if end < 0:
+    raise SystemExit('mergeTenantEntityListData end not found')
+block = s[start:end + 2]
+count = block.count(needle)
 if count != 1:
-    raise SystemExit(f'Expected exactly one mergeTenantEntityListData block, found {count}')
+    raise SystemExit(f'Expected exactly one destructive merge tail inside mergeTenantEntityListData, found {count}')
 
-s = s.replace(old, new, 1)
+patched_block = block.replace(needle, replacement, 1)
+s = s[:start] + patched_block + s[end + 2:]
 p.write_text(s, encoding='utf-8')
 print('Applied non-destructive online master sync guard to server.ts')
