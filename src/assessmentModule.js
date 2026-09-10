@@ -6592,6 +6592,7 @@ function filterEvaluasiStudentTable() {
             row.style.display = 'none';
         }
     }
+    evaluasiUpdateBulkControls();
 }
 
 
