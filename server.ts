@@ -3936,6 +3936,13 @@ function teacherCanUseExamPayload(req: any, examPayload: any): boolean {
   return Boolean(bankCode || subjectRef);
 }
 
+function examsForRequest(req: any): any[] {
+  const tenantExams = filterByMadrasah(exams || [], req);
+  return isTeacherRequest(req)
+    ? tenantExams.filter((exam: any) => teacherCanUseExamPayload(req, exam))
+    : tenantExams;
+}
+
 function effectiveSettingsForRequest(req: any): any {
   const base = globalSettingsBase();
   if (!isOnlineMode) return base;
@@ -4048,6 +4055,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
   if (actorRole === 'teacher' || actorRole === 'guru') {
     filteredQGroups = filteredQGroups.filter((group: any) => questionBankGroupAllowedForTeacher(req, group));
     filteredQuestions = filteredQuestions.filter((question: any) => questionAllowedForTeacher(req, question));
+    filteredExams = filteredExams.filter((exam: any) => teacherCanUseExamPayload(req, exam));
   }
 
   // Students only receive the minimum data required by their own UI.
@@ -14309,7 +14317,7 @@ app.delete("/api/schedules/:id", async (req, res) => {
 app.get("/api/exams", (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
   const role = String(authUser?.role || '').toLowerCase();
-  let list = filterByMadrasah(exams, req);
+  let list = isTeacherRequest(req) ? examsForRequest(req) : filterByMadrasah(exams, req);
   if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
     list = list.map(sanitizeExamForStudent);
   }
@@ -14326,27 +14334,57 @@ app.get("/api/lkpds", (req: any, res) => {
 });
 app.post("/api/exams", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const mId = getRequestMadrasahId(req);
-  const examPayloads = Array.isArray(req.body) ? req.body : [req.body];
-  if (isTeacherRequest(req) && examPayloads.some((item: any) => !teacherCanUseExamPayload(req, item))) {
-    return res.status(403).json({ success: false, message: "Guru hanya dapat membuat atau mengubah ujian untuk mata pelajaran/bank soal yang diampu." });
-  }
   if (Array.isArray(req.body)) {
-    exams = isOnlineMode
-      ? mergeTenantCrudSyncData(exams, req.body, req)
-      : mergeTenantListData(exams, req.body, req);
+    if (isTeacherRequest(req)) {
+      const tenantExisting = filterByMadrasah(exams || [], req);
+      const existingById = new Map(tenantExisting.map((item: any) => [String(item?.id || ''), item]));
+      const allowedIncoming: any[] = [];
+
+      for (const item of req.body) {
+        if (!item || typeof item !== 'object') continue;
+        if (teacherCanUseExamPayload(req, item)) {
+          allowedIncoming.push(item);
+          continue;
+        }
+        // The browser may still carry legacy/full-tenant exam arrays. Existing exams
+        // outside the teacher's assignment are ignored and preserved; new unauthorized
+        // records are rejected instead of being created or overwritten.
+        const existing = existingById.get(String(item?.id || ''));
+        if (!existing) {
+          return res.status(403).json({ success: false, message: "Guru hanya dapat membuat ujian untuk mata pelajaran/bank soal yang diampu." });
+        }
+      }
+
+      exams = mergeTenantScopedSyncRecords(
+        exams,
+        allowedIncoming,
+        req,
+        (item: any) => String(item?.id || '').trim()
+      );
+    } else {
+      exams = isOnlineMode
+        ? mergeTenantCrudSyncData(exams, req.body, req)
+        : mergeTenantListData(exams, req.body, req);
+    }
   } else if (req.body && req.body.id) {
+    if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, req.body)) {
+      return res.status(403).json({ success: false, message: "Guru hanya dapat membuat atau mengubah ujian untuk mata pelajaran/bank soal yang diampu." });
+    }
     const tagged = tagNewRecord(req.body, req);
     const resolved = resolveTenantItemIndexById(exams, req.body.id, req, true);
     if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID ujian ambigu lintas tenant.' });
     const idx = resolved.index;
     if (idx >= 0) {
+      if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, exams[idx])) {
+        return res.status(403).json({ success: false, message: "Guru tidak dapat mengubah ujian di luar mata pelajaran yang diampu." });
+      }
       exams[idx] = { ...exams[idx], ...tagged };
     } else {
       exams.push(tagged);
     }
   }
   await saveData('exams', exams);
-  res.json({ success: true, exams: filterByMadrasah(exams, req) });
+  res.json({ success: true, exams: isTeacherRequest(req) ? examsForRequest(req) : filterByMadrasah(exams, req) });
 });
 app.delete("/api/exams/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
