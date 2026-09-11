@@ -67,6 +67,16 @@ function testServerGuards() {
   assert.match(server, /function examStateKey\(/);
   assert.match(server, /filterExamStateMapForRequest/);
   assert.match(server, /clientTenant !== eventTenant/);
+  assert.match(server, /ONLINE_RUNTIME_STARTING/);
+  assert.match(server, /startOnlineRuntimeInitializationLoop\(\)/);
+  assert.match(server, /ONLINE_STARTUP_NOT_READY/);
+  assert.match(server, /Retry-After", "2"/);
+  assert.match(server, /hasHydratedPersistentState[\s\S]*pool[\s\S]*!isDbQuotaExceeded/);
+  const listenIndex = server.indexOf('const server = app.listen(PORT, "0.0.0.0"');
+  const backgroundInitIndex = server.lastIndexOf('startOnlineRuntimeInitializationLoop();');
+  assert.equal(listenIndex >= 0, true, 'server listen marker missing');
+  assert.equal(backgroundInitIndex > listenIndex, true, 'online DB initialization must run after the port is listening');
+  assert.equal(server.includes('akan terus di-hydrate di latar belakang'), false, 'misleading one-shot hydration warning remains');
 
   assert.match(server, /app\.put\("\/api\/student\/profile", requireAuth, requireRole/);
   assert.match(server, /withTokenLedger\(async \(\) =>/);
