@@ -2914,6 +2914,39 @@ function parseDbRows(rows: any[]) {
   return dbData;
 }
 
+function mergeLessonPlanDbSources(dbData: Record<string, any>): any[] | null {
+  const keys = ['madrasah_lessonPlans', 'madrasah_lesson_plans', 'lessonPlans'];
+  const hasAny = keys.some((key) => Array.isArray(dbData[key]));
+  if (!hasAny) return null;
+
+  const byKey = new Map<string, any>();
+  let anonymousCounter = 0;
+
+  for (const key of keys) {
+    const items = Array.isArray(dbData[key]) ? dbData[key] : [];
+    for (const raw of items) {
+      if (!raw || typeof raw !== 'object') continue;
+      const item = { ...raw };
+      const id = String(item.id || '').trim();
+      const signature = [
+        String(item.subjectId || item.subjectCode || item.subjectName || '').trim().toLowerCase(),
+        String(item.title || item.name || '').trim().toLowerCase(),
+        String(item.topic || item.materi || '').trim().toLowerCase(),
+        String(item.grade || '').trim().toLowerCase(),
+        String(item.semester || '').trim().toLowerCase()
+      ].join('::');
+      const hasSignature = signature.replace(/:/g, '').trim().length > 0;
+      const dedupeKey = id
+        ? `id::${id}`
+        : (hasSignature ? `sig::${signature}` : `anon::${anonymousCounter++}`);
+      const previous = byKey.get(dedupeKey);
+      byKey.set(dedupeKey, previous ? { ...previous, ...item } : item);
+    }
+  }
+
+  return Array.from(byKey.values());
+}
+
 function applyExtendedDbState(dbData: Record<string, any>) {
   if (dbData['customGradeColumns'] !== undefined) customGradeColumns = dbData['customGradeColumns'];
   if (dbData['calendarEvents'] !== undefined) calendarEvents = dbData['calendarEvents'];
@@ -3123,7 +3156,10 @@ async function hydrate() {
     if (dbData['studentOutOfTab'] !== undefined) studentOutOfTab = dbData['studentOutOfTab'];
     if (dbData['blockedStudents'] !== undefined) blockedStudents = dbData['blockedStudents'];
     if (dbData['settings'] !== undefined) appSettings = dbData['settings'];
-    if (dbData['lessonPlans'] !== undefined) lessonPlans = dbData['lessonPlans'];
+    {
+      const mergedLessonPlans = mergeLessonPlanDbSources(dbData);
+      if (mergedLessonPlans !== null) lessonPlans = mergedLessonPlans;
+    }
 
     let activeTeacherAttendance = dbData['teacherAttendance'] || [];
     const teacherAttendanceArchives: any[] = [];
@@ -3197,16 +3233,16 @@ async function initializeOnlineRuntimeBeforeListen() {
         throw new Error('Cloud SQL terhubung tetapi hydration app_store belum selesai.');
       }
 
-      // Recover only legacy lesson-plan rows whose tenant ownership can be inferred
-      // unambiguously from the tenant-tagged subject master. Ambiguous rows remain
-      // untouched/hidden rather than risking cross-tenant disclosure.
-      await migrateLegacyLessonPlansTenantOwnership();
-
       await pool.query('SELECT 1');
       onlineRuntimeReady = true;
       onlineRuntimeReadyAt = new Date().toISOString();
       onlineRuntimeStartupError = null;
       console.log(`[Startup Readiness] Cloud SQL + app_store hydration READY (attempt ${attempt}/${maxAttempts}).`);
+
+      // Compatibility recovery must never hold the whole portal in a 503 state.
+      migrateLegacyLessonPlansTenantOwnership().catch((migrationErr: any) => {
+        console.warn('[LessonPlans] Legacy tenant recovery skipped for this boot:', migrationErr?.message || migrationErr);
+      });
       return;
     } catch (err: any) {
       lastErrorMessage = err?.message || String(err);
@@ -3319,7 +3355,10 @@ async function refreshInmemoryState(force = false) {
         if (dbData['studentOutOfTab'] !== undefined) studentOutOfTab = dbData['studentOutOfTab'];
         if (dbData['blockedStudents'] !== undefined) blockedStudents = dbData['blockedStudents'];
         if (dbData['settings'] !== undefined) appSettings = dbData['settings'];
-        if (dbData['lessonPlans'] !== undefined) lessonPlans = dbData['lessonPlans'];
+        {
+      const mergedLessonPlans = mergeLessonPlanDbSources(dbData);
+      if (mergedLessonPlans !== null) lessonPlans = mergedLessonPlans;
+    }
         if (dbData['teacherAttendance'] !== undefined) {
           const archives: any[] = [];
           Object.keys(dbData).forEach(k => {
@@ -3355,13 +3394,16 @@ async function refreshInmemoryState(force = false) {
   return dbFetchPromise;
 }
 
-app.use(async (req, res, next) => {
-  const runtimeReady = !isOnlineMode || Boolean(
-    onlineRuntimeReady &&
+function isOnlineRuntimeUsable(): boolean {
+  return !isOnlineMode || Boolean(
     hasHydratedPersistentState &&
     pool &&
     !isDbQuotaExceeded
   );
+}
+
+app.use(async (req, res, next) => {
+  const runtimeReady = isOnlineRuntimeUsable();
   const readinessExemptPath =
     req.path === "/health" ||
     req.path === "/healthz" ||
@@ -3404,17 +3446,26 @@ app.use(async (req, res, next) => {
 app.get("/health", (req, res) => res.status(200).send("OK"));
 app.get("/healthz", (req, res) => res.status(200).send("OK"));
 app.get("/readyz", (req, res) => {
-  const ready = !isOnlineMode || Boolean(onlineRuntimeReady && hasHydratedPersistentState && pool && !isDbQuotaExceeded);
+  const ready = isOnlineRuntimeUsable();
   return res.status(ready ? 200 : 503).json({
     status: ready ? 'ready' : 'starting',
     ready,
     mode: storageMode,
+    dbConnected: Boolean(pool && !isDbQuotaExceeded),
+    hydrated: Boolean(hasHydratedPersistentState),
     readyAt: onlineRuntimeReadyAt
   });
 });
 app.get("/api/health", (req, res) => {
-  const ready = !isOnlineMode || Boolean(onlineRuntimeReady && hasHydratedPersistentState && pool && !isDbQuotaExceeded);
-  res.json({ status: ready ? "ok" : "starting", ready, mode: storageMode, readyAt: onlineRuntimeReadyAt });
+  const ready = isOnlineRuntimeUsable();
+  res.status(200).json({
+    status: ready ? "ok" : "starting",
+    ready,
+    mode: storageMode,
+    dbConnected: Boolean(pool && !isDbQuotaExceeded),
+    hydrated: Boolean(hasHydratedPersistentState),
+    readyAt: onlineRuntimeReadyAt
+  });
 });
 
 app.get("/api/check-connection", async (req, res) => {
@@ -4132,6 +4183,8 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     filteredGeneratedExams = generatedExams.filter(defaultFilter);
     filteredImportGroups = (importGroups || []).filter(defaultFilter);
   }
+
+  filteredLessonPlans = filterLessonPlansForRequest(req);
 
   const sortedStudents = [...filteredStudents].sort((a: any, b: any) => {
     const nameA = String(a.name || '').trim().toLowerCase();
@@ -5229,7 +5282,10 @@ app.post("/api/db-pull-cloud", async (req, res) => {
     if (dbData['studentOutOfTab'] !== undefined) studentOutOfTab = dbData['studentOutOfTab'];
     if (dbData['blockedStudents'] !== undefined) blockedStudents = dbData['blockedStudents'];
     if (dbData['settings'] !== undefined) appSettings = dbData['settings'];
-    if (dbData['lessonPlans'] !== undefined) lessonPlans = dbData['lessonPlans'];
+    {
+      const mergedLessonPlans = mergeLessonPlanDbSources(dbData);
+      if (mergedLessonPlans !== null) lessonPlans = mergedLessonPlans;
+    }
     if (dbData['teacherAttendance'] !== undefined) teacherAttendance = dbData['teacherAttendance'];
     if (dbData['childguardRules'] !== undefined) childguardRules = dbData['childguardRules'];
     if (dbData['childguardLogs'] !== undefined) childguardLogs = dbData['childguardLogs'];
@@ -6342,7 +6398,51 @@ function inferLegacyLessonPlanTenant(item: any): { id: string; slug: string } | 
     tenantMatches.set(`${id}::${slug}`, { id: id || slug, slug: slug || id });
   }
 
-  return tenantMatches.size === 1 ? Array.from(tenantMatches.values())[0] : null;
+  if (tenantMatches.size === 1) return Array.from(tenantMatches.values())[0];
+
+  // Safe fallback: if every tagged master record observed by this instance points
+  // to exactly one tenant, an untagged legacy lesson plan has only one possible owner.
+  const observedTenants = new Map<string, { id: string; slug: string }>();
+  const masterRows = [
+    ...(subjects || []),
+    ...(classes || []),
+    ...(teachers || [])
+  ];
+  for (const row of masterRows) {
+    const rawTenant = String(row?.madrasahId || row?.madrasahSlug || '').trim();
+    if (!rawTenant || rawTenant === 'BOSS') continue;
+    const matchM = (madrasahs || []).find((m: any) =>
+      String(m?.id || '') === rawTenant || String(m?.slug || '') === rawTenant
+    );
+    const id = String(matchM?.id || row?.madrasahId || rawTenant).trim();
+    const slug = String(matchM?.slug || row?.madrasahSlug || rawTenant).trim();
+    if (!id && !slug) continue;
+    observedTenants.set(`${id}::${slug}`, { id: id || slug, slug: slug || id });
+  }
+  return observedTenants.size === 1 ? Array.from(observedTenants.values())[0] : null;
+}
+
+function lessonPlanBelongsToRequest(item: any, req: any): boolean {
+  if (!item) return false;
+  if (item.madrasahId || item.madrasahSlug) return isItemForCurrentMadrasah(item, req);
+
+  const mId = getRequestMadrasahId(req);
+  if (!mId || mId === 'default' || mId === 'BOSS') {
+    return isItemForCurrentMadrasah(item, req);
+  }
+
+  const inferred = inferLegacyLessonPlanTenant(item);
+  if (!inferred) return false;
+  const matchM = (madrasahs || []).find((m: any) =>
+    String(m?.id || '') === String(mId) || String(m?.slug || '') === String(mId)
+  );
+  const targetId = String(matchM?.id || mId);
+  const targetSlug = String(matchM?.slug || mId);
+  return inferred.id === targetId || inferred.slug === targetSlug || inferred.id === targetSlug || inferred.slug === targetId;
+}
+
+function filterLessonPlansForRequest(req: any): any[] {
+  return (lessonPlans || []).filter((item: any) => lessonPlanBelongsToRequest(item, req));
 }
 
 async function migrateLegacyLessonPlansTenantOwnership(): Promise<number> {
@@ -13290,7 +13390,7 @@ let lessonPlans: LessonPlan[] = (bootStore['lessonPlans'] && bootStore['lessonPl
 
 app.get("/api/lesson-plans", (req, res) => {
   const { subjectId } = req.query;
-  const filteredTenant = filterByMadrasah(lessonPlans, req);
+  const filteredTenant = filterLessonPlansForRequest(req);
   if (subjectId) {
     const filtered = filteredTenant.filter(lp => String(lp.subjectId) === String(subjectId));
     return res.json({ success: true, data: filtered, lessonPlans: filtered });
@@ -16197,7 +16297,7 @@ app.get("/api/system/backup", (req, res) => {
     journals: filterByMadrasah(journals, req),
     gradeCategories: tenantConfigValue(gradeCategories, req, [], 'gradeCategories'),
     generatedExams: filterByMadrasah(generatedExams, req),
-    lessonPlans: filterByMadrasah(lessonPlans, req),
+    lessonPlans: filterLessonPlansForRequest(req),
     grades: filterByMadrasah(grades, req),
     settings: sanitizeSettingsForClient(appSettings),
     schoolLocationSettings: tenantConfigValue(schoolLocationSettings, req, { schoolLatitude: -6.2000, schoolLongitude: 106.8166, geofenceRadius: 100 }, 'schoolLocationSettings'),
