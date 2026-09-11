@@ -5680,6 +5680,23 @@ function isItemForCurrentMadrasah(item: any, req: any): boolean {
   return imId === 'default' || imId === defId || imId === defSlug || imSlug === 'default' || imSlug === defSlug || imSlug === defId || (!item.madrasahId && !item.madrasahSlug);
 }
 
+function resolveTenantItemIndexById(list: any[], id: any, req: any, allowBossUniqueFallback = true): { index: number; item: any; ambiguous: boolean } {
+  const authUser = getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const isBoss = role === 'bos' || role === 'superadmin';
+  const indexes: number[] = [];
+  for (let i = 0; i < (Array.isArray(list) ? list.length : 0); i++) {
+    if (String(list[i]?.id) === String(id)) indexes.push(i);
+  }
+  const owned = indexes.filter((i) => isItemForCurrentMadrasah(list[i], req));
+  if (owned.length === 1) return { index: owned[0], item: list[owned[0]], ambiguous: false };
+  if (owned.length > 1) return { index: -1, item: null, ambiguous: true };
+  if (isBoss && allowBossUniqueFallback && indexes.length === 1) {
+    return { index: indexes[0], item: list[indexes[0]], ambiguous: false };
+  }
+  return { index: -1, item: null, ambiguous: isBoss && indexes.length > 1 };
+}
+
 function enforceTenantMutationOwnership(req: any, res: any, authUser: any): boolean {
   const role = String(authUser?.role || '').toLowerCase();
   if (role === 'bos' || role === 'superadmin') return true;
@@ -6191,16 +6208,15 @@ app.post("/api/teachers", requireAuth, requireRole(['teacher', 'guru', 'admin', 
 
 app.put("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  const idx = teachers.findIndex(t => String(t.id) === String(id));
+  const resolvedTeacher = resolveTenantItemIndexById(teachers, id, req);
+  if (resolvedTeacher.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID guru ambigu lintas tenant; pilih tenant target secara eksplisit." });
+  }
+  const idx = resolvedTeacher.index;
   if (idx < 0) {
-    return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
+    return res.status(404).json({ success: false, message: "Guru tidak ditemukan pada madrasah ini." });
   }
-  const t = teachers[idx];
-  const authUser = getAuthUser(req);
-  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(t, req)) {
-    return res.status(403).json({ success: false, message: "Akses ditolak: guru bukan milik madrasah Anda." });
-  }
+  const t = resolvedTeacher.item;
   
   let updatedPassword = t.password;
   if (req.body.password && String(req.body.password).trim().length > 0) {
@@ -6234,16 +6250,15 @@ app.put("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
 
 app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  const tIdx = teachers.findIndex(t => String(t.id) === String(id));
+  const resolvedTeacher = resolveTenantItemIndexById(teachers, id, req);
+  if (resolvedTeacher.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID guru ambigu lintas tenant; pilih tenant target secara eksplisit." });
+  }
+  const tIdx = resolvedTeacher.index;
   if (tIdx < 0) {
-    return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
+    return res.status(404).json({ success: false, message: "Guru tidak ditemukan pada madrasah ini." });
   }
-  const t = teachers[tIdx];
-  const authUser = getAuthUser(req);
-  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(t, req)) {
-    return res.status(403).json({ success: false, message: "Akses ditolak." });
-  }
+  const t = resolvedTeacher.item;
 
   // Remove from teachers, add to students
   teachers.splice(tIdx, 1);
@@ -6256,8 +6271,8 @@ app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos
     id: "ST_" + Date.now(),
     nis: req.body.nis || t.nip || "100" + Date.now(),
     name: req.body.name || t.name,
-    classId: req.body.classId || classes[0]?.id || "C1",
-    class_id: req.body.classId || classes[0]?.id || "C1",
+    classId: req.body.classId || filterByMadrasah(classes, req)[0]?.id || "C1",
+    class_id: req.body.classId || filterByMadrasah(classes, req)[0]?.id || "C1",
     username: req.body.username || t.username,
     password: convertedPassword,
     photo: req.body.photo || "",
@@ -6522,16 +6537,15 @@ app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     }
   }
 
-  const idx = students.findIndex(s => String(s.id) === String(id));
+  const resolvedStudent = resolveTenantItemIndexById(students, id, req);
+  if (resolvedStudent.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant; pilih tenant target secara eksplisit." });
+  }
+  const idx = resolvedStudent.index;
   if (idx < 0) {
-    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
+    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan pada madrasah ini." });
   }
-  const st = students[idx];
-  const authUser = getAuthUser(req);
-  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(st, req)) {
-    return res.status(403).json({ success: false, message: "Akses ditolak." });
-  }
+  const st = resolvedStudent.item;
 
   let updatedPassword = st.password;
   const credentials: any[] = [];
@@ -6575,17 +6589,16 @@ app.post("/api/students/:id/set-profile-photo", requireAuth, requireRole(['teach
     photo = await saveBase64ToFirestore(photo);
   }
 
-  const idx = students.findIndex(s => String(s.id) === String(id));
+  const resolvedStudent = resolveTenantItemIndexById(students, id, req);
+  if (resolvedStudent.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant; pilih tenant target secara eksplisit." });
+  }
+  const idx = resolvedStudent.index;
   if (idx < 0) {
-    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
+    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan pada madrasah ini." });
   }
 
-  const st = students[idx];
-  const authUser = getAuthUser(req);
-  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(st, req)) {
-    return res.status(403).json({ success: false, message: "Akses ditolak." });
-  }
+  const st = resolvedStudent.item;
   const prevPhoto = st.photo || '';
   let history: any[] = Array.isArray(st.photoHistory) ? [...st.photoHistory] : [];
 
@@ -6629,17 +6642,16 @@ app.delete("/api/students/:id/photo-history", requireAuth, requireRole(['teacher
     return res.status(400).json({ success: false, message: "Parameter photoUrl wajib diisi." });
   }
 
-  const idx = students.findIndex(s => String(s.id) === String(id));
+  const resolvedStudent = resolveTenantItemIndexById(students, id, req);
+  if (resolvedStudent.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant; pilih tenant target secara eksplisit." });
+  }
+  const idx = resolvedStudent.index;
   if (idx < 0) {
-    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
+    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan pada madrasah ini." });
   }
 
-  const st = students[idx];
-  const authUser = getAuthUser(req);
-  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(st, req)) {
-    return res.status(403).json({ success: false, message: "Akses ditolak." });
-  }
+  const st = resolvedStudent.item;
   let history: any[] = Array.isArray(st.photoHistory) ? [...st.photoHistory] : [];
   history = history.filter(h => {
     const p = typeof h === 'string' ? h : (h.photo || '');
@@ -6669,7 +6681,9 @@ app.delete("/api/students/:id/photo-history", requireAuth, requireRole(['teacher
   // Clean up photo in attendance if it matched this deleted photo
   let attChanged = false;
   attendance.forEach((a: any) => {
-    if ((String(a.studentId) === String(id) || (st.nis && String(a.nis) === String(st.nis))) && a.photo === photoUrl) {
+    if (isItemForCurrentMadrasah(a, req) &&
+        (String(a.studentId) === String(id) || (st.nis && String(a.nis) === String(st.nis))) &&
+        a.photo === photoUrl) {
       delete a.photo;
       attChanged = true;
     }
@@ -6711,16 +6725,15 @@ app.delete("/api/students/:id/photo-history", requireAuth, requireRole(['teacher
 
 app.put("/api/students/:id/change-role", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  const sIdx = students.findIndex(s => String(s.id) === String(id));
+  const resolvedStudent = resolveTenantItemIndexById(students, id, req);
+  if (resolvedStudent.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant; pilih tenant target secara eksplisit." });
+  }
+  const sIdx = resolvedStudent.index;
   if (sIdx < 0) {
-    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
+    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan pada madrasah ini." });
   }
-  const st = students[sIdx];
-  const authUser = getAuthUser(req);
-  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(st, req)) {
-    return res.status(403).json({ success: false, message: "Akses ditolak." });
-  }
+  const st = resolvedStudent.item;
   
   // Remove from students, add to teachers
   students.splice(sIdx, 1);
@@ -7000,13 +7013,12 @@ app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', '
   const { name, grade, code, homeroomTeacherId } = req.body;
   let targetId = req.body.id;
   if (targetId) {
-    const idx = classes.findIndex(c => String(c.id) === String(targetId));
+    const resolvedClass = resolveTenantItemIndexById(classes, targetId, req);
+    if (resolvedClass.ambiguous) {
+      return res.status(409).json({ success: false, message: "ID kelas ambigu lintas tenant; pilih tenant target secara eksplisit." });
+    }
+    const idx = resolvedClass.index;
     if (idx >= 0) {
-      const authUser = getAuthUser(req);
-      const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-      if (!isBos && !isItemForCurrentMadrasah(classes[idx], req)) {
-        return res.status(403).json({ success: false, message: "Akses ditolak: kelas bukan milik madrasah Anda." });
-      }
       classes[idx] = { 
         ...classes[idx], 
         name, 
@@ -7050,14 +7062,11 @@ app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', '
 
 app.delete("/api/classes/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  const targetClass = classes.find(c => String(c.id) === String(id));
-  if (!targetClass) return res.status(404).json({ success: false, message: "Kelas tidak ditemukan." });
-  const authUser = getAuthUser(req);
-  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(targetClass, req)) {
-    return res.status(403).json({ success: false, message: "Akses ditolak: kelas bukan milik madrasah Anda." });
-  }
-  classes = classes.filter(c => String(c.id) !== String(id));
+  const resolvedClass = resolveTenantItemIndexById(classes, id, req);
+  if (resolvedClass.ambiguous) return res.status(409).json({ success: false, message: "ID kelas ambigu lintas tenant; pilih tenant target secara eksplisit." });
+  const targetClass = resolvedClass.item;
+  if (!targetClass) return res.status(404).json({ success: false, message: "Kelas tidak ditemukan pada madrasah ini." });
+  classes = classes.filter((c: any) => !(String(c.id) === String(id) && isItemForCurrentMadrasah(c, req)));
   await saveData('classes', classes);
   res.json({ success: true, message: "Kelas berhasil dihapus." });
 });
@@ -7081,14 +7090,11 @@ app.post("/api/subjects", requireAuth, requireRole(['teacher', 'guru', 'admin', 
 
 app.delete("/api/subjects/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  const targetSubject = subjects.find(s => String(s.id) === String(id));
-  if (!targetSubject) return res.status(404).json({ success: false, message: "Mata pelajaran tidak ditemukan." });
-  const authUser = getAuthUser(req);
-  const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(targetSubject, req)) {
-    return res.status(403).json({ success: false, message: "Akses ditolak: mata pelajaran bukan milik madrasah Anda." });
-  }
-  subjects = subjects.filter(s => String(s.id) !== String(id));
+  const resolvedSubject = resolveTenantItemIndexById(subjects, id, req);
+  if (resolvedSubject.ambiguous) return res.status(409).json({ success: false, message: "ID mata pelajaran ambigu lintas tenant; pilih tenant target secara eksplisit." });
+  const targetSubject = resolvedSubject.item;
+  if (!targetSubject) return res.status(404).json({ success: false, message: "Mata pelajaran tidak ditemukan pada madrasah ini." });
+  subjects = subjects.filter((sub: any) => !(String(sub.id) === String(id) && isItemForCurrentMadrasah(sub, req)));
   await saveData('subjects', subjects);
   res.json({ success: true, message: "Mata pelajaran berhasil dihapus." });
 });
