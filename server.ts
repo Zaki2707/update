@@ -8361,7 +8361,7 @@ function parseExamStateKeyForRequest(req: any, key: string): { studentId: string
     .filter((item: any) => isItemForCurrentMadrasah(item, req))
     .map((item: any) => String(item.id))
     .sort((a: string, b: string) => b.length - a.length);
-  const tenantExams = new Set(
+  const tenantExams = new Set<string>(
     (exams || []).filter((item: any) => isItemForCurrentMadrasah(item, req)).map((item: any) => String(item.id))
   );
 
@@ -8374,7 +8374,7 @@ function parseExamStateKeyForRequest(req: any, key: string): { studentId: string
   }
 
   const tenantStudentSet = new Set<string>(tenantStudents);
-  const orderedExamIds = [...tenantExams].sort((a: string, b: string) => b.length - a.length);
+  const orderedExamIds = Array.from(tenantExams).sort((a, b) => b.length - a.length);
   for (const parsedExamId of orderedExamIds) {
     const prefix = parsedExamId + '_';
     if (raw.startsWith(prefix)) {
