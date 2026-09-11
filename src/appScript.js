@@ -1,3 +1,94 @@
+const AUTH_SESSION_TOKEN_KEY = 'madrasah_auth_token';
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+}
+
+function escapeHtmlAttr(value) {
+    return escapeHtml(value);
+}
+
+function getStoredAuthToken() {
+    try { return sessionStorage.getItem(AUTH_SESSION_TOKEN_KEY) || ''; } catch (_) { return ''; }
+}
+
+function sanitizePersistedUser(user) {
+    if (!user || typeof user !== 'object') return null;
+    const clean = { ...user };
+    delete clean.token;
+    delete clean.password;
+    delete clean.passwordRaw;
+    delete clean.adminPass;
+    return clean;
+}
+
+function persistCurrentUser(user) {
+    if (!user || typeof user !== 'object') {
+        clearPersistedAuthSession();
+        return null;
+    }
+    const token = String(user.token || getStoredAuthToken() || '');
+    const clean = sanitizePersistedUser(user);
+    try {
+        if (token) sessionStorage.setItem(AUTH_SESSION_TOKEN_KEY, token);
+        else sessionStorage.removeItem(AUTH_SESSION_TOKEN_KEY);
+        localStorage.setItem('madrasah_current_user', JSON.stringify(clean));
+    } catch (_) {}
+    return token ? { ...clean, token } : clean;
+}
+
+function readPersistedUser(requireToken = true) {
+    let profile = null;
+    try {
+        const raw = localStorage.getItem('madrasah_current_user');
+        if (raw) profile = JSON.parse(raw);
+    } catch (_) {}
+    if (!profile || typeof profile !== 'object') return null;
+
+    // One-time migration from older builds that persisted JWT in localStorage.
+    try {
+        if (profile.token && !getStoredAuthToken()) {
+            sessionStorage.setItem(AUTH_SESSION_TOKEN_KEY, String(profile.token));
+        }
+        if (profile.token || profile.password || profile.passwordRaw || profile.adminPass) {
+            localStorage.setItem('madrasah_current_user', JSON.stringify(sanitizePersistedUser(profile)));
+        }
+    } catch (_) {}
+
+    const token = getStoredAuthToken();
+    const clean = sanitizePersistedUser(profile);
+    if (requireToken && !token) return null;
+    return token ? { ...clean, token } : clean;
+}
+
+function clearPersistedAuthSession() {
+    try { sessionStorage.removeItem(AUTH_SESSION_TOKEN_KEY); } catch (_) {}
+    try { localStorage.removeItem('madrasah_current_user'); } catch (_) {}
+    try { localStorage.removeItem('madrasah_active_account'); } catch (_) {}
+}
+
+function isSafeDisplayImageUrl(value) {
+    const raw = String(value || '').trim();
+    if (/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=\r\n]+$/i.test(raw)) return true;
+    if (/^\/api\/photos\/[A-Za-z0-9._-]+$/.test(raw)) return true;
+    try {
+        const url = new URL(raw, window.location.origin);
+        return url.protocol === 'https:' || url.protocol === 'http:';
+    } catch (_) {
+        return false;
+    }
+}
+
+window.escapeHtml = escapeHtml;
+window.escapeHtmlAttr = escapeHtmlAttr;
+window.getStoredAuthToken = getStoredAuthToken;
+window.persistCurrentUser = persistCurrentUser;
+window.readPersistedUser = readPersistedUser;
+window.clearPersistedAuthSession = clearPersistedAuthSession;
+window.isSafeDisplayImageUrl = isSafeDisplayImageUrl;
+
 // Monkey patch window.fetch to automatically append current tenant/madrasahId header and query param
 (() => {
     const originalFetch = window.fetch;
@@ -6,11 +97,7 @@
         options = options || {};
         options.headers = options.headers || {};
 
-        const savedUser = localStorage.getItem('madrasah_current_user');
-        let savedUserData = null;
-        if (savedUser) {
-            try { savedUserData = JSON.parse(savedUser); } catch(e) {}
-        }
+        const savedUserData = readPersistedUser(true);
         
         const activeMId = (savedUserData && (savedUserData.madrasahId || savedUserData.madrasahSlug)) || window.__activeTenant?.id || window.__activeTenant?.slug;
         
@@ -22,9 +109,10 @@
             if (savedUserData.id) {
                 options.headers['X-User-Id'] = String(savedUserData.id);
             }
-            if (savedUserData.token) {
-                options.headers['Authorization'] = 'Bearer ' + savedUserData.token;
-                options.headers['X-Auth-Token'] = savedUserData.token;
+            const authToken = getStoredAuthToken();
+            if (authToken) {
+                options.headers['Authorization'] = 'Bearer ' + authToken;
+                options.headers['X-Auth-Token'] = authToken;
             }
         }
         
@@ -86,7 +174,7 @@
 })();
 
 var appState = {
-    currentUser: JSON.parse(localStorage.getItem('madrasah_current_user')) || null,
+    currentUser: readPersistedUser(true),
     role: null,
     madrasahs: JSON.parse(localStorage.getItem('madrasah_madrasahs')) || [],
     tokenRequests: [],
@@ -95,7 +183,7 @@ var appState = {
         schoolName: 'Madrasah Bisa',
         adminName: 'Administrator',
         adminUser: 'admin',
-        adminPass: 'admin123',
+        adminPass: '',
         radius: 100,
         accuracy: 10,
         theme: 'emerald',
@@ -489,6 +577,15 @@ function safeSetLocalStorage(key, value) {
     const storageKey = String(key || '');
     if (!storageKey) return false;
 
+    if (storageKey === 'madrasah_current_user') {
+        let userValue = value;
+        if (typeof userValue === 'string') {
+            try { userValue = JSON.parse(userValue); } catch (_) { return false; }
+        }
+        persistCurrentUser(userValue);
+        return true;
+    }
+
     // Cloud Run/online mode is server-authoritative. Keep only session and CBT
     // recovery/offline-queue data in browser storage; purge replicated datasets.
     if (isOnlineServerAuthoritativeStorage() && ONLINE_SERVER_AUTH_STORAGE_KEYS.has(storageKey)) {
@@ -879,12 +976,7 @@ function queueRealtimeKeySync(key) {
 window.queueRealtimeKeySync = queueRealtimeKeySync;
 
 function getStoredRealtimeAuthToken() {
-    try {
-        const saved = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
-        return saved && saved.token ? String(saved.token) : '';
-    } catch (_) {
-        return '';
-    }
+    return getStoredAuthToken();
 }
 
 function initRealtimeSync() {
@@ -1063,11 +1155,21 @@ function updateSchoolLogoUI() {
     const color = appState.settings.schoolLogoColor || '#ffffff';
     container.style.color = color;
     
-    const logo = (appState.settings && appState.settings.schoolLogo) || 'fa-moon';
-    if (logo.startsWith('data:image/') || logo.startsWith('http://') || logo.startsWith('https://')) {
-        container.innerHTML = `<img src="${logo}" class="w-full h-full object-cover" referrerPolicy="no-referrer" alt="Logo">`;
+    const logo = String((appState.settings && appState.settings.schoolLogo) || 'fa-moon');
+    container.replaceChildren();
+    if (isSafeDisplayImageUrl(logo)) {
+        const img = document.createElement('img');
+        img.src = logo;
+        img.className = 'w-full h-full object-cover';
+        img.referrerPolicy = 'no-referrer';
+        img.alt = 'Logo';
+        container.appendChild(img);
     } else {
-        container.innerHTML = `<i id="nav-school-logo-icon" class="fa-solid ${logo}"></i>`;
+        const icon = document.createElement('i');
+        icon.id = 'nav-school-logo-icon';
+        icon.classList.add('fa-solid');
+        icon.classList.add(/^fa-[a-z0-9-]+$/i.test(logo) ? logo : 'fa-moon');
+        container.appendChild(icon);
     }
     try {
         applyLoginCustomization();
@@ -1102,13 +1204,19 @@ function applyLoginCustomization() {
     if (subEl) subEl.innerText = subtitle;
 
     const btnEl = document.getElementById('login-submit-btn');
-    if (btnEl) btnEl.innerHTML = `<span>${buttonText}</span> <i class="fa-solid fa-arrow-right text-xs ml-1.5"></i>`;
+    if (btnEl) {
+        const label = document.createElement('span');
+        label.textContent = String(buttonText);
+        const icon = document.createElement('i');
+        icon.className = 'fa-solid fa-arrow-right text-xs ml-1.5';
+        btnEl.replaceChildren(label, icon);
+    }
 
     const rightFooterEl = document.getElementById('login-right-footer');
-    if (rightFooterEl) rightFooterEl.innerHTML = `&copy; ${footerText}`;
+    if (rightFooterEl) rightFooterEl.textContent = '© ' + String(footerText);
 
     const leftFooterEl = document.getElementById('login-left-footer');
-    if (leftFooterEl) leftFooterEl.innerHTML = `&copy; ${footerText}`;
+    if (leftFooterEl) leftFooterEl.textContent = '© ' + String(footerText);
 
     const panelTitleEl = document.getElementById('login-panel-title');
     if (panelTitleEl) panelTitleEl.innerText = panelTitle;
@@ -1295,7 +1403,7 @@ function showConfirmModal(message, onConfirm) {
                     <i class="fa-solid fa-trash-can"></i>
                 </div>
                 <h3 class="font-bold text-slate-800 text-base">Konfirmasi Hapus</h3>
-                <p class="text-xs text-slate-500 leading-relaxed">${message}</p>
+                <p id="confirm-modal-message" class="text-xs text-slate-500 leading-relaxed"></p>
                 <div class="flex space-x-3 pt-2">
                     <button type="button" onclick="closeModal()" class="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-2xl text-xs transition cursor-pointer">
                         Batal
@@ -1307,6 +1415,8 @@ function showConfirmModal(message, onConfirm) {
             </div>
         </div>
     `;
+    const messageEl = document.getElementById('confirm-modal-message');
+    if (messageEl) messageEl.textContent = String(message || '');
     const btn = document.getElementById('confirm-action-btn');
     if (btn) {
         btn.onclick = () => {
@@ -1342,7 +1452,11 @@ function showToast(message, type = 'success') {
     const iconClass = displayType === 'error' ? 'fa-triangle-exclamation' : (displayType === 'warning' ? 'fa-triangle-exclamation' : (displayType === 'info' ? 'fa-circle-info' : 'fa-circle-check'));
 
     toast.className = `p-4 rounded-2xl shadow-xl text-xs font-semibold text-white flex items-center space-x-2 transition transform translate-y-2 opacity-0 pointer-events-auto ${bgClass}`;
-    toast.innerHTML = `<i class="fa-solid ${iconClass} text-sm"></i><span>${displayMessage}</span>`;
+    const icon = document.createElement('i');
+    icon.className = `fa-solid ${iconClass} text-sm`;
+    const text = document.createElement('span');
+    text.textContent = String(displayMessage ?? '');
+    toast.replaceChildren(icon, text);
     container.appendChild(toast);
     setTimeout(() => toast.classList.remove('translate-y-2', 'opacity-0'), 50);
     setTimeout(() => {
@@ -1368,19 +1482,11 @@ async function initAppSession() {
         console.warn('Gagal fetch settings awal:', e);
     }
 
-    const savedUser = localStorage.getItem('madrasah_current_user');
-    let savedUserData = null;
-    if (savedUser) {
-        try {
-            savedUserData = JSON.parse(savedUser);
-            // Block restoring a BOS session in offline mode
-            if (savedUserData && savedUserData.role === 'bos' && (appState.isOfflineMode || window.isOfflineMode)) {
-                console.warn('Sesi BOS dinonaktifkan dalam mode offline demi keamanan.');
-                localStorage.removeItem('madrasah_current_user');
-                localStorage.removeItem('madrasah_active_account');
-                savedUserData = null;
-            }
-        } catch(e) {}
+    let savedUserData = readPersistedUser(true);
+    if (savedUserData && savedUserData.role === 'bos' && (appState.isOfflineMode || window.isOfflineMode)) {
+        console.warn('Sesi BOS dinonaktifkan dalam mode offline demi keamanan.');
+        clearPersistedAuthSession();
+        savedUserData = null;
     }
 
     // Force-logout on tenant slug mismatch to prevent session pollution
@@ -1391,8 +1497,7 @@ async function initAppSession() {
             const userSlug = String(savedUserData.madrasahSlug || 'default').toLowerCase();
             if (userSlug !== urlSlug.toLowerCase()) {
                 console.log('TENANT MISMATCH! Forcing logout from', userSlug, 'to access portal', urlSlug);
-                localStorage.removeItem('madrasah_current_user');
-                localStorage.removeItem('madrasah_active_account');
+                clearPersistedAuthSession();
                 savedUserData = null;
                 appState.currentUser = null;
                 appState.role = null;
@@ -1411,7 +1516,7 @@ async function initAppSession() {
     if (savedUserData && savedUserData.role) {
         appState.currentUser = savedUserData;
         appState.role = savedUserData.role;
-        console.log('SESI LOGIN DIPULIHKAN SEGERA:', appState.currentUser);
+        console.log('SESI LOGIN DIPULIHKAN SEGERA.');
 
         const loginContainer = document.getElementById('login-container');
         const mainApp = document.getElementById('main-app');
@@ -1470,7 +1575,7 @@ function handleGlobalSearch(query) {
     (appState.students || []).forEach(s => {
         if ((s.name && s.name.toLowerCase().includes(q)) || (s.nis && s.nis.includes(q))) {
             resultsHtml += `<div class="px-3 py-2 hover:bg-slate-100 cursor-pointer rounded-xl flex justify-between items-center" onclick="navigateTo('siswa'); document.getElementById('global-search-results').classList.add('hidden');">
-                <div><span class="font-bold text-slate-800">${s.name}</span><p class="text-[10px] text-slate-400">Murid - NIS: ${s.nis}</p></div>
+                <div><span class="font-bold text-slate-800">${escapeHtml(s.name)}</span><p class="text-[10px] text-slate-400">Murid - NIS: ${escapeHtml(s.nis)}</p></div>
                 <i class="fa-solid fa-arrow-right text-slate-400 text-[10px]"></i>
             </div>`;
             count++;
@@ -1480,7 +1585,7 @@ function handleGlobalSearch(query) {
     (appState.teachers || []).forEach(t => {
         if ((t.name && t.name.toLowerCase().includes(q)) || (t.nip && t.nip.includes(q))) {
             resultsHtml += `<div class="px-3 py-2 hover:bg-slate-100 cursor-pointer rounded-xl flex justify-between items-center" onclick="navigateTo('guru'); document.getElementById('global-search-results').classList.add('hidden');">
-                <div><span class="font-bold text-slate-800">${t.name}</span><p class="text-[10px] text-slate-400">Guru - NIP: ${t.nip}</p></div>
+                <div><span class="font-bold text-slate-800">${escapeHtml(t.name)}</span><p class="text-[10px] text-slate-400">Guru - NIP: ${escapeHtml(t.nip)}</p></div>
                 <i class="fa-solid fa-arrow-right text-slate-400 text-[10px]"></i>
             </div>`;
             count++;
@@ -1490,7 +1595,7 @@ function handleGlobalSearch(query) {
     (appState.classes || []).forEach(c => {
         if (c.name && c.name.toLowerCase().includes(q)) {
             resultsHtml += `<div class="px-3 py-2 hover:bg-slate-100 cursor-pointer rounded-xl flex justify-between items-center" onclick="navigateTo('kelas'); document.getElementById('global-search-results').classList.add('hidden');">
-                <div><span class="font-bold text-slate-800">${c.name}</span><p class="text-[10px] text-slate-400">Kelas - Tingkat: ${c.grade}</p></div>
+                <div><span class="font-bold text-slate-800">${escapeHtml(c.name)}</span><p class="text-[10px] text-slate-400">Kelas - Tingkat: ${escapeHtml(c.grade)}</p></div>
                 <i class="fa-solid fa-arrow-right text-slate-400 text-[10px]"></i>
             </div>`;
             count++;
@@ -1558,7 +1663,7 @@ async function handleLogin(e) {
         const loggedInId = String(loggedInUser.id);
         
         appState.role = loggedInUser.role;
-        localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser));
+        persistCurrentUser(loggedInUser);
         localStorage.setItem('madrasah_active_account', loggedInId);
 
         // Load all data BEFORE we determine the role and start the session!
@@ -1605,7 +1710,7 @@ async function handleLogin(e) {
         appState.currentUser = loggedInUser;
         appState.role = detectedRole;
 
-        localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser));
+        persistCurrentUser(loggedInUser);
         localStorage.setItem('madrasah_active_account', loggedInId);
 
         startSession(false);
@@ -1867,7 +1972,7 @@ function logout() {
 
     appState.currentUser = null;
     appState.role = null;
-    localStorage.removeItem('madrasah_current_user');
+    clearPersistedAuthSession();
     localStorage.removeItem('madrasah_last_route');
 
     // Restore top bar classes in case next login is different role
