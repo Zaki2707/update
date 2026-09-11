@@ -14316,7 +14316,8 @@ const ONLINE_SAFE_RESTORE_SPECS: Array<[string, string[], string, () => any[]]> 
   ['exams', ['madrasah_exams'], 'generic', () => exams || []],
   ['rooms', ['madrasah_rooms'], 'generic', () => rooms || []],
   ['journals', ['madrasah_journals'], 'generic', () => journals || []],
-  ['gradeCategories', ['madrasah_grade_categories', 'madrasah_gradeCategories'], 'generic', () => gradeCategories || []],
+  // gradeCategories is tenant-scoped configuration, not an entity list. It is handled
+  // outside the generic id-based add-only restore planner.
   ['generatedExams', ['madrasah_generated_exams', 'madrasah_generatedExams'], 'generic', () => generatedExams || []],
   ['lessonPlans', ['madrasah_lessonPlans', 'madrasah_lesson_plans'], 'generic', () => lessonPlans || []],
   ['grades', ['madrasah_grades'], 'generic', () => grades || []]
