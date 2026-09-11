@@ -3414,6 +3414,63 @@ function sanitizeQuestionForStudent(q: any) {
   };
 }
 
+function sanitizeExamForStudent(exam: any) {
+  if (!exam || typeof exam !== 'object') return exam;
+  const {
+    questions, answer, answerKey, correctAnswer, correctOptionText, explanation,
+    masterQuestions, studentExamMasterQuestions, ...safe
+  } = exam;
+  if (Array.isArray(questions)) safe.questionCount = safe.questionCount ?? safe.qCount ?? questions.length;
+  return safe;
+}
+
+function sanitizeLkpdForStudent(lkpd: any, studentId: string) {
+  if (!lkpd || typeof lkpd !== 'object') return lkpd;
+  const safe = { ...lkpd };
+  safe.markers = (Array.isArray(lkpd.markers) ? lkpd.markers : []).map((marker: any) => {
+    if (!marker || typeof marker !== 'object') return marker;
+    const {
+      answerKey, correctAnswer, correctOptionText, teacherAnswer, solution, rubric,
+      explanation, ...safeMarker
+    } = marker;
+    return safeMarker;
+  });
+  safe.submissions = (Array.isArray(lkpd.submissions) ? lkpd.submissions : []).filter(
+    (submission: any) => String(submission?.studentId || '') === String(studentId || '')
+  );
+  delete safe.answerKey;
+  delete safe.correctAnswer;
+  delete safe.correctOptionText;
+  delete safe.teacherAnswer;
+  delete safe.solution;
+  delete safe.rubric;
+  delete safe.explanation;
+  return safe;
+}
+
+function sanitizeStudentPeerProfile(student: any) {
+  if (!student || typeof student !== 'object') return null;
+  return {
+    id: student.id,
+    nis: student.nis,
+    name: student.name,
+    classId: student.classId || student.class_id || '',
+    class_id: student.class_id || student.classId || '',
+    photo: student.photo || '',
+    role: student.role || 'student'
+  };
+}
+
+function sanitizeTeacherForStudent(teacher: any) {
+  if (!teacher || typeof teacher !== 'object') return null;
+  return {
+    id: teacher.id,
+    name: teacher.name,
+    mapel: Array.isArray(teacher.mapel) ? teacher.mapel : (teacher.mapel ? [teacher.mapel] : []),
+    photo: teacher.photo || ''
+  };
+}
+
 function sanitizeSettingsForClient(settings: any) {
   if (!settings || typeof settings !== 'object') return settings || null;
   const safe: any = { ...settings };
@@ -3528,23 +3585,45 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     return nisA.localeCompare(nisB, undefined, { numeric: true, sensitivity: 'base' });
   });
 
-  // Poin 3: Strictly sanitize answer keys if the requester is a student
+  // Students only receive the minimum data required by their own UI.
+  // Question-bank contents and teacher-only academic/admin datasets stay server-side.
+  const studentRole = String(authUser?.role || '').toLowerCase();
+  const isClassLeader = studentRole === 'class_leader' || studentRole === 'ketua_kelas';
   if (isStudent) {
-    filteredQuestions = filteredQuestions.map(sanitizeQuestionForStudent).filter(Boolean);
-    filteredExams = filteredExams.map((ex: any) => {
-      if (Array.isArray(ex.questions)) {
-        return {
-          ...ex,
-          questions: ex.questions.map(sanitizeQuestionForStudent).filter(Boolean)
-        };
-      }
-      return ex;
-    });
+    const ownId = String(authUser?.id || '');
+    const selfStudent = filteredStudents.find((st: any) => String(st.id) === ownId);
+    const ownClassId = String(selfStudent?.classId || selfStudent?.class_id || '');
+
+    filteredQuestions = [];
+    filteredQGroups = [];
+    filteredExams = filteredExams.map(sanitizeExamForStudent);
+    filteredLkpds = filteredLkpds.map((lkpd: any) => sanitizeLkpdForStudent(lkpd, ownId));
+
+    if (isClassLeader && ownClassId) {
+      filteredStudents = filteredStudents.filter((st: any) =>
+        String(st.classId || st.class_id || '') === ownClassId
+      );
+      filteredAttendance = filteredAttendance.filter((item: any) =>
+        String(item.classId || '') === ownClassId
+      );
+    } else {
+      filteredStudents = filteredStudents.filter((st: any) => String(st.id) === ownId);
+      filteredAttendance = filteredAttendance.filter((item: any) => String(item.studentId || '') === ownId);
+    }
+
+    filteredGrades = filteredGrades.filter((item: any) =>
+      String(item.studentId || item.student_id || '') === ownId
+    );
+    filteredTeachers = filteredTeachers.map(sanitizeTeacherForStudent).filter(Boolean);
+    filteredStudents = filteredStudents.map(sanitizeStudentPeerProfile).filter(Boolean);
+    filteredJournals = [];
+    filteredLessonPlans = [];
+    filteredGeneratedExams = [];
   }
 
   // Sanitasi sensitif (hilangkan password dan adminPass)
   const sanitizedTeachers = filteredTeachers.map(({ password, ...rest }: any) => rest);
-  const sanitizedStudents = sortedStudents.map((st: any) => {
+  const sanitizedStudents = (isStudent ? filteredStudents : sortedStudents).map((st: any) => {
     const { password, passwordRaw, ...rest } = st;
     return rest;
   });
@@ -3581,17 +3660,24 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     settings: sanitizedSettings,
     lessonPlans: filteredLessonPlans,
     grades: filteredGrades,
-    teacherAttendance,
-    customGradeColumns,
-    childguardRules,
-    childguardLogs,
-    childguardLocations,
-    childguardStatus,
+    teacherAttendance: isStudent ? [] : filterByMadrasah(teacherAttendance || [], req),
+    customGradeColumns: isStudent ? {} : customGradeColumns,
+    childguardRules: isStudent ? [] : childguardRules,
+    childguardLogs: isStudent ? [] : childguardLogs,
+    childguardLocations: isStudent ? {} : childguardLocations,
+    childguardStatus: isStudent
+      ? Object.fromEntries(Object.entries(childguardStatus || {}).filter(([statusKey]) => {
+          const own = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
+          return String(statusKey) === String(authUser?.id || '') || String(statusKey) === String(own?.nis || '');
+        }))
+      : childguardStatus,
     madrasahs: sanitizedMadrasahs,
-    tokenRequests,
+    tokenRequests: isStudent ? [] : tokenRequests,
     cbtTokenPrice,
     eduGames,
-    gameAttempts
+    gameAttempts: isStudent
+      ? (gameAttempts || []).filter((attempt: any) => String(attempt?.studentId || '') === String(authUser?.id || ''))
+      : gameAttempts
   });
 });
 
@@ -7859,17 +7945,8 @@ app.delete("/api/question-bank-groups/:id", async (req, res) => {
 });
 
 // 9. Questions API
-app.get("/api/questions", (req, res) => {
-  const authUser = getAuthUser(req);
-  const isTeacherOrAdmin = Boolean(authUser && (
-    authUser.role === 'teacher' || authUser.role === 'guru' ||
-    authUser.role === 'admin' || authUser.role === 'bos' || authUser.role === 'superadmin'
-  ));
-  let filtered = filterByMadrasah(questions, req);
-  if (!isTeacherOrAdmin) {
-    filtered = filtered.map(sanitizeQuestionForStudent).filter(Boolean);
-  }
-  res.json({ success: true, questions: filtered });
+app.get("/api/questions", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
+  res.json({ success: true, questions: filterByMadrasah(questions, req) });
 });
 
 app.post("/api/questions/batch", async (req, res) => {
@@ -12846,15 +12923,18 @@ app.get("/api/exams", (req: any, res) => {
   const role = String(authUser?.role || '').toLowerCase();
   let list = filterByMadrasah(exams, req);
   if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
-    list = list.map((exam: any) => {
-      if (!Array.isArray(exam?.questions)) return exam;
-      return { ...exam, questions: exam.questions.map(sanitizeQuestionForStudent).filter(Boolean) };
-    });
+    list = list.map(sanitizeExamForStudent);
   }
   res.json({ success: true, exams: list });
 });
-app.get("/api/lkpds", (req, res) => {
-  res.json({ success: true, lkpdList: filterByMadrasah(lkpdList, req) });
+app.get("/api/lkpds", (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  let list = filterByMadrasah(lkpdList, req);
+  if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
+    list = list.map((lkpd: any) => sanitizeLkpdForStudent(lkpd, String(authUser?.id || '')));
+  }
+  res.json({ success: true, lkpdList: list });
 });
 app.post("/api/exams", async (req, res) => {
   const mId = getRequestMadrasahId(req);
