@@ -1,0 +1,70 @@
+name: Apply Redeploy Hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/apply-redeploy-hardening.cjs
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-redeploy-hardening
+  cancel-in-progress: false
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Apply verified patch
+        run: node scripts/apply-redeploy-hardening.cjs
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: Application security audit
+        run: npm run security:audit
+
+      - name: Hardening regression
+        run: npm run hardening:regression
+
+      - name: TypeScript check
+        run: npm run lint
+
+      - name: Production build
+        shell: bash
+        run: |
+          rm -rf dist
+          npm run build
+          test -f dist/server.cjs
+          git diff --check
+
+      - name: Commit hardened source and remove runner
+        shell: bash
+        run: |
+          rm -f scripts/apply-redeploy-hardening.cjs .github/workflows/apply-redeploy-hardening.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+            exit 1
+          fi
+          git commit -m "fix: close remaining redeploy security blockers"
+          git push origin HEAD:main
