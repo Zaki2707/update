@@ -132,6 +132,8 @@ const checks = [
   ['Only one canonical game submit route exists', gameSubmitRouteCount === 1],
   ['No wildcard frame-ancestors override remains', !server.includes('frame-ancestors *')],
   ['LiveKit online fails closed before dev fallback', server.includes('LiveKit online belum dikonfigurasi dengan aman.') && server.includes('if (isOnlineMode && (!apiKey || !apiSecret || !serverUrl')],
+  ['Teacher livecam signaling is assignment scoped', server.includes('TEACHER_LIVECAM_SCOPE_V1') && server.includes('function teacherCanMonitorStudentRealtime(') && server.includes('teacherCanUseExamPayload(req, exam)') && server.includes('studentCanAccessExam(targetStudent, exam)') && server.includes('Guru hanya dapat membuka livecam siswa pada ujian aktif yang diampu.') && server.includes('teacherCanMonitorStudentRealtime(wsReq, user, target)')],
+  ['Teacher LiveKit access is assignment scoped', server.includes('Guru hanya dapat membuka livecam untuk ujian mata pelajaran/bank soal yang diampu.') && server.includes('isTeacherRequest(req) && !teacherCanUseExamPayload(req, exam)')],
   ['WebSocket admin identity is tenant namespaced', server.includes("'admin::' + tenant")],
   ['HTTP student signaling queue is tenant namespaced', server.includes("return 'student::' + tenant + '::' + String(studentId)")],
   ['WebSocket student identity is tenant namespaced', server.includes("student ? ('student::' + tenant + '::' + publicId)")],
