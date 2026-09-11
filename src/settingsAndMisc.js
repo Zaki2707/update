@@ -3537,7 +3537,7 @@ async function loadDataFromServer() {
                 appState.settings = setRes.settings;
                 if (window.applyLoginCustomization) window.applyLoginCustomization();
             }
-            if (lpRes.success) appState.lessonPlans = lpRes.lessonPlans;
+            if (lpRes.success) appState.lessonPlans = Array.isArray(lpRes.data) ? lpRes.data : (lpRes.lessonPlans || []);
             if (grdRes.success) appState.grades = grdRes.grades;
             if (tAttRes.success) appState.teacherAttendance = tAttRes.teacherAttendance;
 
