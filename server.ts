@@ -3904,6 +3904,20 @@ app.get("/api/all-data", requireAuth, (req, res) => {
   });
 });
 
+function findStudentForRequest(req: any, identifier: any): { student: any | null; ambiguous: boolean } {
+  const raw = String(identifier || '');
+  const matches = (students || []).filter((item: any) =>
+    String(item.id) === raw || String(item.nis || '') === raw
+  );
+  const owned = matches.filter((item: any) => isItemForCurrentMadrasah(item, req));
+  if (owned.length === 1) return { student: owned[0], ambiguous: false };
+  if (owned.length > 1) return { student: null, ambiguous: true };
+  const role = String((req as any)?.user?.role || '').toLowerCase();
+  const isBoss = role === 'bos' || role === 'superadmin';
+  if (isBoss && matches.length === 1) return { student: matches[0], ambiguous: false };
+  return { student: null, ambiguous: isBoss && matches.length > 1 };
+}
+
 // ============================================================================
 // GAME EDUKASI API ENDPOINTS (MANAJEMEN GAME & VALIDASI SERVER-SIDE)
 // ============================================================================
@@ -6765,6 +6779,71 @@ app.post("/api/students/bulk-upload-photos", requireAuth, requireRole(['teacher'
     updated: updatedCount, 
     message: `Berhasil memperbarui ${updatedCount} foto siswa.` 
   });
+});
+
+app.put("/api/student/profile", requireAuth, requireRole(['student', 'siswa', 'class_leader', 'ketua_kelas']), async (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const ownId = String(authUser?.id || '');
+  const candidates = (students || []).filter((item: any) =>
+    String(item.id) === ownId && isItemForCurrentMadrasah(item, req)
+  );
+  if (candidates.length !== 1) {
+    return res.status(candidates.length > 1 ? 409 : 404).json({
+      success: false,
+      message: candidates.length > 1 ? "Data siswa ambigu." : "Data siswa tidak ditemukan."
+    });
+  }
+
+  const student = candidates[0];
+  const name = String(req.body?.name || '').trim();
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+  const noHp = String(req.body?.no_hp || '').trim();
+
+  if (name.length < 2 || name.length > 120 || /[<>\u0000-\u001F\u007F]/.test(name)) {
+    return res.status(400).json({ success: false, message: "Nama tidak valid." });
+  }
+  if (!/^[A-Za-z0-9._-]{3,64}$/.test(username)) {
+    return res.status(400).json({ success: false, message: "Username harus 3-64 karakter (huruf, angka, titik, garis bawah, atau tanda minus)." });
+  }
+  if (password.length < 8 || password.length > 128) {
+    return res.status(400).json({ success: false, message: "Password harus 8-128 karakter." });
+  }
+  if (noHp.length > 40 || /[<>\u0000-\u001F\u007F]/.test(noHp)) {
+    return res.status(400).json({ success: false, message: "Nomor HP tidak valid." });
+  }
+
+  const duplicateUser = filterByMadrasah(students, req).find((item: any) =>
+    String(item.id) !== ownId &&
+    String(item.username || '').toLowerCase() === username.toLowerCase()
+  );
+  if (duplicateUser) {
+    return res.status(409).json({ success: false, message: "Username sudah digunakan siswa lain." });
+  }
+
+  student.name = name;
+  student.username = username;
+  student.password = hashPassword(password);
+  student.no_hp = noHp;
+  delete student.passwordRaw;
+  await saveData('students', students, true);
+
+  const sessionUser = {
+    id: student.id,
+    name: student.name,
+    username: student.username,
+    nis: student.nis,
+    classId: student.classId,
+    class_id: student.classId,
+    role: student.role || authUser.role || 'student',
+    madrasahId: student.madrasahId || authUser.madrasahId || 'default',
+    madrasahSlug: student.madrasahSlug || (authUser as any).madrasahSlug || student.madrasahId || 'default',
+    photo: student.photo,
+    no_hp: student.no_hp
+  };
+  const token = createAuthToken(sessionUser);
+  const { password: _, passwordRaw: __, ...safeStudent } = student;
+  return res.json({ success: true, student: safeStudent, user: { ...sessionUser, token }, token });
 });
 
 app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
@@ -10327,9 +10406,34 @@ app.post("/api/exam/livekit-token", requireAuth, async (req: any, res) => {
   } catch (err: any) { res.status(500).json({ success: false, message: safeServerError(err) }); }
 });
 
+function sanitizeChatAttachment(input: any): any | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const type = String(input.type || '').toLowerCase();
+  const data = String(input.data || '');
+  const name = String(input.name || 'lampiran').replace(/[\u0000-\u001F\u007F<>]/g, '').slice(0, 120);
+  if (!data || Buffer.byteLength(data, 'utf8') > 8 * 1024 * 1024) return null;
+
+  if (type === 'image') {
+    return parseSafeRasterDataUrl(data) ? { type: 'image', data, name: name || 'gambar' } : null;
+  }
+  if (type === 'video') {
+    if (!/^data:video\/(?:mp4|webm);base64,[A-Za-z0-9+/=\r\n]+$/i.test(data)) return null;
+    return { type: 'video', data, name: name || 'video' };
+  }
+
+  const documentMime = /^data:(?:application\/pdf|application\/msword|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|application\/vnd\.android\.package-archive|application\/octet-stream);base64,[A-Za-z0-9+/=\r\n]+$/i;
+  if (!documentMime.test(data)) return null;
+  const safeType = type === 'apk' ? 'apk' : 'document';
+  return { type: safeType, data, name };
+}
+
 // 10. Chats API
 app.get("/api/chats", requireAuth, async (req: any, res) => {
   const userMId = getRequestMadrasahId(req);
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+
   let chatList = chats;
   if (pool) {
     try {
@@ -10337,13 +10441,18 @@ app.get("/api/chats", requireAuth, async (req: any, res) => {
       if (dbRes.rows.length > 0) {
         let val = dbRes.rows[0].value;
         if (typeof val === 'string') { try { val = JSON.parse(val); } catch(e){} }
-        if (Array.isArray(val)) {
-          chatList = val;
-        }
+        if (Array.isArray(val)) chatList = val;
       }
     } catch(e) {}
   }
-  const filtered = chatList.filter((c: any) => String(c.madrasahId || 'default').trim() === String(userMId).trim());
+
+  let filtered = chatList.filter((c: any) => String(c.madrasahId || 'default').trim() === String(userMId).trim());
+  if (isStudent) {
+    const ownId = String(authUser.id);
+    filtered = filtered.filter((c: any) =>
+      String(c.senderId) === ownId || String(c.receiverId) === ownId
+    );
+  }
   res.json({ success: true, data: filtered });
 });
 
@@ -10353,13 +10462,55 @@ app.post("/api/chats", requireAuth, async (req: any, res) => {
     const userMId = getRequestMadrasahId(req);
     const authRole = String(authUser?.role || '').toLowerCase();
     const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(authRole);
-    const newChat = { 
-      ...req.body,
-      senderId: isStudent ? String(authUser.id) : (req.body.senderId || String(authUser.id)),
-      id: req.body.id || Date.now().toString(), 
-      timestamp: req.body.timestamp || Date.now(),
+    const isStaff = ['teacher', 'guru', 'admin', 'administrator', 'bos', 'superadmin'].includes(authRole);
+    if (!isStudent && !isStaff) return res.status(403).json({ success: false, message: "Akses chat ditolak." });
+
+    const receiverId = String(req.body?.receiverId || '').trim();
+    if (!receiverId || receiverId.length > 128) {
+      return res.status(400).json({ success: false, message: "Penerima chat tidak valid." });
+    }
+
+    if (isStudent) {
+      if (receiverId !== 'admin') {
+        return res.status(403).json({ success: false, message: "Siswa hanya dapat mengirim chat ke administrator." });
+      }
+    } else if (receiverId !== 'admin') {
+      const targetStudents = (students || []).filter((item: any) =>
+        String(item.id) === receiverId && isItemForCurrentMadrasah(item, req)
+      );
+      if (targetStudents.length !== 1) {
+        return res.status(targetStudents.length > 1 ? 409 : 404).json({
+          success: false,
+          message: targetStudents.length > 1 ? "Penerima ambigu." : "Siswa penerima tidak ditemukan."
+        });
+      }
+    }
+
+    const text = String(req.body?.text || '').slice(0, 4000);
+    const attachment = req.body?.attachment ? sanitizeChatAttachment(req.body.attachment) : null;
+    if (req.body?.attachment && !attachment) {
+      return res.status(400).json({ success: false, message: "Lampiran chat tidak didukung atau terlalu besar." });
+    }
+    if (!text.trim() && !attachment) {
+      return res.status(400).json({ success: false, message: "Pesan kosong." });
+    }
+
+    const requestedSender = String(req.body?.senderId || '');
+    const senderId = isStudent
+      ? String(authUser.id)
+      : (requestedSender === 'admin' ? 'admin' : String(authUser.id));
+
+    const newChat = {
+      senderId,
+      receiverId,
+      text,
+      attachment,
+      read: false,
+      id: 'chat_' + Date.now() + '_' + crypto.randomBytes(6).toString('hex'),
+      timestamp: Date.now(),
       madrasahId: userMId
     };
+
     await updateStoreKeyWithLock('chats', (currentVal) => {
       const list = Array.isArray(currentVal) ? currentVal : [];
       list.push(newChat);
@@ -10368,26 +10519,37 @@ app.post("/api/chats", requireAuth, async (req: any, res) => {
     if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, data: newChat });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: safeServerError(err) });
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal mengirim pesan.") });
   }
 });
 
-app.delete("/api/chats/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+app.delete("/api/chats/:id", requireAuth, async (req: any, res) => {
   try {
-    let deleted = 0;
+    const authUser = req.user || getAuthUser(req);
+    const role = String(authUser?.role || '').toLowerCase();
+    const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+    let deleted = false;
+    let denied = false;
+
     await updateStoreKeyWithLock('chats', (currentVal) => {
-      const list = Array.isArray(currentVal) ? currentVal : [];
-      return list.filter((c: any) => {
-        const match = String(c.id) === String(req.params.id) && isItemForCurrentMadrasah(c, req);
-        if (match) deleted++;
-        return !match;
+      const chatList = Array.isArray(currentVal) ? currentVal : [];
+      return chatList.filter((chat: any) => {
+        if (String(chat.id) !== String(req.params.id) || !isItemForCurrentMadrasah(chat, req)) return true;
+        if (isStudent && String(chat.senderId) !== String(authUser.id)) {
+          denied = true;
+          return true;
+        }
+        deleted = true;
+        return false;
       });
     });
+
+    if (denied) return res.status(403).json({ success: false, message: "Siswa hanya dapat menghapus pesan yang dikirim sendiri." });
     if (!deleted) return res.status(404).json({ success: false, message: 'Pesan tidak ditemukan pada madrasah ini.' });
     if (isOnlineMode) await writeKeyToPostgresDirect('chats');
-    res.json({ success: true, deleted });
+    res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: safeServerError(err) });
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal menghapus pesan.") });
   }
 });
 
@@ -10397,8 +10559,12 @@ app.post("/api/chats/clear", async (req: any, res) => {
   const authRole = String(authUser?.role || '').toLowerCase();
   const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(authRole);
   if (!senderId || !receiverId) return res.status(400).json({ success: false, message: "Missing ids" });
-  if (isStudent && String(senderId) !== String(authUser.id) && String(receiverId) !== String(authUser.id)) {
-    return res.status(403).json({ success: false, message: "Siswa hanya dapat menghapus percakapannya sendiri." });
+  if (isStudent) {
+    const ownId = String(authUser.id);
+    const participants = new Set([String(senderId), String(receiverId)]);
+    if (!participants.has(ownId) || !participants.has('admin')) {
+      return res.status(403).json({ success: false, message: "Siswa hanya dapat menghapus percakapannya dengan administrator." });
+    }
   }
   try {
     await updateStoreKeyWithLock('chats', (currentVal) => {
