@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - scripts/apply-redeploy-hardening.cjs
+      - .github/workflows/apply-redeploy-hardening.yml
 
 permissions:
   contents: write
@@ -39,7 +40,19 @@ jobs:
         run: npm audit --audit-level=high
 
       - name: Application security audit
-        run: npm run security:audit
+        id: security_audit
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run security:audit 2>&1 | tee security-audit.log
+
+      - name: Upload security audit diagnostics
+        if: failure() && steps.security_audit.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: redeploy-hardening-security-audit
+          path: security-audit.log
+          retention-days: 1
 
       - name: Hardening regression
         run: npm run hardening:regression
