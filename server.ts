@@ -1900,6 +1900,102 @@ async function writeKeyToPostgresDirect(key: string) {
   return dbWriteQueue.run(key, () => writeKeyToPostgresDirectUnlocked(key));
 }
 
+function runWithDbKeyLocks<T>(keys: string[], task: () => Promise<T>): Promise<T> {
+  const ordered = Array.from(new Set(keys.filter(Boolean))).sort();
+  const acquire = (index: number): Promise<T> => {
+    if (index >= ordered.length) return task();
+    return dbWriteQueue.run(ordered[index], () => acquire(index + 1));
+  };
+  return acquire(0);
+}
+
+async function writeBatchToPostgresDirect(keys: string[]) {
+  const orderedKeys = Array.from(new Set(keys.filter(Boolean))).sort();
+  if (orderedKeys.length === 0) return;
+
+  return runWithDbKeyLocks(orderedKeys, async () => {
+    for (const key of orderedKeys) {
+      const timeout = dbWriteTimeouts.get(key);
+      if (timeout) clearTimeout(timeout);
+      dbWriteTimeouts.delete(key);
+      lastDbWriteTimes.set(key, Date.now());
+    }
+
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let client: any = null;
+      let clientError: any = null;
+      try {
+        if (dbInitPromise) await dbInitPromise;
+        if (!pool || isDbQuotaExceeded) {
+          if (isOnlineMode) throw new Error('ONLINE_DATABASE_UNAVAILABLE: cannot persist atomic batch');
+          return;
+        }
+
+        const snapshots = new Map<string, any>();
+        for (const key of orderedKeys) {
+          const value = getMemoryKeyValue(key);
+          if (value !== undefined) snapshots.set(key, value);
+        }
+        if (snapshots.size === 0) return;
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+
+        for (const [key, freshValue] of snapshots) {
+          if (Array.isArray(freshValue) && (key === 'attendance' || key === 'teacherAttendance' || key === 'chats')) {
+            const { active, archives } = partitionAndSaveKey(key, freshValue);
+            await client.query(`
+              INSERT INTO app_store (key, value) VALUES ($1, $2)
+              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            `, [key, JSON.stringify(active)]);
+            for (const [archiveKey, archiveItems] of Object.entries(archives)) {
+              await client.query(`
+                INSERT INTO app_store (key, value) VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+              `, [archiveKey, JSON.stringify(archiveItems)]);
+            }
+          } else {
+            await client.query(`
+              INSERT INTO app_store (key, value) VALUES ($1, $2)
+              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            `, [key, JSON.stringify(freshValue)]);
+          }
+        }
+
+        await client.query('COMMIT');
+
+        for (const [key, freshValue] of snapshots) {
+          if (isOnlineMode && (key === 'questions' || key === 'questionBankGroups')) {
+            await verifyOnlineArrayPersistence(key, freshValue, client);
+          }
+        }
+        return;
+      } catch (err: any) {
+        clientError = err;
+        if (client) {
+          try { await client.query('ROLLBACK'); } catch (_) {}
+        }
+        const msg = err?.message || String(err);
+        const transient = msg.includes('terminated') || msg.includes('closed') || msg.includes('timeout') ||
+          msg.includes('ECONNRESET') || msg.includes('socket');
+        if (transient && attempt < maxAttempts) {
+          triggerPoolRecreation();
+          await new Promise(resolve => setTimeout(resolve, 600));
+          continue;
+        }
+        handleDbError('Atomic PostgreSQL batch write failed', err);
+        if (isOnlineMode) throw err;
+        return;
+      } finally {
+        if (client) {
+          try { client.release(clientError); } catch (_) {}
+        }
+      }
+    }
+  });
+}
+
 function scheduleDbWrite(key: string) {
   if (dbWriteTimeouts.has(key)) {
     // Already scheduled, let the scheduled one write the latest memory state
@@ -2016,22 +2112,25 @@ async function saveData(key: string, value: any, immediate = true) {
 }
 
 async function saveDataBatch(items: { key: string; value: any }[], immediate = true) {
+  const normalizedItems = items.filter((item) => item && String(item.key || '').trim());
+  if (normalizedItems.length === 0) return;
+
   if (isOnlineMode && !isRestoring) {
     if (dbInitPromise) await dbInitPromise;
     if (!pool || isDbQuotaExceeded) {
       throw new Error('ONLINE_DATABASE_UNAVAILABLE: cannot persist batch');
     }
   }
-  for (const item of items) {
+
+  const previousValues = new Map<string, any>();
+  for (const item of normalizedItems) {
+    if (!previousValues.has(item.key)) previousValues.set(item.key, getMemoryKeyValue(item.key));
     updateMemoryKey(item.key, item.value);
   }
 
-  // 1. Write to local disk cache instantly (for reliability)
   try {
     const store = readLocalStore();
-    for (const item of items) {
-      store[item.key] = item.value;
-    }
+    for (const item of normalizedItems) store[item.key] = item.value;
     writeLocalStore(store);
   } catch (e) {
     console.error("Skipping write to local_store.json for batch update:", e);
@@ -2039,37 +2138,42 @@ async function saveDataBatch(items: { key: string; value: any }[], immediate = t
 
   lastDbFetchTime = Date.now();
 
-  // 2. Broadcast state updates immediately (for responsive UI)
   try {
-    items.forEach(item => {
-      broadcastStateUpdate(item.key);
-    });
+    if (pool && !isDbQuotaExceeded) {
+      if (immediate) {
+        await writeBatchToPostgresDirect(normalizedItems.map((item) => item.key));
+      } else {
+        for (const item of normalizedItems) scheduleDbWrite(item.key);
+      }
+    }
+  } catch (err) {
+    if (isOnlineMode) {
+      for (const [key, previous] of previousValues) updateMemoryKey(key, previous);
+      try {
+        const store = readLocalStore();
+        for (const [key, previous] of previousValues) {
+          if (previous === undefined) delete store[key];
+          else store[key] = previous;
+        }
+        writeLocalStore(store);
+      } catch (_) {}
+    }
+    throw err;
+  }
+
+  try {
+    normalizedItems.forEach((item) => broadcastStateUpdate(item.key));
   } catch (e) {
     console.error("Broadcast state batch update error:", e);
   }
 
-  // 3. Sync to Firestore (Backup persistent layer)
   if (db) {
-    for (const item of items) {
+    for (const item of normalizedItems) {
       saveKeyToFirestore(item.key, item.value).catch(err => {
         console.error(`[Firestore Backup] Batch error backing up "${item.key}" to Firestore:`, err);
       });
     }
   }
-
-  // 4. Write directly or schedule writes for each key
-  if (pool && !isDbQuotaExceeded) {
-    if (immediate) {
-      for (const item of items) {
-        await writeKeyToPostgresDirect(item.key);
-      }
-    } else {
-      for (const item of items) {
-        scheduleDbWrite(item.key);
-      }
-    }
-  }
-
 }
 
 // --- GRACEFUL SHUTDOWN INTEGRATION ---
@@ -3862,7 +3966,9 @@ app.get("/api/all-data", requireAuth, (req, res) => {
         const requestId = String(mId || authUser?.madrasahId || authUser?.madrasahSlug || 'default');
         return String(m.id) === requestId || String(m.slug) === requestId;
       });
-  const sanitizedMadrasahs = visibleMadrasahs.map(sanitizeMadrasahAdminView).filter(Boolean);
+  const sanitizedMadrasahs = visibleMadrasahs
+    .map(isBosUser ? sanitizeMadrasahAdminView : sanitizeMadrasahMemberView)
+    .filter(Boolean);
   const sanitizedSettings = sanitizeSettingsForClient(effectiveSettingsForRequest(req));
 
   res.json({
@@ -5179,6 +5285,15 @@ function sanitizeMadrasahAdminView(m: any) {
   return safe;
 }
 
+function sanitizeMadrasahMemberView(m: any) {
+  const publicView = sanitizeMadrasahPublic(m);
+  if (!publicView) return null;
+  return {
+    ...publicView,
+    cbtTokenBalance: Number(m?.cbtTokenBalance || 0)
+  };
+}
+
 // Multi-Tenant & Bos Token Endpoints
 app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
@@ -5198,7 +5313,7 @@ app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   );
   return res.json({
     success: true,
-    madrasahs: ownMadrasahs.map(sanitizeMadrasahAdminView).filter(Boolean)
+    madrasahs: ownMadrasahs.map(sanitizeMadrasahMemberView).filter(Boolean)
   });
 });
 
@@ -5298,7 +5413,7 @@ app.post("/api/cbt-token-price", requireAuth, requireRole(['bos', 'superadmin'])
   });
 });
 
-app.get("/api/token-requests", requireAuth, (req: any, res) => {
+app.get("/api/token-requests", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   const authUser = req.user;
   const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
   const { madrasahId } = req.query;
@@ -5345,8 +5460,8 @@ app.post("/api/token-requests", requireAuth, requireRole(['teacher', 'guru', 'ad
       status: 'pending',
       createdAt: new Date().toISOString()
     };
-    tokenRequests.push(newReq);
-    await saveData('tokenRequests', tokenRequests);
+    const nextTokenRequests = [...tokenRequests, newReq];
+    await saveData('tokenRequests', nextTokenRequests);
     return res.json({
       success: true,
       tokenRequest: newReq,
@@ -5376,26 +5491,32 @@ app.post("/api/token-requests/:id/approve", requireAuth, requireRole(['bos', 'su
       return res.status(400).json({ success: false, message: 'Jumlah token yang disetujui tidak valid.' });
     }
 
-    const targetM = madrasahs.find(m => String(m.id) === String(reqItem.madrasahId));
-    if (!targetM) {
+    const reqIndex = tokenRequests.findIndex(tr => String(tr.id) === String(id));
+    const targetIndex = madrasahs.findIndex(m => String(m.id) === String(reqItem.madrasahId));
+    if (targetIndex < 0) {
       return res.status(409).json({ success: false, message: 'Target madrasah pada permintaan top-up sudah tidak tersedia. Persetujuan dibatalkan.' });
     }
 
-    reqItem.status = 'approved';
-    reqItem.approvedQuantity = addQty;
-    reqItem.approvedAt = new Date().toISOString();
-    targetM.cbtTokenBalance = Number(targetM.cbtTokenBalance || 0) + addQty;
-    delete targetM.tokenSignatureInvalid;
-    targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
+    const nextTokenRequests = tokenRequests.map((item: any) => ({ ...item }));
+    const nextMadrasahs = madrasahs.map((item: any) => ({ ...item }));
+    const nextReqItem = nextTokenRequests[reqIndex];
+    const nextTarget = nextMadrasahs[targetIndex];
+
+    nextReqItem.status = 'approved';
+    nextReqItem.approvedQuantity = addQty;
+    nextReqItem.approvedAt = new Date().toISOString();
+    nextTarget.cbtTokenBalance = Number(nextTarget.cbtTokenBalance || 0) + addQty;
+    delete nextTarget.tokenSignatureInvalid;
+    nextTarget.tokenSignature = calculateTokenSignature(nextTarget.id, nextTarget.cbtTokenBalance);
 
     await saveDataBatch([
-      { key: 'tokenRequests', value: tokenRequests },
-      { key: 'madrasahs', value: madrasahs }
+      { key: 'tokenRequests', value: nextTokenRequests },
+      { key: 'madrasahs', value: nextMadrasahs }
     ], true);
 
     return res.json({
       success: true,
-      message: `Permintaan Top-Up berhasil disetujui! +${addQty} Token telah ditambahkan ke ${reqItem.madrasahName}.`
+      message: `Permintaan Top-Up berhasil disetujui! +${addQty} Token telah ditambahkan ke ${nextReqItem.madrasahName}.`
     });
   });
 });
@@ -5411,9 +5532,11 @@ app.post("/api/token-requests/:id/reject", requireAuth, requireRole(['bos', 'sup
     if (String(reqItem.status || 'pending').toLowerCase() !== 'pending') {
       return res.status(409).json({ success: false, message: "Permintaan top-up ini sudah diproses dan tidak dapat diubah." });
     }
-    reqItem.status = 'rejected';
-    reqItem.rejectedAt = new Date().toISOString();
-    await saveData('tokenRequests', tokenRequests);
+    const reqIndex = tokenRequests.findIndex(tr => String(tr.id) === String(id));
+    const nextTokenRequests = tokenRequests.map((item: any) => ({ ...item }));
+    nextTokenRequests[reqIndex].status = 'rejected';
+    nextTokenRequests[reqIndex].rejectedAt = new Date().toISOString();
+    await saveData('tokenRequests', nextTokenRequests);
     return res.json({ success: true, message: "Permintaan Top-Up telah ditolak." });
   });
 });
@@ -5605,18 +5728,21 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
           return res.status(403).json({ success: false, message: "Guru hanya dapat mengaktifkan token untuk akun sendiri." });
         }
 
-        tch.cbtTokenBalance = Number(tch.cbtTokenBalance || 0) + qty;
-        usedActivationKeys.push(signature);
+        const teacherIndex = teachers.indexOf(tch);
+        const nextTeachers = teachers.map((item: any) => ({ ...item }));
+        const nextTeacher = nextTeachers[teacherIndex];
+        nextTeacher.cbtTokenBalance = Number(nextTeacher.cbtTokenBalance || 0) + qty;
+        const nextUsedActivationKeys = [...usedActivationKeys, signature];
         await saveDataBatch([
-          { key: 'usedActivationKeys', value: usedActivationKeys },
-          { key: 'teachers', value: teachers }
+          { key: 'usedActivationKeys', value: nextUsedActivationKeys },
+          { key: 'teachers', value: nextTeachers }
         ], true);
 
         return res.json({
           success: true,
-          remainingTokens: tch.cbtTokenBalance,
+          remainingTokens: nextTeacher.cbtTokenBalance,
           isTeacher: true,
-          message: `Berhasil diaktivasi! Ditambahkan +${qty} Token ke akun Guru ${tch.name}. Saldo terbaru: ${tch.cbtTokenBalance} Token.`
+          message: `Berhasil diaktivasi! Ditambahkan +${qty} Token ke akun Guru ${nextTeacher.name}. Saldo terbaru: ${nextTeacher.cbtTokenBalance} Token.`
         });
       }
 
@@ -5628,21 +5754,24 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
         return res.status(matches.length > 1 ? 409 : 404).json({ success: false, message: matches.length > 1 ? "Target madrasah ambigu." : "Data madrasah tidak ditemukan di server ini." });
       }
       const targetM = matches[0];
+      const targetIndex = madrasahs.indexOf(targetM);
+      const nextMadrasahs = madrasahs.map((item: any) => ({ ...item }));
+      const nextTarget = nextMadrasahs[targetIndex];
 
-      targetM.cbtTokenBalance = Number(targetM.cbtTokenBalance || 0) + qty;
-      delete targetM.tokenSignatureInvalid;
-      targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
+      nextTarget.cbtTokenBalance = Number(nextTarget.cbtTokenBalance || 0) + qty;
+      delete nextTarget.tokenSignatureInvalid;
+      nextTarget.tokenSignature = calculateTokenSignature(nextTarget.id, nextTarget.cbtTokenBalance);
 
-      usedActivationKeys.push(signature);
+      const nextUsedActivationKeys = [...usedActivationKeys, signature];
       await saveDataBatch([
-        { key: 'usedActivationKeys', value: usedActivationKeys },
-        { key: 'madrasahs', value: madrasahs }
+        { key: 'usedActivationKeys', value: nextUsedActivationKeys },
+        { key: 'madrasahs', value: nextMadrasahs }
       ], true);
 
       return res.json({
         success: true,
-        remainingTokens: targetM.cbtTokenBalance,
-        message: `Berhasil diaktivasi! Ditambahkan +${qty} Token ke ${targetM.name}. Saldo terbaru: ${targetM.cbtTokenBalance} Token.`
+        remainingTokens: nextTarget.cbtTokenBalance,
+        message: `Berhasil diaktivasi! Ditambahkan +${qty} Token ke ${nextTarget.name}. Saldo terbaru: ${nextTarget.cbtTokenBalance} Token.`
       });
     } catch (err: any) {
       console.error("Failed to verify activation key:", err);
@@ -16231,14 +16360,24 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     }
     else if (key === 'childguardStatus') {
       if (typeof data === 'object' && data !== null) {
-        if (isOnlineMode && isStudentSyncRole) {
-          const ownStudent = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
+        if (isStudentSyncRole) {
+          const ownCandidates = (students || []).filter((student: any) =>
+            String(student.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(student, req)
+          );
+          if (ownCandidates.length !== 1) {
+            return res.status(ownCandidates.length > 1 ? 409 : 403).json({
+              success: false,
+              message: ownCandidates.length > 1 ? 'Identitas siswa ambigu pada tenant ini.' : 'Identitas siswa tidak ditemukan pada tenant ini.'
+            });
+          }
+          const ownStudent = ownCandidates[0];
           const allowedKeys = new Set([String(authUser?.id || ''), String(ownStudent?.nis || '')].filter(Boolean));
           const suppliedKeys = Object.keys(data);
           if (suppliedKeys.some((statusKey: string) => !allowedKeys.has(String(statusKey)))) {
             return res.status(403).json({ success: false, message: 'Status ChildGuard hanya boleh untuk akun siswa sendiri.' });
           }
         }
+        const scopedStudents = filterByMadrasah(students || [], req);
         const now = Date.now();
         for (const [sKey, sStatus] of Object.entries(data)) {
           if (typeof sStatus === 'object' && sStatus !== null) {
@@ -16249,17 +16388,18 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
         childguardStatus = { ...(childguardStatus || {}), ...data };
         for (const [sKey, sStatus] of Object.entries(data)) {
           const cleanSKey = String(sKey).replace(/\D/g, '');
-          const matchedStudent = (students || []).find((s: any) => 
-            String(s.id) === String(sKey) || 
-            String(s.nis) === String(sKey) ||
-            (cleanSKey !== '' && String(s.id).replace(/\D/g, '') === cleanSKey) ||
-            (cleanSKey !== '' && String(s.nis).replace(/\D/g, '') === cleanSKey)
+          const matchedCandidates = scopedStudents.filter((student: any) =>
+            String(student.id) === String(sKey) ||
+            String(student.nis) === String(sKey) ||
+            (cleanSKey !== '' && String(student.id).replace(/\D/g, '') === cleanSKey) ||
+            (cleanSKey !== '' && String(student.nis).replace(/\D/g, '') === cleanSKey)
           );
+          const matchedStudent = matchedCandidates.length === 1 ? matchedCandidates[0] : null;
           if (matchedStudent) {
             if (matchedStudent.id) childguardStatus[String(matchedStudent.id)] = sStatus;
             if (matchedStudent.nis) childguardStatus[String(matchedStudent.nis)] = sStatus;
-          } else if (Array.isArray(students) && students.length === 1) {
-            const first = students[0];
+          } else if (scopedStudents.length === 1) {
+            const first = scopedStudents[0];
             if (first) {
               if (first.id) childguardStatus[String(first.id)] = sStatus;
               if (first.nis) childguardStatus[String(first.nis)] = sStatus;
