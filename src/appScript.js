@@ -678,7 +678,7 @@ async function syncKeyFromServer(key) {
     else if (key === 'journals') endpoint = '/api/journals';
     else if (key === 'timeSlots') endpoint = '/api/time-slots';
     else if (key === 'gradeCategories') endpoint = '/api/grade-categories';
-    else if (key === 'customGradeColumns') endpoint = '/api/db-status';
+    else if (key === 'customGradeColumns') endpoint = '/api/custom-grade-columns';
     else if (key === 'generatedExams') endpoint = '/api/generated-exams';
     else if (key === 'lessonPlans') endpoint = '/api/lesson-plans';
     else if (key === 'grades') endpoint = '/api/grades';
