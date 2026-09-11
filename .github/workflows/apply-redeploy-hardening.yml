@@ -54,8 +54,10 @@ jobs:
             let s = fs.readFileSync(p, 'utf8');
             const oldDelta = `  assert.match(server, /saveDeltaDb\\('activeExamSessions', legacyKey, null\\)/);`;
             const newDelta = `  assert.match(server, /queueDelta\\('activeExamSessions', legacyKey, null\\)/);\n  assert.match(server, /await saveDeltaBatchDb\\(deltaWrites\\)/);`;
-            if (!s.includes(oldDelta)) throw new Error('Legacy delta regression anchor missing');
-            s = s.replace(oldDelta, newDelta);
+            const badMonitorRegex = `  assert.match(server, /Guru hanya dapat memonitor ujian mata pelajaran/bank soal yang diampu/);`;
+            const goodMonitorAssertion = `  assert.equal(server.includes('Guru hanya dapat memonitor ujian mata pelajaran/bank soal yang diampu'), true);`;
+            if (!s.includes(oldDelta) || !s.includes(badMonitorRegex)) throw new Error('Legacy regression assertion anchor missing');
+            s = s.replace(oldDelta, newDelta).replace(badMonitorRegex, goodMonitorAssertion);
             fs.writeFileSync(p, s);
           }
           NODE
