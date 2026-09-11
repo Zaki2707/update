@@ -6450,7 +6450,7 @@ app.get("/api/teachers", requireAuth, requireRole(['teacher', 'guru', 'admin', '
   res.json({ success: true, teachers: sanitized });
 });
 
-app.post("/api/teachers", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.post("/api/teachers", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   let { nip, name, username, password, mapel, homeroom_class_id, photo, phone, no_hp, email, address, alamat, gender, jenis_kelamin, nuptk, bio, photoHistory } = req.body;
   if (photo && photo.startsWith("data:image/")) { photo = await saveBase64ToFirestore(photo); }
   if (!nip || !name || !username) {
@@ -6490,6 +6490,13 @@ app.post("/api/teachers", requireAuth, requireRole(['teacher', 'guru', 'admin', 
 
 app.put("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
+  const authUser = getAuthUser(req);
+  const authRole = String(authUser?.role || '').toLowerCase();
+  const isTeacherSelfUpdate = (authRole === 'teacher' || authRole === 'guru') && String(authUser?.id || '') === String(id);
+  // TEACHER_SELF_UPDATE_SCOPE: teachers may update only their own profile; assignments remain admin-owned.
+  if ((authRole === 'teacher' || authRole === 'guru') && !isTeacherSelfUpdate) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat mengubah profil sendiri." });
+  }
   const resolvedTeacher = resolveTenantItemIndexById(teachers, id, req);
   if (resolvedTeacher.ambiguous) {
     return res.status(409).json({ success: false, message: "ID guru ambigu lintas tenant; pilih tenant target secara eksplisit." });
@@ -6511,8 +6518,8 @@ app.put("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     name: req.body.name ?? t.name,
     username: req.body.username ?? t.username,
     password: updatedPassword,
-    mapel: Array.isArray(req.body.mapel) ? req.body.mapel : (req.body.mapel !== undefined ? [req.body.mapel] : t.mapel),
-    homeroom_class_id: req.body.homeroom_class_id ?? t.homeroom_class_id,
+    mapel: isTeacherSelfUpdate ? t.mapel : (Array.isArray(req.body.mapel) ? req.body.mapel : (req.body.mapel !== undefined ? [req.body.mapel] : t.mapel)),
+    homeroom_class_id: isTeacherSelfUpdate ? t.homeroom_class_id : (req.body.homeroom_class_id ?? t.homeroom_class_id),
     phone: req.body.phone ?? req.body.no_hp ?? t.phone ?? t.no_hp ?? "",
     no_hp: req.body.no_hp ?? req.body.phone ?? t.no_hp ?? t.phone ?? "",
     email: req.body.email ?? t.email ?? "",
@@ -6568,7 +6575,7 @@ app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos
   res.json({ success: true, student: sanitizedNewStudent });
 });
 
-app.delete("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.delete("/api/teachers/:id", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   
   // 1. Find the teacher to get their profile photo
@@ -7419,11 +7426,46 @@ app.delete("/api/classes/:id", requireAuth, requireRole(['teacher', 'guru', 'adm
 });
 
 // 6. Subjects API
+function normalizeSubjectAssignmentKey(value: any): string {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+async function cascadeTeacherSubjectRename(req: any, subjectId: any, oldName: any, oldCode: any, newName: string) {
+  const aliases = new Set([
+    String(subjectId || '').trim().toLowerCase(),
+    String(oldName || '').trim().toLowerCase(),
+    String(oldCode || '').trim().toLowerCase(),
+    normalizeSubjectAssignmentKey(subjectId),
+    normalizeSubjectAssignmentKey(oldName),
+    normalizeSubjectAssignmentKey(oldCode)
+  ].filter(Boolean));
+  let anyChanged = false;
+  for (const teacher of teachers || []) {
+    if (!isItemForCurrentMadrasah(teacher, req)) continue;
+    const current = Array.isArray(teacher.mapel) ? teacher.mapel : (teacher.mapel ? [teacher.mapel] : []);
+    let teacherChanged = false;
+    const next = current.map((value: any) => {
+      const raw = String(value || '').trim();
+      const lower = raw.toLowerCase();
+      const normalized = normalizeSubjectAssignmentKey(raw);
+      if (aliases.has(lower) || aliases.has(normalized)) {
+        teacherChanged = true;
+        anyChanged = true;
+        return newName;
+      }
+      return value;
+    });
+    if (teacherChanged) teacher.mapel = next;
+  }
+  // SUBJECT_RENAME_CASCADE: keep legacy teacher.mapel name-based assignments attached after a subject rename.
+  if (anyChanged) await saveData('teachers', teachers);
+}
+
 app.get("/api/subjects", requireAuth, (req, res) => {
   res.json({ success: true, subjects: filterByMadrasah(subjects, req) });
 });
 
-app.post("/api/subjects", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.post("/api/subjects", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id, code, name } = req.body;
   const cleanCode = String(code || '').trim();
   const cleanName = String(name || '').trim();
@@ -7451,8 +7493,12 @@ app.post("/api/subjects", requireAuth, requireRole(['teacher', 'guru', 'admin', 
   if (targetId) {
     const idx = subjects.findIndex((s: any) => String(s.id) === targetId && isItemForCurrentMadrasah(s, req));
     if (idx !== -1) {
+      const previous = { ...subjects[idx] };
       subjects[idx] = { ...subjects[idx], code: cleanCode, name: cleanName };
       await saveData('subjects', subjects);
+      if (String(previous.name || '') !== cleanName || String(previous.code || '') !== cleanCode) {
+        await cascadeTeacherSubjectRename(req, targetId, previous.name, previous.code, cleanName);
+      }
       return res.json({ success: true, subject: subjects[idx], message: "Mata pelajaran berhasil diperbarui." });
     }
   }
@@ -7464,7 +7510,7 @@ app.post("/api/subjects", requireAuth, requireRole(['teacher', 'guru', 'admin', 
   res.json({ success: true, subject: newSub, message: "Mata pelajaran berhasil ditambahkan." });
 });
 
-app.put("/api/subjects/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.put("/api/subjects/:id", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const { code, name } = req.body;
   const cleanCode = String(code || '').trim();
@@ -7492,12 +7538,16 @@ app.put("/api/subjects/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     return res.status(404).json({ success: false, message: "Mata pelajaran tidak ditemukan." });
   }
 
+  const previous = { ...subjects[idx] };
   subjects[idx] = { ...subjects[idx], code: cleanCode, name: cleanName };
   await saveData('subjects', subjects);
+  if (String(previous.name || '') !== cleanName || String(previous.code || '') !== cleanCode) {
+    await cascadeTeacherSubjectRename(req, id, previous.name, previous.code, cleanName);
+  }
   res.json({ success: true, subject: subjects[idx], message: "Mata pelajaran berhasil diperbarui." });
 });
 
-app.delete("/api/subjects/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.delete("/api/subjects/:id", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const resolvedSubject = resolveTenantItemIndexById(subjects, id, req);
   if (resolvedSubject.ambiguous) return res.status(409).json({ success: false, message: "ID mata pelajaran ambigu lintas tenant; pilih tenant target secara eksplisit." });
