@@ -2483,8 +2483,12 @@ function renderExamModalForm(editId = null, eventId = null) {
             questionBankGroups.push({ code: c, subjectId: '', classId: '' });
         });
     }
-    if (questionBankGroups.length === 0 && typeof window.loadQuestionBankFromServer === 'function') {
-        window.loadQuestionBankFromServer();
+    if (questionBankGroups.length === 0 && typeof window.loadQuestionBankFromServer === 'function' && !appState._questionBankLoaded && !appState._examBankReloadPending) {
+        appState._examBankReloadPending = true;
+        window.loadQuestionBankFromServer().finally(() => {
+            appState._examBankReloadPending = false;
+            if (document.getElementById('modal-container')) renderExamModalForm(editId, eventId);
+        });
     }
     
     let ex = null;
@@ -2541,7 +2545,9 @@ function renderExamModalForm(editId = null, eventId = null) {
                                 ${questionBankGroups.length === 0 ? '<option value="">Belum ada kode bank soal</option>' : questionBankGroups.map(bg => {
                                     const subObj = subjects.find(s => String(s.id) === String(bg.subjectId));
                                     const label = subObj ? `${bg.code} (${subObj.name})` : bg.code;
-                                    return `<option value="${bg.code}" ${ex && ex.bankCode === bg.code ? 'selected' : ''}>${label}</option>`;
+                                    const safeValue = typeof window.escapeHtmlAttr === 'function' ? window.escapeHtmlAttr(String(bg.code || '')) : String(bg.code || '');
+                                    const safeLabel = typeof window.escapeHtml === 'function' ? window.escapeHtml(String(label || '')) : String(label || '');
+                                    return `<option value="${safeValue}" ${ex && ex.bankCode === bg.code ? 'selected' : ''}>${safeLabel}</option>`;
                                 }).join('')}
                             </select>
                         </div>
