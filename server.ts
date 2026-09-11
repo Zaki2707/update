@@ -16432,14 +16432,24 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     }
     else if (key === 'childguardStatus') {
       if (typeof data === 'object' && data !== null) {
-        if (isOnlineMode && isStudentSyncRole) {
-          const ownStudent = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
+        if (isStudentSyncRole) {
+          const ownCandidates = (students || []).filter((student: any) =>
+            String(student.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(student, req)
+          );
+          if (ownCandidates.length !== 1) {
+            return res.status(ownCandidates.length > 1 ? 409 : 403).json({
+              success: false,
+              message: ownCandidates.length > 1 ? 'Identitas siswa ambigu pada tenant ini.' : 'Identitas siswa tidak ditemukan pada tenant ini.'
+            });
+          }
+          const ownStudent = ownCandidates[0];
           const allowedKeys = new Set([String(authUser?.id || ''), String(ownStudent?.nis || '')].filter(Boolean));
           const suppliedKeys = Object.keys(data);
           if (suppliedKeys.some((statusKey: string) => !allowedKeys.has(String(statusKey)))) {
             return res.status(403).json({ success: false, message: 'Status ChildGuard hanya boleh untuk akun siswa sendiri.' });
           }
         }
+        const scopedStudents = filterByMadrasah(students || [], req);
         const now = Date.now();
         for (const [sKey, sStatus] of Object.entries(data)) {
           if (typeof sStatus === 'object' && sStatus !== null) {
@@ -16450,17 +16460,18 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
         childguardStatus = { ...(childguardStatus || {}), ...data };
         for (const [sKey, sStatus] of Object.entries(data)) {
           const cleanSKey = String(sKey).replace(/\D/g, '');
-          const matchedStudent = (students || []).find((s: any) => 
-            String(s.id) === String(sKey) || 
-            String(s.nis) === String(sKey) ||
-            (cleanSKey !== '' && String(s.id).replace(/\D/g, '') === cleanSKey) ||
-            (cleanSKey !== '' && String(s.nis).replace(/\D/g, '') === cleanSKey)
+          const matchedCandidates = scopedStudents.filter((student: any) =>
+            String(student.id) === String(sKey) ||
+            String(student.nis) === String(sKey) ||
+            (cleanSKey !== '' && String(student.id).replace(/\D/g, '') === cleanSKey) ||
+            (cleanSKey !== '' && String(student.nis).replace(/\D/g, '') === cleanSKey)
           );
+          const matchedStudent = matchedCandidates.length === 1 ? matchedCandidates[0] : null;
           if (matchedStudent) {
             if (matchedStudent.id) childguardStatus[String(matchedStudent.id)] = sStatus;
             if (matchedStudent.nis) childguardStatus[String(matchedStudent.nis)] = sStatus;
-          } else if (Array.isArray(students) && students.length === 1) {
-            const first = students[0];
+          } else if (scopedStudents.length === 1) {
+            const first = scopedStudents[0];
             if (first) {
               if (first.id) childguardStatus[String(first.id)] = sStatus;
               if (first.nis) childguardStatus[String(first.nis)] = sStatus;
