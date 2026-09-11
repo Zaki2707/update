@@ -59,6 +59,10 @@ function testServerGuards() {
   const app = fs.readFileSync('src/appScript.js', 'utf8');
   const chat = fs.readFileSync('src/chatModule.js', 'utf8');
   const modules = fs.readFileSync('src/modulesScript.js', 'utf8');
+  const settingsMisc = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
+  const modulAjar = fs.readFileSync('src/modulAjarModule.js', 'utf8');
+  const mainEntry = fs.readFileSync('src/main.tsx', 'utf8');
+  const indexHtml = fs.readFileSync('index.html', 'utf8');
 
   assert.match(server, /dbWriteQueue\.run\(key, \(\) => writeKeyToPostgresDirectUnlocked\(key\)\)/);
   assert.match(server, /app\.delete\("\/api\/exams\/:id", requireAuth, requireRole/);
@@ -72,6 +76,21 @@ function testServerGuards() {
   assert.match(server, /ONLINE_STARTUP_NOT_READY/);
   assert.match(server, /Retry-After", "2"/);
   assert.match(server, /hasHydratedPersistentState[\s\S]*pool[\s\S]*!isDbQuotaExceeded/);
+  assert.match(server, /migrateLegacyLessonPlansTenantOwnership\(\)/);
+  assert.match(server, /inferLegacyLessonPlanTenant\(/);
+  assert.match(server, /__legacyTenantRecoveredV1/);
+  assert.match(server, /lessonPlans: filteredTenant/);
+  assert.match(server, /lessonPlans: filtered/);
+  assert.match(app, /waitForServerRuntimeReady\(/);
+  assert.match(app, /fetch\('\/readyz'/);
+  assert.match(app, /runtimeReady = await waitForServerRuntimeReady\(45000\)/);
+  assert.match(app, /runtimeReady = await waitForServerRuntimeReady\(15000\)/);
+  assert.match(app, /Array\.isArray\(resData\.data\) \? resData\.data : resData\.lessonPlans/);
+  assert.match(settingsMisc, /Array\.isArray\(lpRes\.data\) \? lpRes\.data : \(lpRes\.lessonPlans \|\| \[\]\)/);
+  assert.match(modulAjar, /isSameSubject\(lp\.subjectId, s\.id, appState\.subjects\)/);
+  assert.equal(modulAjar.includes("String(lp.subjectId) === String(s.id)"), false);
+  assert.match(mainEntry, /madrasah:runtime-ready/);
+  assert.match(indexHtml, /id="app-initial-loader-status"/);
   const listenIndex = server.indexOf('const server = app.listen(PORT, "0.0.0.0"');
   const backgroundInitIndex = server.lastIndexOf('startOnlineRuntimeInitializationLoop();');
   assert.equal(listenIndex >= 0, true, 'server listen marker missing');
