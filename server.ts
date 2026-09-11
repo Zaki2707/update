@@ -1086,6 +1086,8 @@ let isRecreatingPool = false;
 let onlineRuntimeReady = !isOnlineMode;
 let onlineRuntimeReadyAt: string | null = isOnlineMode ? null : new Date().toISOString();
 let onlineRuntimeStartupError: string | null = null;
+let onlineRuntimeInitLoopPromise: Promise<void> | null = null;
+const ONLINE_RUNTIME_RETRY_DELAY_MS = 5000;
 
 function triggerPoolRecreation() {
   if (isRecreatingPool) return;
@@ -3169,7 +3171,7 @@ function ensureHydrated() {
 async function initializeOnlineRuntimeBeforeListen() {
   if (!isOnlineMode) return;
 
-  const maxAttempts = 15;
+  const maxAttempts = 3;
   let lastErrorMessage = 'Cloud SQL belum siap.';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -3226,7 +3228,28 @@ async function initializeOnlineRuntimeBeforeListen() {
   }
 
   onlineRuntimeStartupError = lastErrorMessage;
-  console.warn('[Startup Warning] Cloud SQL dan hydration belum selesai saat startup probe, akan terus di-hydrate di latar belakang:', lastErrorMessage);
+  throw new Error(`ONLINE_STARTUP_NOT_READY: ${lastErrorMessage}`);
+}
+
+function startOnlineRuntimeInitializationLoop() {
+  if (!isOnlineMode || onlineRuntimeReady || onlineRuntimeInitLoopPromise) return;
+
+  onlineRuntimeInitLoopPromise = (async () => {
+    while (!onlineRuntimeReady) {
+      try {
+        await initializeOnlineRuntimeBeforeListen();
+      } catch (err: any) {
+        onlineRuntimeStartupError = err?.message || String(err);
+        console.warn(
+          `[Startup Warning] Runtime online belum siap; retry dalam ${ONLINE_RUNTIME_RETRY_DELAY_MS}ms:`,
+          onlineRuntimeStartupError
+        );
+        await new Promise(resolve => setTimeout(resolve, ONLINE_RUNTIME_RETRY_DELAY_MS));
+      }
+    }
+  })().finally(() => {
+    onlineRuntimeInitLoopPromise = null;
+  });
 }
 
 const DB_CACHE_TTL_MS = isOnlineMode ? Number.POSITIVE_INFINITY : 900000; // ONLINE single-instance state is hydrated at boot; never block hot API paths on periodic full-table scans
@@ -3328,6 +3351,34 @@ async function refreshInmemoryState(force = false) {
 }
 
 app.use(async (req, res, next) => {
+  const runtimeReady = !isOnlineMode || Boolean(
+    onlineRuntimeReady &&
+    hasHydratedPersistentState &&
+    pool &&
+    !isDbQuotaExceeded
+  );
+  const readinessExemptPath =
+    req.path === "/health" ||
+    req.path === "/healthz" ||
+    req.path === "/readyz" ||
+    req.path === "/api/health";
+
+  // Cloud Run must be able to observe a live port immediately, but no business API
+  // may read or mutate partially hydrated in-memory state. Static assets remain
+  // available so the frontend can load and retry its API calls safely.
+  if (isOnlineMode && !runtimeReady) {
+    if (readinessExemptPath || !req.path.startsWith("/api/")) {
+      return next();
+    }
+    res.setHeader("Retry-After", "2");
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(503).json({
+      success: false,
+      code: "ONLINE_RUNTIME_STARTING",
+      message: "Server sedang menyiapkan data Cloud SQL. Silakan coba lagi sebentar."
+    });
+  }
+
   try {
     if (req.path.startsWith("/api/") && req.path !== "/api/sync-state") {
       await refreshInmemoryState();
@@ -17543,9 +17594,7 @@ async function startServer() {
   }
 
   if (isOnlineMode) {
-    initializeOnlineRuntimeBeforeListen().catch((err: any) => {
-      console.warn("[Startup Warning] Background initialization note:", err?.message || err);
-    });
+    startOnlineRuntimeInitializationLoop();
   }
 }
 
