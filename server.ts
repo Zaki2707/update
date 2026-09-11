@@ -1079,7 +1079,7 @@ import pkg from 'pg';
 const { Pool } = pkg;
 
 let pool: pkg.Pool | null = null;
-let activeDbSource: "SQL_HOST" | "NONE" = "NONE";
+let activeDbSource: "SQL_HOST" | "DATABASE_URL" | "NONE" = "NONE";
 let dbConnectionErrorMsg: string | null = null;
 let dbInitPromise: Promise<void> | null = null;
 let isRecreatingPool = false;
@@ -1176,6 +1176,22 @@ async function determineAndInitPool() {
     }
   }
 
+  // Backward-compatible production fallback. SQL_HOST/Cloud SQL socket remains
+  // preferred, but existing deployments that still provide DATABASE_URL must not
+  // silently lose their database connection after a code deploy.
+  if (process.env.DATABASE_URL) {
+    candidateConfigs.push({
+      name: "DATABASE_URL",
+      config: {
+        connectionString: process.env.DATABASE_URL,
+        max: 10,
+        connectionTimeoutMillis,
+        keepAlive: true,
+        idleTimeoutMillis: 15000,
+      }
+    });
+  }
+
   candidateConfigs.push({
     name: "Localhost TCP PostgreSQL",
     config: {
@@ -1210,8 +1226,10 @@ async function determineAndInitPool() {
       await Promise.race([testPromise, timeoutPromise]);
       
       pool = testPool;
-      activeDbSource = (candidate.name.startsWith("SQL_HOST") ? "SQL_HOST" : candidate.name) as any;
-      if (activeDbSource === "SQL_HOST") {
+      activeDbSource = (candidate.name.startsWith("SQL_HOST")
+        ? "SQL_HOST"
+        : (candidate.name === "DATABASE_URL" ? "DATABASE_URL" : "NONE"));
+      if (activeDbSource === "SQL_HOST" || activeDbSource === "DATABASE_URL") {
         isDbQuotaExceeded = false;
       }
       console.log(`Database Probe: Connection succeeded! Using ${candidate.name} as the exclusive cloud database.`);
@@ -4858,9 +4876,9 @@ app.get("/api/db-status", async (req, res) => {
 
   // 1. Check SQL (PostgreSQL/Cloud SQL)
   try {
-    const hasEnv = !!process.env.SQL_HOST;
+    const hasEnv = !!process.env.SQL_HOST || !!process.env.DATABASE_URL;
     if (!hasEnv) {
-      status.sql.message = "Variabel lingkungan SQL_HOST (Cloud SQL) tidak ditemukan.";
+      status.sql.message = "Konfigurasi database tidak ditemukan. Isi SQL_HOST atau DATABASE_URL.";
     } else {
       status.sql.configured = true;
       if (dbInitPromise) {
@@ -5177,7 +5195,7 @@ app.post("/api/db-pull-cloud", async (req, res) => {
       }
       return res.status(500).json({
         success: false,
-        message: "Gagal menghubungkan ke database Cloud SQL. Silakan periksa konfigurasi kredensial database Anda di AI Studio (Pengaturan) atau pastikan variabel lingkungan SQL_HOST, SQL_USER, SQL_PASSWORD terisi."
+        message: "Gagal menghubungkan ke database. Pastikan SQL_HOST + SQL_USER + SQL_PASSWORD atau DATABASE_URL dikonfigurasi dengan benar."
       });
     }
 
