@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
+import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
 import { resolveSqlConnection, SqlConfigurationError, sqlOnlineMode } from '../src/db/connectionConfig.ts';
 import { KeyedSerialQueue } from '../src/keyedSerialQueue.js';
@@ -296,4 +297,10 @@ await test('Production static middleware blocks backend bundles and maps, includ
   const malformed = responseStub();
   middleware({ path: '/%ZZ' }, malformed, () => assert.fail('malformed path passed'));
   assert.equal(malformed.statusCode, 400);
+});
+
+await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
+  execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
+    stdio: 'inherit', timeout: 45000,
+  });
 });
