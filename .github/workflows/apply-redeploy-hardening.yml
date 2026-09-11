@@ -82,7 +82,19 @@ jobs:
           retention-days: 1
 
       - name: Hardening regression
-        run: npm run hardening:regression
+        id: hardening_regression
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run hardening:regression 2>&1 | tee hardening-regression.log
+
+      - name: Upload hardening regression diagnostics
+        if: failure() && steps.hardening_regression.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: redeploy-hardening-regression
+          path: hardening-regression.log
+          retention-days: 1
 
       - name: TypeScript check
         run: npm run lint
