@@ -25,6 +25,7 @@ const checks = [
   ['WebSocket server verifies JWT', server.includes("verifyAuthToken(String(data.token || ''))") && server.includes("ws.close(4001, 'Unauthorized')") && server.includes("ws.close(4003, 'Client identity mismatch')")],
   ['No hardcoded SQL password fallback', !/password:\s*process\.env\.SQL_PASSWORD\s*\|\|/.test(server)],
   ['Settings response strips adminPass', server.includes('function sanitizeSettingsForClient') && server.includes("'adminPass', 'password', 'jwtSecret'") && server.includes('delete safe[key]')],
+  ['Public settings strip realtime credentials', server.includes('function sanitizeSettingsForPublic') && server.includes("'turnUrl', 'turnUsername', 'turnCredential'") && server.includes("'livekitUrl', 'livekitApiKey'") && server.includes('authenticatedUser\n    ? sanitizeSettingsForClient(appSettings)\n    : sanitizeSettingsForPublic(appSettings)')],
   ['Login response token not logged', !app.includes("console.log('Login response:', data)")],
   ['Student fallback strips answer key', assessment.includes('stripStudentQuestionSecrets') && assessment.includes('delete safe.answer')],
   ['Online request body limit reduced', server.includes("isOnlineMode ? '25mb' : '50mb'")],
