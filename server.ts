@@ -7131,8 +7131,16 @@ app.get("/api/teacher-attendance", async (req, res) => {
   res.json({ success: true, teacherAttendance: filterByMadrasah(teacherAttendance || [], req) });
 });
 
-app.post("/api/teacher-attendance", async (req, res) => {
+app.post("/api/teacher-attendance", async (req: any, res) => {
   let { teacherId, date, status, location, photo, note, type, time } = req.body;
+  const authUser = req.user || getAuthUser(req);
+  const authRole = String(authUser?.role || '').toLowerCase();
+  if (authRole === 'teacher' || authRole === 'guru') teacherId = String(authUser.id);
+  const targetTeacher = (teachers || []).find((t: any) => String(t.id) === String(teacherId));
+  if (!targetTeacher) return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
+  if (authRole !== 'bos' && authRole !== 'superadmin' && !isItemForCurrentMadrasah(targetTeacher, req)) {
+    return res.status(403).json({ success: false, message: "Guru bukan milik madrasah Anda." });
+  }
   if (photo && photo.startsWith("data:image/")) {
     photo = await saveBase64ToFirestore(photo);
   }
@@ -7203,7 +7211,7 @@ app.post("/api/teacher-attendance", async (req, res) => {
   }
 });
 
-app.post("/api/teacher-attendance/update", async (req, res) => {
+app.post("/api/teacher-attendance/update", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { teacherId, date, status, type } = req.body;
   const dateStr = String(date).substring(0, 10);
   const attType = type || 'MASUK';
@@ -9400,9 +9408,13 @@ app.get("/api/chats", requireAuth, async (req: any, res) => {
 
 app.post("/api/chats", requireAuth, async (req: any, res) => {
   try {
+    const authUser = req.user || getAuthUser(req);
     const userMId = getRequestMadrasahId(req);
+    const authRole = String(authUser?.role || '').toLowerCase();
+    const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(authRole);
     const newChat = { 
-      ...req.body, 
+      ...req.body,
+      senderId: isStudent ? String(authUser.id) : (req.body.senderId || String(authUser.id)),
       id: req.body.id || Date.now().toString(), 
       timestamp: req.body.timestamp || Date.now(),
       madrasahId: userMId
@@ -9430,18 +9442,22 @@ app.delete("/api/chats/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
   }
 });
 
-app.post("/api/chats/clear", async (req, res) => {
+app.post("/api/chats/clear", async (req: any, res) => {
   const { senderId, receiverId } = req.body;
-  if (!senderId || !receiverId) {
-    return res.status(400).json({ success: false, message: "Missing ids" });
+  const authUser = req.user || getAuthUser(req);
+  const authRole = String(authUser?.role || '').toLowerCase();
+  const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(authRole);
+  if (!senderId || !receiverId) return res.status(400).json({ success: false, message: "Missing ids" });
+  if (isStudent && String(senderId) !== String(authUser.id) && String(receiverId) !== String(authUser.id)) {
+    return res.status(403).json({ success: false, message: "Siswa hanya dapat menghapus percakapannya sendiri." });
   }
   try {
     await updateStoreKeyWithLock('chats', (currentVal) => {
       const chatList = Array.isArray(currentVal) ? currentVal : [];
-      return chatList.filter((c: any) => !(
+      return chatList.filter((c: any) => !(isItemForCurrentMadrasah(c, req) && (
         (String(c.senderId) === String(senderId) && String(c.receiverId) === String(receiverId)) ||
         (String(c.senderId) === String(receiverId) && String(c.receiverId) === String(senderId))
-      ));
+      )));
     });
     res.json({ success: true });
   } catch (err: any) {
@@ -13911,17 +13927,164 @@ app.get("/api/system/backup", (req, res) => {
   res.json(backupData);
 });
 
-app.post("/api/system/restore", async (req, res) => {
-  try {
-    let backup = req.body;
-    if (!backup || typeof backup !== 'object') {
-      return res.status(400).json({ success: false, message: "Format file backup tidak valid." });
+
+const ONLINE_SAFE_RESTORE_SPECS: Array<[string, string[], string, () => any[]]> = [
+  ['students', ['madrasah_students'], 'students', () => students || []],
+  ['teachers', ['madrasah_teachers'], 'teachers', () => teachers || []],
+  ['classes', ['madrasah_classes'], 'classes', () => classes || []],
+  ['subjects', ['madrasah_subjects'], 'subjects', () => subjects || []],
+  ['schedules', ['madrasah_schedules'], 'generic', () => schedules || []],
+  ['attendance', ['madrasah_attendance'], 'generic', () => attendance || []],
+  ['teacherAttendance', ['madrasah_teacher_attendance', 'madrasah_teacherAttendance'], 'generic', () => teacherAttendance || []],
+  ['questionBankGroups', ['madrasah_questionBankGroups', 'madrasah_question_groups'], 'generic', () => questionBankGroups || []],
+  ['questions', ['madrasah_questions', 'questionBank', 'madrasah_questionBank'], 'generic', () => questions || []],
+  ['exams', ['madrasah_exams'], 'generic', () => exams || []],
+  ['rooms', ['madrasah_rooms'], 'generic', () => rooms || []],
+  ['journals', ['madrasah_journals'], 'generic', () => journals || []],
+  ['gradeCategories', ['madrasah_grade_categories', 'madrasah_gradeCategories'], 'generic', () => gradeCategories || []],
+  ['generatedExams', ['madrasah_generated_exams', 'madrasah_generatedExams'], 'generic', () => generatedExams || []],
+  ['lessonPlans', ['madrasah_lessonPlans', 'madrasah_lesson_plans'], 'generic', () => lessonPlans || []],
+  ['grades', ['madrasah_grades'], 'generic', () => grades || []]
+];
+
+function getOnlineRestoreArray(backup: any, key: string, legacyKeys: string[]): any[] | null {
+  for (const candidate of [key, ...legacyKeys]) {
+    const value = backup?.[candidate];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (_) {}
     }
-    backup = await persistRestoredImageData(backup);
-    const merged = await processSystemRestore(backup);
-    res.json({ success: true, message: "Restore data sistem berhasil diproses!", merged });
+  }
+  return null;
+}
+
+function sameOnlineRestoreIdentity(kind: string, a: any, b: any): boolean {
+  const n = (v: any) => String(v ?? '').trim().toLowerCase();
+  if (kind === 'students') return Boolean(n(a?.username) && n(a?.nis) && n(a.username) === n(b?.username) && n(a.nis) === n(b?.nis));
+  if (kind === 'teachers') return Boolean(n(a?.username) && n(a?.nip) && n(a.username) === n(b?.username) && n(a.nip) === n(b?.nip));
+  if (kind === 'subjects') return Boolean(n(a?.code) && n(a?.name) && n(a.code) === n(b?.code) && n(a.name) === n(b?.name));
+  if (kind === 'classes') {
+    if (n(a?.code) && n(b?.code)) return Boolean(n(a?.name) && n(a.code) === n(b.code) && n(a.name) === n(b.name));
+    return Boolean(n(a?.name) && n(a?.grade) && n(a.name) === n(b?.name) && n(a.grade) === n(b?.grade));
+  }
+  return false;
+}
+
+function buildOnlineSafeRestorePlan(backup: any, req: any) {
+  const plan: Record<string, any[]> = {};
+  const skipped: Record<string, number> = {};
+  for (const [key, legacyKeys, kind, getCurrent] of ONLINE_SAFE_RESTORE_SPECS) {
+    const incoming = getOnlineRestoreArray(backup, key, legacyKeys);
+    if (!incoming) continue;
+    if (incoming.length > 20000) throw new Error('RESTORE_TOO_LARGE:' + key);
+    const current = Array.isArray(getCurrent()) ? getCurrent() : [];
+    const tenantCurrent = current.filter((item: any) => isItemForCurrentMadrasah(item, req));
+    const seenIds = new Map<string, any>();
+    const additions: any[] = [];
+    let skippedCount = 0;
+
+    for (const raw of incoming) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { skippedCount++; continue; }
+      if ((raw.madrasahId || raw.madrasahSlug) && !isItemForCurrentMadrasah(raw, req)) {
+        throw new Error('RESTORE_TENANT_CONFLICT:' + key);
+      }
+      const id = String(raw.id ?? '').trim();
+      if (!id) { skippedCount++; continue; }
+
+      const duplicate = seenIds.get(id);
+      if (duplicate) {
+        const equivalent = kind !== 'generic'
+          ? sameOnlineRestoreIdentity(kind, duplicate, raw)
+          : JSON.stringify(duplicate) === JSON.stringify(raw);
+        if (!equivalent) throw new Error('RESTORE_DUPLICATE_ID_CONFLICT:' + key + ':' + id);
+        skippedCount++; continue;
+      }
+      seenIds.set(id, raw);
+
+      const sameId = current.find((item: any) => String(item?.id ?? '').trim() === id);
+      if (sameId) {
+        if (!isItemForCurrentMadrasah(sameId, req)) throw new Error('RESTORE_CROSS_TENANT_ID_CONFLICT:' + key + ':' + id);
+        if (kind !== 'generic' && !sameOnlineRestoreIdentity(kind, sameId, raw)) {
+          throw new Error('RESTORE_EXISTING_ID_CONFLICT:' + key + ':' + id);
+        }
+        skippedCount++; continue;
+      }
+      if (kind !== 'generic' &&
+          (tenantCurrent.some((item: any) => sameOnlineRestoreIdentity(kind, item, raw)) ||
+           additions.some((item: any) => sameOnlineRestoreIdentity(kind, item, raw)))) {
+        skippedCount++; continue;
+      }
+
+      const item: any = { ...raw };
+      delete item.madrasahId;
+      delete item.madrasahSlug;
+      delete item.passwordRaw;
+      additions.push(tagNewRecord(item, req));
+    }
+    plan[key] = additions;
+    skipped[key] = skippedCount;
+  }
+  return { plan, skipped };
+}
+
+async function processOnlineSafeRestore(backup: any, req: any) {
+  // Full preflight completes before any upload or database mutation.
+  const initial = buildOnlineSafeRestorePlan(backup, req);
+  const persistedBackup: any = {};
+  for (const [key, , kind] of ONLINE_SAFE_RESTORE_SPECS) {
+    const additions = initial.plan[key];
+    if (!additions?.length) continue;
+    const persisted = await persistRestoredImageData(additions);
+    if (kind === 'students' || kind === 'teachers') {
+      for (const item of persisted) {
+        const password = String(item?.password || '');
+        if (password && !password.startsWith('scrypt$') && !password.startsWith('sha256$')) item.password = hashPassword(password);
+      }
+    }
+    persistedBackup[key] = persisted;
+  }
+
+  // Re-plan against latest memory to stay add-only if another request wrote meanwhile.
+  const finalPlan = buildOnlineSafeRestorePlan(persistedBackup, req);
+  const batch: { key: string; value: any }[] = [];
+  const added: Record<string, number> = {};
+  for (const [key, , , getCurrent] of ONLINE_SAFE_RESTORE_SPECS) {
+    const additions = finalPlan.plan[key];
+    if (!additions?.length) continue;
+    batch.push({ key, value: [...getCurrent(), ...additions] });
+    added[key] = additions.length;
+  }
+  if (batch.length) await saveDataBatch(batch, true);
+  return {
+    mode: 'online-add-only-v1',
+    nonDestructive: true,
+    added,
+    skipped: initial.skipped,
+    ignoredSettings: Boolean(backup?.settings || backup?.madrasah_settings || backup?.schoolLocationSettings)
+  };
+}
+
+async function executeSystemRestore(backup: any, req: any) {
+  if (isOnlineMode) return processOnlineSafeRestore(backup, req);
+  return processSystemRestore(await persistRestoredImageData(backup));
+}
+
+app.post("/api/system/restore", async (req: any, res) => {
+  try {
+    const backup = req.body;
+    if (!backup || typeof backup !== 'object') return res.status(400).json({ success: false, message: "Format file backup tidak valid." });
+    const merged = await executeSystemRestore(backup, req);
+    res.json({
+      success: true,
+      message: isOnlineMode ? "Restore online aman selesai: hanya data missing yang ditambahkan." : "Restore data sistem offline berhasil diproses!",
+      merged
+    });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: "Gagal merestore data: " + err.message });
+    const status = String(err?.message || '').startsWith('RESTORE_') ? 409 : 500;
+    res.status(status).json({ success: false, message: "Gagal merestore data: " + err.message });
   }
 });
 
@@ -14612,36 +14775,64 @@ async function processSystemRestore(backup: any) {
     };
 }
 
-const restoreChunks: Record<string, string[]> = {};
+type RestoreChunkSession = { owner: string; tenant: string; total: number; createdAt: number; chunks: string[] };
+const restoreChunks = new Map<string, RestoreChunkSession>();
 
-app.post("/api/system/restore/chunk", async (req, res) => {
+app.post("/api/system/restore/chunk", async (req: any, res) => {
   try {
-    const { uploadId, chunkData, chunkIndex, totalChunks } = req.body;
-    if (!uploadId || chunkData === undefined || chunkIndex === undefined || totalChunks === undefined) {
+    const now = Date.now();
+    for (const [id, session] of restoreChunks) if (now - session.createdAt > 15 * 60 * 1000) restoreChunks.delete(id);
+
+    const authUser = req.user || getAuthUser(req);
+    const uploadId = String(req.body?.uploadId || '');
+    const chunkData = req.body?.chunkData;
+    const chunkIndex = Number(req.body?.chunkIndex);
+    const totalChunks = Number(req.body?.totalChunks);
+    if (!authUser || !/^[A-Za-z0-9_-]{8,120}$/.test(uploadId) || typeof chunkData !== 'string' ||
+        !Number.isInteger(chunkIndex) || !Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > 256 ||
+        chunkIndex < 0 || chunkIndex >= totalChunks) {
       return res.status(400).json({ success: false, message: "Invalid chunk payload" });
     }
-    
-    if (!restoreChunks[uploadId]) {
-      restoreChunks[uploadId] = [];
+    if (Buffer.byteLength(chunkData, 'utf8') > 750000) return res.status(413).json({ success: false, message: "Chunk restore terlalu besar." });
+
+    const owner = String(authUser.id || authUser.username || '');
+    const tenant = String(getRequestMadrasahId(req) || authUser.madrasahId || authUser.madrasahSlug || 'default');
+    let session = restoreChunks.get(uploadId);
+    if (!session) {
+      session = { owner, tenant, total: totalChunks, createdAt: now, chunks: [] };
+      restoreChunks.set(uploadId, session);
     }
-    restoreChunks[uploadId][chunkIndex] = chunkData;
-    
-    let received = 0;
+    if (session.owner !== owner || session.tenant !== tenant || session.total !== totalChunks) {
+      return res.status(409).json({ success: false, message: "Sesi chunk restore tidak cocok dengan user/tenant." });
+    }
+    if (session.chunks[chunkIndex] !== undefined && session.chunks[chunkIndex] !== chunkData) {
+      return res.status(409).json({ success: false, message: "Isi chunk pada indeks yang sama berubah." });
+    }
+    session.chunks[chunkIndex] = chunkData;
+
+    let received = 0, bytes = 0;
     for (let i = 0; i < totalChunks; i++) {
-      if (restoreChunks[uploadId][i] !== undefined) received++;
+      if (session.chunks[i] !== undefined) {
+        received++;
+        bytes += Buffer.byteLength(session.chunks[i], 'utf8');
+      }
     }
-    
-    if (received === totalChunks) {
-      const fullString = restoreChunks[uploadId].join('');
-      delete restoreChunks[uploadId];
-      const backup = JSON.parse(fullString);
-      const merged = await processSystemRestore(backup);
-      return res.json({ success: true, message: "Restore data sistem berhasil diproses (chunked)!", merged });
+    if (bytes > 96 * 1024 * 1024) {
+      restoreChunks.delete(uploadId);
+      return res.status(413).json({ success: false, message: "Payload restore keseluruhan terlalu besar." });
     }
-    
-    res.json({ success: true, message: `Chunk ${chunkIndex + 1}/${totalChunks} received` });
+    if (received !== totalChunks) return res.json({ success: true, message: `Chunk ${chunkIndex + 1}/${totalChunks} received` });
+
+    restoreChunks.delete(uploadId);
+    const merged = await executeSystemRestore(JSON.parse(session.chunks.join('')), req);
+    res.json({
+      success: true,
+      message: isOnlineMode ? "Restore online aman selesai (chunked)." : "Restore data sistem offline berhasil diproses (chunked)!",
+      merged
+    });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: "Gagal memproses chunk: " + err.message });
+    const status = String(err?.message || '').startsWith('RESTORE_') ? 409 : 500;
+    res.status(status).json({ success: false, message: "Gagal memproses chunk: " + err.message });
   }
 });
 
