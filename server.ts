@@ -3662,7 +3662,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
         const requestId = String(mId || authUser?.madrasahId || authUser?.madrasahSlug || 'default');
         return String(m.id) === requestId || String(m.slug) === requestId;
       });
-  const sanitizedMadrasahs = visibleMadrasahs.map(({ adminPass, tokenSignature, tokenSignatureInvalid, ...rest }: any) => rest);
+  const sanitizedMadrasahs = visibleMadrasahs.map(sanitizeMadrasahAdminView).filter(Boolean);
   const sanitizedSettings = sanitizeSettingsForClient(appSettings);
 
   res.json({
@@ -4950,6 +4950,12 @@ function sanitizeMadrasahPublic(m: any) {
   };
 }
 
+function sanitizeMadrasahAdminView(m: any) {
+  if (!m || typeof m !== 'object') return null;
+  const { adminPass, tokenSignature, tokenSignatureInvalid, ...safe } = m;
+  return safe;
+}
+
 // Multi-Tenant & Bos Token Endpoints
 app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
@@ -4959,7 +4965,7 @@ app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   if (isBos) {
     return res.json({
       success: true,
-      madrasahs: (madrasahs || []).map(({ adminPass, tokenSignature, tokenSignatureInvalid, ...rest }: any) => rest)
+      madrasahs: (madrasahs || []).map(sanitizeMadrasahAdminView).filter(Boolean)
     });
   }
 
@@ -4969,7 +4975,7 @@ app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   );
   return res.json({
     success: true,
-    madrasahs: ownMadrasahs.map(({ adminPass, tokenSignature, tokenSignatureInvalid, ...rest }: any) => rest)
+    madrasahs: ownMadrasahs.map(sanitizeMadrasahAdminView).filter(Boolean)
   });
 });
 
@@ -4978,11 +4984,6 @@ app.get("/api/madrasah-by-slug/:slug", (req: any, res) => {
   const m = madrasahs.find(item => String(item.slug).toLowerCase() === String(slug).toLowerCase() || String(item.id) === String(slug));
   if (!m) {
     return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
-  }
-  const authUser = req.user;
-  const isBos = authUser && (authUser.role === 'bos' || authUser.role === 'superadmin');
-  if (isBos) {
-    return res.json({ success: true, madrasah: m });
   }
   res.json({ success: true, madrasah: sanitizeMadrasahPublic(m) });
 });
@@ -5017,11 +5018,9 @@ app.post("/api/register-madrasah", async (req, res) => {
   madrasahs.push(newMadrasah);
   await saveData('madrasahs', madrasahs, true);
 
-  // Save initial madrasah list
-  await saveData('madrasahs', madrasahs, true);
   return res.json({
     success: true,
-    madrasah: newMadrasah,
+    madrasah: sanitizeMadrasahAdminView(newMadrasah),
     message: `Madrasah ${newMadrasah.name} berhasil didaftarkan! URL khusus: /m/${newMadrasah.slug}`
   });
 });
@@ -5484,7 +5483,7 @@ app.post("/api/madrasahs/:id/toggle-status", requireAuth, requireRole(['bos', 's
   await saveData('madrasahs', madrasahs, true);
   return res.json({
     success: true,
-    madrasah: targetM,
+    madrasah: sanitizeMadrasahAdminView(targetM),
     isActive: targetM.isActive,
     message: `Status ${targetM.name} berhasil diubah menjadi ${targetM.isActive ? 'AKTIF' : 'NONAKTIF'}.`
   });
@@ -5517,7 +5516,7 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
   await saveData('madrasahs', madrasahs, true);
   return res.json({
     success: true,
-    madrasah: targetM,
+    madrasah: sanitizeMadrasahAdminView(targetM),
     message: `Data ${targetM.name} berhasil diperbarui.`
   });
 });
