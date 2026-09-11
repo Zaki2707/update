@@ -1079,7 +1079,7 @@ import pkg from 'pg';
 const { Pool } = pkg;
 
 let pool: pkg.Pool | null = null;
-let activeDbSource: "SQL_HOST" | "DATABASE_URL" | "NONE" = "NONE";
+let activeDbSource: "SQL_HOST" | "NONE" = "NONE";
 let dbConnectionErrorMsg: string | null = null;
 let dbInitPromise: Promise<void> | null = null;
 let isRecreatingPool = false;
@@ -1172,19 +1172,6 @@ async function determineAndInitPool() {
         });
       }
     }
-  }
-
-  if (process.env.DATABASE_URL) {
-    candidateConfigs.push({
-      name: "DATABASE_URL",
-      config: {
-        connectionString: process.env.DATABASE_URL,
-        max: 10,
-        connectionTimeoutMillis,
-        keepAlive: true,
-        idleTimeoutMillis: 15000,
-      }
-    });
   }
 
   candidateConfigs.push({
@@ -3045,7 +3032,7 @@ async function hydrate() {
     }
     await runOneTimeMigrations();
     hasHydratedPersistentState = true;
-    console.log("Database URL / SQL_HOST not set. Using local JSON store.");
+    console.log("Cloud SQL (SQL_HOST) not connected. Using local JSON store.");
     return;
   }
 
