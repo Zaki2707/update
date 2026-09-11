@@ -2275,6 +2275,16 @@ app.use(express.urlencoded({ extended: true, limit: requestBodyLimit }));
 const apiRateBuckets = new Map<string, { count: number; resetAt: number }>();
 function enforceApiRateLimit(req: any, res: any, bucket: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
+  if (apiRateBuckets.size > 10000) {
+    for (const [existingKey, existing] of apiRateBuckets) {
+      if (existing.resetAt <= now) apiRateBuckets.delete(existingKey);
+    }
+    while (apiRateBuckets.size > 10000) {
+      const oldestKey = apiRateBuckets.keys().next().value;
+      if (!oldestKey) break;
+      apiRateBuckets.delete(oldestKey);
+    }
+  }
   const ip = String(req.ip || req.socket?.remoteAddress || 'unknown');
   const key = `${bucket}:${ip}`;
   let item = apiRateBuckets.get(key);
@@ -2303,7 +2313,8 @@ const staffWritePrefixes = [
 ];
 const staffOnlyPrefixes = [
   '/api/teacher-attendance', '/api/question-bank-groups', '/api/journals',
-  '/api/lesson-plans', '/api/generated-exams'
+  '/api/lesson-plans', '/api/generated-exams', '/api/gemini/', '/api/modul/',
+  '/api/import-groups'
 ];
 
 app.use((req: any, res, next) => {
@@ -4972,19 +4983,25 @@ app.post("/api/token-requests/:id/approve", requireAuth, requireRole(['bos', 'su
   if (!reqItem) {
     return res.status(404).json({ success: false, message: "Permintaan top-up tidak ditemukan." });
   }
-  const addQty = parseInt(approvedQuantity, 10) || reqItem.quantity;
+  const requestedQty = approvedQuantity === undefined || approvedQuantity === null || approvedQuantity === ''
+    ? Number(reqItem.quantity)
+    : Number(approvedQuantity);
+  const addQty = Math.floor(requestedQty);
+  if (!Number.isFinite(addQty) || addQty <= 0) {
+    return res.status(400).json({ success: false, message: 'Jumlah token yang disetujui harus lebih dari 0.' });
+  }
+
+  const targetM = madrasahs.find(m => String(m.id) === String(reqItem.madrasahId));
+  if (!targetM) {
+    return res.status(409).json({ success: false, message: 'Target madrasah pada permintaan top-up sudah tidak tersedia. Persetujuan dibatalkan.' });
+  }
+
   reqItem.status = 'approved';
   reqItem.approvedQuantity = addQty;
   reqItem.approvedAt = new Date().toISOString();
-
-  let targetM = madrasahs.find(m => String(m.id) === String(reqItem.madrasahId) || m.name === reqItem.madrasahName);
-  if (!targetM && madrasahs.length > 0) targetM = madrasahs[0];
-
-  if (targetM) {
-    targetM.cbtTokenBalance = (targetM.cbtTokenBalance || 0) + addQty;
-    delete targetM.tokenSignatureInvalid;
-    targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
-  }
+  targetM.cbtTokenBalance = (targetM.cbtTokenBalance || 0) + addQty;
+  delete targetM.tokenSignatureInvalid;
+  targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
 
   await saveData('tokenRequests', tokenRequests);
   await saveData('madrasahs', madrasahs, true);
@@ -5017,10 +5034,7 @@ app.post("/api/madrasahs/:id/update-tokens", requireAuth, requireRole(['bos', 's
   }
   const { id } = req.params;
   const { newBalance, deltaTokens } = req.body;
-  let targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
-  if (!targetM && madrasahs.length > 0) {
-    targetM = madrasahs[0];
-  }
+  const targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
   if (!targetM) {
     return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
   }
@@ -5261,10 +5275,7 @@ app.post("/api/deduct-cbt-token", requireAuth, requireRole(['teacher', 'guru', '
     });
   } else {
     const madrasahId = getRequestMadrasahId(req) || authUser.madrasahId;
-    let targetM = madrasahs.find(m => String(m.id) === String(madrasahId) || String(m.slug) === String(madrasahId));
-    if (!targetM && madrasahs.length > 0) {
-      targetM = madrasahs[0];
-    }
+    const targetM = madrasahs.find(m => String(m.id) === String(madrasahId) || String(m.slug) === String(madrasahId));
     if (!targetM) {
       return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
     }
@@ -5524,6 +5535,31 @@ function enforceTenantMutationOwnership(req: any, res: any, authUser: any): bool
   const role = String(authUser?.role || '').toLowerCase();
   if (role === 'bos' || role === 'superadmin') return true;
   const p = String(req.path || '');
+  const collectionResources: Array<[string, () => any[]]> = [
+    ['/api/question-bank-groups', () => questionBankGroups || []],
+    ['/api/questions', () => questions || []],
+    ['/api/schedules', () => schedules || []],
+    ['/api/exams', () => exams || []],
+    ['/api/lkpds', () => lkpdList || []],
+    ['/api/rooms', () => rooms || []],
+    ['/api/journals', () => journals || []],
+    ['/api/calendar-events', () => calendarEvents || []],
+    ['/api/generated-exams', () => generatedExams || []],
+    ['/api/lesson-plans', () => lessonPlans || []],
+    ['/api/games', () => eduGames || []]
+  ];
+  for (const [collectionPath, getList] of collectionResources) {
+    if (p !== collectionPath) continue;
+    const incoming = Array.isArray(req.body) ? req.body : [req.body];
+    for (const candidate of incoming) {
+      if (!candidate || candidate.id === undefined || candidate.id === null) continue;
+      const clashes = getList().filter((item: any) => String(item?.id) === String(candidate.id));
+      if (clashes.some((item: any) => !isItemForCurrentMadrasah(item, req))) {
+        res.status(409).json({ success: false, message: 'ID data sudah digunakan oleh tenant lain; mutation ditolak.' });
+        return false;
+      }
+    }
+  }
   const resources: Array<[RegExp, () => any[]]> = [
     [/^\/api\/teachers\/([^/]+)$/, () => teachers || []],
     [/^\/api\/students\/([^/]+)$/, () => students || []],
@@ -5546,8 +5582,13 @@ function enforceTenantMutationOwnership(req: any, res: any, authUser: any): bool
     const m = p.match(re);
     if (!m) continue;
     const matchingItems = getList().filter((x: any) => String(x?.id) === String(m[1]));
-    if (matchingItems.length > 0 && !matchingItems.some((item: any) => isItemForCurrentMadrasah(item, req))) {
+    const ownedItems = matchingItems.filter((item: any) => isItemForCurrentMadrasah(item, req));
+    if (matchingItems.length > 0 && ownedItems.length === 0) {
       res.status(403).json({ success: false, message: 'Akses ditolak: data bukan milik madrasah Anda.' });
+      return false;
+    }
+    if (matchingItems.length > ownedItems.length) {
+      res.status(409).json({ success: false, message: 'ID ambigu lintas tenant; mutation ditolak untuk mencegah perubahan data madrasah lain.' });
       return false;
     }
     return true;
@@ -7111,7 +7152,7 @@ app.post("/api/attendance/reset", requireAuth, requireRole(['admin', 'bos', 'sup
   }
 });
 
-app.post("/api/attendance/clear-all", async (req, res) => {
+app.post("/api/attendance/clear-all", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
     let deletedAttendanceCount = 0;
     let deletedPhotosCount = 0;
@@ -7119,9 +7160,10 @@ app.post("/api/attendance/clear-all", async (req, res) => {
     // 1. Clean up student attendance (keep latest per NIS)
     await updateStoreKeyWithLock('attendance', (currentVal) => {
       const attList = Array.isArray(currentVal) ? currentVal : [];
+      const otherTenant = attList.filter((record: any) => !isItemForCurrentMadrasah(record, req));
+      const ownTenant = attList.filter((record: any) => isItemForCurrentMadrasah(record, req));
       const grouped = new Map();
-      const sorted = [...attList].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      
+      const sorted = [...ownTenant].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       const kept = [];
       for (const record of sorted) {
         if (!grouped.has(record.studentId)) {
@@ -7129,16 +7171,17 @@ app.post("/api/attendance/clear-all", async (req, res) => {
           kept.push(record);
         }
       }
-      deletedAttendanceCount += (attList.length - kept.length);
-      return kept;
+      deletedAttendanceCount += (ownTenant.length - kept.length);
+      return [...otherTenant, ...kept];
     });
 
     // 2. Clean up teacher attendance (keep latest per NIP)
     await updateStoreKeyWithLock('teacherAttendance', (currentVal) => {
       const attList = Array.isArray(currentVal) ? currentVal : [];
+      const otherTenant = attList.filter((record: any) => !isItemForCurrentMadrasah(record, req));
+      const ownTenant = attList.filter((record: any) => isItemForCurrentMadrasah(record, req));
       const grouped = new Map();
-      const sorted = [...attList].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      
+      const sorted = [...ownTenant].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       const kept = [];
       for (const record of sorted) {
         if (!grouped.has(record.teacherId)) {
@@ -7146,8 +7189,8 @@ app.post("/api/attendance/clear-all", async (req, res) => {
           kept.push(record);
         }
       }
-      deletedAttendanceCount += (attList.length - kept.length);
-      return kept;
+      deletedAttendanceCount += (ownTenant.length - kept.length);
+      return [...otherTenant, ...kept];
     });
 
     // 3. Gather active photos
@@ -9509,6 +9552,7 @@ app.post("/api/chats", requireAuth, async (req: any, res) => {
       list.push(newChat);
       return list;
     });
+    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, data: newChat });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -9527,6 +9571,7 @@ app.delete("/api/chats/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
       });
     });
     if (!deleted) return res.status(404).json({ success: false, message: 'Pesan tidak ditemukan pada madrasah ini.' });
+    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, deleted });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -9550,6 +9595,7 @@ app.post("/api/chats/clear", async (req: any, res) => {
         (String(c.senderId) === String(receiverId) && String(c.receiverId) === String(senderId))
       )));
     });
+    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -9580,6 +9626,7 @@ app.put("/api/chats/read", requireAuth, async (req: any, res) => {
       }
       return chatList;
     });
+    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, updated });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -9615,6 +9662,7 @@ app.post("/api/chats/broadcast-apk", requireAuth, requireRole(['admin', 'bos', '
       return [...chatList, ...newChats];
     });
 
+    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, count: newChats.length });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -12742,8 +12790,17 @@ app.delete("/api/schedules/:id", async (req, res) => {
 });
 
 // Exams API
-app.get("/api/exams", (req, res) => {
-  res.json({ success: true, exams: filterByMadrasah(exams, req) });
+app.get("/api/exams", (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  let list = filterByMadrasah(exams, req);
+  if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
+    list = list.map((exam: any) => {
+      if (!Array.isArray(exam?.questions)) return exam;
+      return { ...exam, questions: exam.questions.map(sanitizeQuestionForStudent).filter(Boolean) };
+    });
+  }
+  res.json({ success: true, exams: list });
 });
 app.get("/api/lkpds", (req, res) => {
   res.json({ success: true, lkpdList: filterByMadrasah(lkpdList, req) });
