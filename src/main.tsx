@@ -42,13 +42,23 @@ function removeInitialPreloader() {
   }
 }
 
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  requestAnimationFrame(removeInitialPreloader);
-} else {
-  window.addEventListener('DOMContentLoaded', removeInitialPreloader);
-  window.addEventListener('load', removeInitialPreloader);
+let runtimeReadySeen = Boolean((window as any).__onlineRuntimeReady);
+
+function dismissPreloaderWhenReady() {
+  runtimeReadySeen = true;
+  removeInitialPreloader();
 }
-// Guaranteed fallback so it never gets stuck
-setTimeout(removeInitialPreloader, 1200);
+
+window.addEventListener('madrasah:runtime-ready', dismissPreloaderWhenReady, { once: true });
+
+if (runtimeReadySeen) {
+  requestAnimationFrame(removeInitialPreloader);
+}
+
+// Do not keep the user behind the splash screen forever if Cloud SQL needs longer.
+// Session/login requests are still guarded separately until /readyz reports ready.
+setTimeout(() => {
+  if (!runtimeReadySeen) removeInitialPreloader();
+}, 6000);
 
 
