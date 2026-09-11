@@ -1963,13 +1963,14 @@ async function writeBatchToPostgresDirect(keys: string[]) {
           }
         }
 
-        await client.query('COMMIT');
-
+        // Verify critical arrays inside the still-open transaction so a mismatch can roll back cleanly.
         for (const [key, freshValue] of snapshots) {
           if (isOnlineMode && (key === 'questions' || key === 'questionBankGroups')) {
             await verifyOnlineArrayPersistence(key, freshValue, client);
           }
         }
+
+        await client.query('COMMIT');
         return;
       } catch (err: any) {
         clientError = err;
