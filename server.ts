@@ -2632,7 +2632,9 @@ app.get("/api/photos/:id", async (req, res) => {
   }
 
   const svgPlaceholder = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#f1f5f9"/><path d="M50 42a12 12 0 1 0 0-24 12 12 0 0 0 0 24zm0 8c-16 0-28 10-28 22v2h56v-2c0-12-12-22-28-22z" fill="#cbd5e1"/></svg>`;
-  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'none'; script-src 'none'; sandbox");
   res.setHeader('Cache-Control', 'public, max-age=3600');
   return res.status(200).send(svgPlaceholder);
 });
@@ -11606,18 +11608,42 @@ app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru'
       return res.status(400).json({ success: false, message: "classId dan examId harus diisi." });
     }
 
-    const ex = exams.find((e: any) => String(e.id) === String(examId));
-    if (!ex) return res.status(404).json({ success: false, message: "Jadwal ujian tidak ditemukan." });
-
     const authUser = getAuthUser(req);
     const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-    if (!isBos && !isItemForCurrentMadrasah(ex, req)) {
-      return res.status(403).json({ success: false, message: "Akses ditolak." });
+    const examCandidates = (exams || []).filter((e: any) => String(e.id) === String(examId));
+    let ex: any = null;
+
+    if (isBos) {
+      const explicitTenantRaw = req.headers['x-madrasah-id'] || req.query?.madrasahId || req.body?.madrasahId;
+      const explicitTenant = explicitTenantRaw ? canonicalRealtimeTenant(explicitTenantRaw) : '';
+      const scoped = explicitTenant
+        ? examCandidates.filter((item: any) => canonicalRealtimeTenant(item?.madrasahId || item?.madrasahSlug || 'default') === explicitTenant)
+        : examCandidates;
+      if (scoped.length > 1) {
+        return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant. Pilih madrasah target terlebih dahulu." });
+      }
+      ex = scoped[0] || null;
+    } else {
+      const owned = examCandidates.filter((item: any) => isItemForCurrentMadrasah(item, req));
+      if (owned.length > 1) {
+        return res.status(409).json({ success: false, message: "ID ujian ambigu pada tenant ini." });
+      }
+      ex = owned[0] || null;
+    }
+
+    if (!ex) return res.status(404).json({ success: false, message: "Jadwal ujian tidak ditemukan pada tenant yang diizinkan." });
+
+    const examTenant = canonicalRealtimeTenant(ex?.madrasahId || ex?.madrasahSlug || 'default');
+    const allowedClassIds = Array.isArray(ex.classes)
+      ? new Set(ex.classes.map((value: any) => String(value)))
+      : new Set<string>();
+    if (allowedClassIds.size > 0 && !allowedClassIds.has('ALL') && !allowedClassIds.has(String(classId))) {
+      return res.status(400).json({ success: false, message: "Kelas tidak termasuk target ujian ini." });
     }
 
     let targets = students.filter((st: any) =>
       String(st.classId) === String(classId) &&
-      (isBos || isItemForCurrentMadrasah(st, req))
+      canonicalRealtimeTenant(st?.madrasahId || st?.madrasahSlug || 'default') === examTenant
     ).filter((st: any) => {
       const key = resolveExamStateKey(req, st.id, examId);
       return Boolean(completedExams[key]) || studentExamAnswers[key] !== undefined;
@@ -11723,29 +11749,43 @@ app.post("/api/gemini/auto-koreksi-lkpd", requireAuth, requireRole(['teacher', '
       return res.status(400).json({ success: false, message: "classId dan lkpdId harus diisi." });
     }
 
-    const store = readLocalStore();
-    let lkpdList = store.lkpdList || [];
-    const lkpd = lkpdList.find((l: any) => String(l.id) === String(lkpdId));
-    if (!lkpd) {
-      return res.status(404).json({ success: false, message: "LKPD tidak ditemukan." });
-    }
-
     const authUser = getAuthUser(req);
     const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+    const lkpdCandidates = (lkpdList || []).filter((item: any) => String(item.id) === String(lkpdId));
+    let lkpd: any = null;
 
-    if (!isBos && !isItemForCurrentMadrasah(lkpd, req)) {
-      return res.status(403).json({ success: false, message: "Akses ditolak." });
+    if (isBos) {
+      const explicitTenantRaw = req.headers['x-madrasah-id'] || req.query?.madrasahId || req.body?.madrasahId;
+      const explicitTenant = explicitTenantRaw ? canonicalRealtimeTenant(explicitTenantRaw) : '';
+      const scoped = explicitTenant
+        ? lkpdCandidates.filter((item: any) => canonicalRealtimeTenant(item?.madrasahId || item?.madrasahSlug || 'default') === explicitTenant)
+        : lkpdCandidates;
+      if (scoped.length > 1) {
+        return res.status(409).json({ success: false, message: "ID LKPD ambigu lintas tenant. Pilih madrasah target terlebih dahulu." });
+      }
+      lkpd = scoped[0] || null;
+    } else {
+      const owned = lkpdCandidates.filter((item: any) => isItemForCurrentMadrasah(item, req));
+      if (owned.length > 1) {
+        return res.status(409).json({ success: false, message: "ID LKPD ambigu pada tenant ini." });
+      }
+      lkpd = owned[0] || null;
     }
 
+    if (!lkpd) {
+      return res.status(404).json({ success: false, message: "LKPD tidak ditemukan pada tenant yang diizinkan." });
+    }
+
+    const lkpdTenant = canonicalRealtimeTenant(lkpd?.madrasahId || lkpd?.madrasahSlug || 'default');
     const markers = lkpd.markers || [];
     if (markers.length === 0) {
       return res.json({ success: false, message: "LKPD ini tidak memiliki titik pertanyaan untuk dikoreksi." });
     }
 
     const submissions = lkpd.submissions || [];
-    const classStudents = students.filter((s: any) => 
-      String(s.classId) === String(classId) && 
-      (isBos || isItemForCurrentMadrasah(s, req))
+    const classStudents = students.filter((s: any) =>
+      String(s.classId) === String(classId) &&
+      canonicalRealtimeTenant(s?.madrasahId || s?.madrasahSlug || 'default') === lkpdTenant
     );
     
     // Filter submissions of students in this class
@@ -11888,9 +11928,7 @@ Jawaban Siswa: ${studentAns || "(Tidak menjawab)"}
       }
     }
 
-    // Save back to the store
-    store.lkpdList = lkpdList;
-    writeLocalStore(store);
+    // Persist the authoritative in-memory LKPD collection.
     await saveData('lkpdList', lkpdList);
 
     res.json({
@@ -11905,7 +11943,7 @@ Jawaban Siswa: ${studentAns || "(Tidak menjawab)"}
 });
 
 // 12. Server-side Gemini AI Questions Generation API
-app.post("/api/gemini/generate-questions", async (req, res) => {
+app.post("/api/gemini/generate-questions", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { topic, mcCount = 5, essayCount = 0, optionCount = 4, level = "Sedang" } = req.body;
 
@@ -11975,7 +12013,7 @@ ${NO_DASHES_PROMPT}
 });
 
 // 13. Server-side Gemini AI Enrichment / Uraian Generation API
-app.post("/api/gemini/generate-enrichment", async (req, res) => {
+app.post("/api/gemini/generate-enrichment", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { topic } = req.body;
 
@@ -12415,7 +12453,7 @@ ATURAN WAJIB:
 
 
 // AI Field Generation Endpoint
-app.post("/api/gemini/generate-modul", async (req, res) => {
+app.post("/api/gemini/generate-modul", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, topic, grade, fieldName } = req.body;
 
@@ -12478,7 +12516,7 @@ ${NO_DASHES_PROMPT}`;
 });
 
 // Generate All Fields at Once
-app.post("/api/gemini/generate-modul-all", async (req, res) => {
+app.post("/api/gemini/generate-modul-all", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, topic, materiDetail, grade, model = "Deep Learning" } = req.body;
 
@@ -12596,7 +12634,7 @@ ${NO_DASHES_PROMPT}
 });
 
 // AI Import & Document Parser API (Word .docx, PDF, Text)
-app.post("/api/modul/parse-document", async (req, res) => {
+app.post("/api/modul/parse-document", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { fileName, fileType, fileBase64, base64, textContent, content } = req.body;
     const effectiveBase64 = fileBase64 || base64;
@@ -12701,7 +12739,7 @@ app.post("/api/modul/parse-document", async (req, res) => {
 });
 
 // AI Structure & Mapping Imported Document to Full Kurikulum Merdeka Module
-app.post("/api/modul/import-ai-structure", async (req, res) => {
+app.post("/api/modul/import-ai-structure", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, grade, semester = '1', topic, extractedText, guruName, kepsekName } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
@@ -12837,7 +12875,7 @@ KEMBALIKAN HANYA OBJEK JSON MURNI DENGAN STRUKTUR:
 });
 
 // AI Generate Modul 2 General (Alokasi Waktu, Silabus, ATP, KKTP)
-app.post("/api/gemini/generate-modul2-general", async (req, res) => {
+app.post("/api/gemini/generate-modul2-general", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, babs } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
@@ -12909,7 +12947,7 @@ Pastikan isinya detail dan sangat profesional, serta tabel-tabelnya memiliki bor
 });
 
 // AI Generate Modul 2 Bab (RPP, Analisis SKL, Modul Ajar)
-app.post("/api/gemini/generate-modul2-bab", async (req, res) => {
+app.post("/api/gemini/generate-modul2-bab", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, babTitle, grade = "X" } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
@@ -13092,7 +13130,7 @@ PENTING: Dilarang menggunakan simbol markdown seperti bintang (*, **), pagar (#)
 });
 
 // AI Generate PPT Interaktif
-app.post("/api/gemini/generate-ppt", async (req, res) => {
+app.post("/api/gemini/generate-ppt", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, topic, materiDetail, grade = "X", slideCount = 8, theme = "midnight" } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
@@ -13197,7 +13235,7 @@ ${NO_DASHES_PROMPT}
 });
 
 // AI Generate Poster Interaktif Materi Inti
-app.post("/api/gemini/generate-poster", async (req, res) => {
+app.post("/api/gemini/generate-poster", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, topic, grade = "X", theme = "modern", notes = "" } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
@@ -13385,7 +13423,7 @@ ${NO_DASHES_PROMPT}
 });
 
 // AI Generate Document Pack (12 Categories)
-app.post("/api/gemini/generate-kbc-document", async (req, res) => {
+app.post("/api/gemini/generate-kbc-document", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { docType, subjectName, babs = [], babIndex, babTitle, grade = "X", guruName, guruNip, kepsekName, kepsekNip } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
@@ -13577,7 +13615,7 @@ Pastikan kolom tanda tangan tersebut diformat dengan sangat rapi dan estetik men
 });
 
 // AI Generate Questions & Kisi-Kisi based on Lesson Plans
-app.post("/api/gemini/generate-soal-kisi", async (req, res) => {
+app.post("/api/gemini/generate-soal-kisi", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, mcCount = 10, essayCount = 5, optionCount = 5, lessons = [], difficulty = "sedang" } = req.body;
 
@@ -13959,7 +13997,7 @@ app.delete("/api/calendar-events/:id", async (req, res) => {
 // Grade Categories API managed above (around line 3955)
 
 // Generated Exams API
-app.post("/api/gemini/generate-rpp", async (req, res) => {
+app.post("/api/gemini/generate-rpp", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { subjectName, grade, plans, lessonsContext, guruName, guruNip, kepsekName, kepsekNip } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
@@ -14224,7 +14262,7 @@ ${buildFallbackHTML(p, index)}`;
 });
 
 // Device Pembelajaran API (Silabus, ATP, KKTP, Prota, Prosem, Analisis KI-KD, TP, CP, LKPD)
-app.post("/api/gemini/generate-device", async (req, res) => {
+app.post("/api/gemini/generate-device", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { deviceType, subjectName, grade, plans, guruName, guruNip, kepsekName, kepsekNip } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
