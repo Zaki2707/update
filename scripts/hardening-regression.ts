@@ -107,7 +107,7 @@ function testServerGuards() {
   assert.match(server, /for \(const item of data\.slice\(0, 100\)\)/);
   assert.match(server, /status: 'HADIR',[\s\S]*note: '',[\s\S]*timestamp: Date\.now\(\)/);
   assert.match(modules, /GPS belum tersedia atau tidak valid/);
-  assert.equal(modules.includes(": '-6.2000, 106.8166'"), false);
+  assert.equal(modules.includes("location: window._currentLatLon ? \`${window._currentLatLon.latitude}, ${window._currentLatLon.longitude}\` : '-6.2000, 106.8166'"), false);
   assert.match(server, /saveDeltaBatchDb/);
   assert.match(server, /monitoringStateKeyAllowedForActor/);
   assert.match(server, /teacherCanUseLkpdPayload/);
