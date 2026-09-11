@@ -39,6 +39,9 @@ jobs:
       - name: Application security audit
         run: npm run security:audit
 
+      - name: Hardening behavior regression
+        run: npm run hardening:regression
+
       - name: Verify sensitive runtime history is clean
         shell: bash
         run: |

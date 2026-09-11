@@ -14,6 +14,8 @@ import http from "http";
 import https from "https";
 import os from "os";
 import crypto from "crypto";
+import { AsyncLocalStorage } from "async_hooks";
+import { KeyedSerialQueue } from "./src/keyedSerialQueue.js";
 import selfsigned from "selfsigned";
 import { GoogleGenAI } from "@google/genai";
 import { v2 as cloudinary } from "cloudinary";
@@ -1534,11 +1536,33 @@ let sseClients: Array<{ res: express.Response; user: any }> = [];
 const wsClients = new Map<string, any>();
 
 function broadcastStateUpdate(key: string, senderClientId?: string) {
+  const ctx = requestRealtimeContext.getStore();
+  const eventTenant = String(ctx?.tenantId || '').trim();
+  const contextRole = String(ctx?.role || '').toLowerCase();
+  const isGlobalBossBroadcast = (contextRole === 'bos' || contextRole === 'superadmin') &&
+    (!eventTenant || eventTenant === 'BOSS');
+
   const payload = JSON.stringify({ type: 'state-update', key, senderClientId });
   sseClients = sseClients.filter(client => {
     const res = client.res;
+    const user = client.user || {};
     try {
       if ((res as any).writableEnded || (res as any).destroyed || (res as any).finished) return false;
+
+      const clientRole = String(user.role || '').toLowerCase();
+      const clientIsBoss = clientRole === 'bos' || clientRole === 'superadmin';
+
+      if (!isGlobalBossBroadcast) {
+        if (!eventTenant) {
+          // No request ownership context: fail closed to BOSS-only instead of creating
+          // a cross-tenant invalidation/fetch storm.
+          if (!clientIsBoss) return true;
+        } else {
+          const clientTenant = canonicalRealtimeTenant(user.madrasahId || user.madrasahSlug || 'default');
+          if (!clientIsBoss && clientTenant !== eventTenant) return true;
+        }
+      }
+
       res.write(`data: ${payload}\n\n`);
       if (typeof (res as any).flush === 'function') (res as any).flush();
       return true;
@@ -1550,14 +1574,27 @@ function broadcastStateUpdate(key: string, senderClientId?: string) {
 
 function broadcastExamEvent(event: any) {
   const eventTenant = (() => {
-    if (event?.madrasahId) return String(event.madrasahId);
+    if (event?.madrasahId) return canonicalRealtimeTenant(event.madrasahId);
+    const ctx = requestRealtimeContext.getStore();
+    if (ctx?.tenantId && ctx.tenantId !== 'BOSS') return canonicalRealtimeTenant(ctx.tenantId);
+
     if (event?.examId) {
-      const ex = (exams || []).find((item: any) => String(item.id) === String(event.examId));
-      if (ex?.madrasahId || ex?.tenant) return String(ex.madrasahId || ex.tenant);
+      const candidates = (exams || []).filter((item: any) => String(item.id) === String(event.examId));
+      if (candidates.length === 1) {
+        const ex = candidates[0];
+        if (ex?.madrasahId || ex?.madrasahSlug || ex?.tenant) {
+          return canonicalRealtimeTenant(ex.madrasahId || ex.madrasahSlug || ex.tenant);
+        }
+      }
     }
     if (event?.studentId) {
-      const st = (students || []).find((item: any) => String(item.id) === String(event.studentId));
-      if (st?.madrasahId || st?.tenant) return String(st.madrasahId || st.tenant);
+      const candidates = (students || []).filter((item: any) => String(item.id) === String(event.studentId));
+      if (candidates.length === 1) {
+        const st = candidates[0];
+        if (st?.madrasahId || st?.madrasahSlug || st?.tenant) {
+          return canonicalRealtimeTenant(st.madrasahId || st.madrasahSlug || st.tenant);
+        }
+      }
     }
     return '';
   })();
@@ -1720,8 +1757,10 @@ function partitionAndSaveKey(key: string, value: any[]): { active: any[], archiv
 const DB_WRITE_THROTTLE_INTERVAL = 3000;
 const dbWriteTimeouts = new Map<string, NodeJS.Timeout>();
 const lastDbWriteTimes = new Map<string, number>();
+const dbWriteQueue = new KeyedSerialQueue();
+const storeMutationQueue = new KeyedSerialQueue();
 
-async function writeKeyToPostgresDirect(key: string) {
+async function writeKeyToPostgresDirectUnlocked(key: string) {
   if (dbWriteTimeouts.has(key)) {
     const timeout = dbWriteTimeouts.get(key);
     if (timeout) clearTimeout(timeout);
@@ -1771,7 +1810,10 @@ async function writeKeyToPostgresDirect(key: string) {
         }
 
         await client.query('COMMIT');
-        return; // Successful write!
+        if (isOnlineMode && (key === 'questions' || key === 'questionBankGroups')) {
+          await verifyOnlineArrayPersistence(key, freshValue, client);
+        }
+        return; // Successful write; critical question-bank rows are read-back verified before the key queue advances.
 
       } catch (err: any) {
         clientError = err;
@@ -1803,6 +1845,12 @@ async function writeKeyToPostgresDirect(key: string) {
   }
 }
 
+async function writeKeyToPostgresDirect(key: string) {
+  // Per-key serialization prevents an older snapshot from committing after a newer one.
+  // The unlocked writer reads memory only after every earlier writer for this key finishes.
+  return dbWriteQueue.run(key, () => writeKeyToPostgresDirectUnlocked(key));
+}
+
 function scheduleDbWrite(key: string) {
   if (dbWriteTimeouts.has(key)) {
     // Already scheduled, let the scheduled one write the latest memory state
@@ -1824,14 +1872,14 @@ function scheduleDbWrite(key: string) {
   }
 }
 
-async function verifyOnlineArrayPersistence(key: string, expectedValue: any) {
+async function verifyOnlineArrayPersistence(key: string, expectedValue: any, queryable: any = pool) {
   if (!isOnlineMode) return;
   if (key !== 'questions' && key !== 'questionBankGroups') return;
   if (!pool || isDbQuotaExceeded) {
     throw new Error(`ONLINE_DATABASE_UNAVAILABLE: cannot verify ${key}`);
   }
 
-  const result = await pool.query('SELECT value FROM app_store WHERE key = $1', [key]);
+  const result = await queryable.query('SELECT value FROM app_store WHERE key = $1', [key]);
   if (!result.rows || result.rows.length !== 1) {
     throw new Error(`PERSISTENCE_VERIFY_FAILED: ${key} row missing after write`);
   }
@@ -1916,11 +1964,6 @@ async function saveData(key: string, value: any, immediate = true) {
     }
   }
 
-  // Question bank writes are low-frequency but critical. Never acknowledge an online
-  // mutation unless the authoritative app_store row can be read back with the same snapshot.
-  if (isOnlineMode && immediate && (key === 'questions' || key === 'questionBankGroups')) {
-    await verifyOnlineArrayPersistence(key, value);
-  }
 }
 
 async function saveDataBatch(items: { key: string; value: any }[], immediate = true) {
@@ -1978,13 +2021,6 @@ async function saveDataBatch(items: { key: string; value: any }[], immediate = t
     }
   }
 
-  if (isOnlineMode && immediate) {
-    for (const item of items) {
-      if (item.key === 'questions' || item.key === 'questionBankGroups') {
-        await verifyOnlineArrayPersistence(item.key, item.value);
-      }
-    }
-  }
 }
 
 // --- GRACEFUL SHUTDOWN INTEGRATION ---
@@ -2186,47 +2222,37 @@ async function updateStoreKeyWithLock(key: string, updateFn: (val: any) => any) 
       throw new Error(`ONLINE_DATABASE_UNAVAILABLE: cannot persist ${key}`);
     }
   }
-  // Ultra-High Performance & Non-Blocking Architecture:
-  // Instead of running a heavy synchronous SELECT FOR UPDATE transaction on every single student tap,
-  // we update the memory and local store instantly (resolving in <1ms), and schedule an asynchronous,
-  // throttled background write to PostgreSQL Cloud SQL. This eliminates:
-  // 1. Connection Pool Exhaustion (only 1 write every 3s instead of 100s of simultaneous connections)
-  // 2. Row Lock Contention (zero SQL FOR UPDATE waiting locks)
-  // 3. Bottlenecks for student attendance taps
 
-  let currentVal = getMemoryKeyValue(key);
-  if (currentVal === undefined) {
+  return storeMutationQueue.run(key, async () => {
+    let currentVal = getMemoryKeyValue(key);
+    if (currentVal === undefined) {
+      try {
+        const store = readLocalStore();
+        currentVal = store[key];
+      } catch (e) {}
+    }
+    if (currentVal === undefined) currentVal = [];
+
+    const newVal = await updateFn(currentVal);
+    updateMemoryKey(key, newVal);
+
     try {
       const store = readLocalStore();
-      currentVal = store[key];
+      store[key] = newVal;
+      writeLocalStore(store);
     } catch (e) {}
-  }
-  if (currentVal === undefined) {
-    currentVal = [];
-  }
 
-  const newVal = updateFn(currentVal);
-  updateMemoryKey(key, newVal);
+    try {
+      broadcastStateUpdate(key);
+    } catch (e) {}
 
-  // Write to local disk cache instantly
-  try {
-    const store = readLocalStore();
-    store[key] = newVal;
-    writeLocalStore(store);
-  } catch (e) {}
-
-  // Broadcast state update immediately so active screens reflect the tap instantly
-  try {
-    broadcastStateUpdate(key);
-  } catch (e) {}
-
-  // Schedule throttled asynchronous background write to PostgreSQL Cloud SQL
-  if (pool && !isDbQuotaExceeded) {
-    scheduleDbWrite(key);
-  }
-
-  return newVal;
+    if (pool && !isDbQuotaExceeded) scheduleDbWrite(key);
+    return newVal;
+  });
 }
+
+type RequestRealtimeContext = { tenantId: string; role: string };
+const requestRealtimeContext = new AsyncLocalStorage<RequestRealtimeContext>();
 
 const app = express();
 export const appExport = app;
@@ -2361,7 +2387,7 @@ const staffWritePrefixes = [
   '/api/teacher-attendance', '/api/question-bank-groups', '/api/questions',
   '/api/grades', '/api/time-slots', '/api/grade-categories', '/api/system-settings',
   '/api/lesson-plans', '/api/schedules', '/api/rooms', '/api/journals',
-  '/api/calendar-events', '/api/generated-exams'
+  '/api/calendar-events', '/api/generated-exams', '/api/exams'
 ];
 const staffOnlyPrefixes = [
   '/api/teacher-attendance', '/api/question-bank-groups', '/api/journals',
@@ -2446,7 +2472,10 @@ app.use((req: any, res, next) => {
     if (!enforceApiRateLimit(req, res, `activation:${authUser.id}`, 60, 60 * 1000)) return;
   }
 
-  next();
+  const contextTenant = canonicalRealtimeTenant(
+    getRequestMadrasahId(req) || authUser.madrasahId || authUser.madrasahSlug || 'default'
+  );
+  requestRealtimeContext.run({ tenantId: contextTenant, role }, next);
 });
 
 app.get('/api/realtime-token', (req: any, res) => {
@@ -3570,8 +3599,6 @@ function sanitizeSettingsForClient(settings: any) {
 
 function sanitizeSettingsForPublic(settings: any) {
   const safe: any = sanitizeSettingsForClient(settings) || {};
-  // These values are needed only after authentication for WebRTC/LiveKit or admin UI.
-  // Do not expose them from the public bootstrap endpoint.
   for (const key of [
     'adminUser',
     'turnUrl', 'turnUsername', 'turnCredential',
@@ -3579,6 +3606,50 @@ function sanitizeSettingsForPublic(settings: any) {
     'cloudinaryApiKey', 'cloudinaryCloudName'
   ]) delete safe[key];
   return safe;
+}
+
+const tenantSettingsBlockedKeys = new Set([
+  'adminUser', 'adminPass', 'password', 'jwtSecret', 'JWT_SECRET',
+  'paymentAccounts', 'cbtTokenPrice',
+  'apiKey', 'geminiApiKey',
+  'cloudinaryCloudName', 'cloudinaryApiKey', 'cloudinaryApiSecret',
+  'livekitUrl', 'livekitApiKey', 'livekitApiSecret',
+  'databaseUrl', 'DATABASE_URL', 'sqlPassword',
+  'localStoreSecret', 'LOCAL_STORE_SECRET',
+  'tokenLockSecret', 'TOKEN_LOCK_SECRET',
+  'licensePrivateKey', 'LICENSE_PRIVATE_KEY',
+  '__tenantScopedSettingsV1'
+]);
+
+function sanitizeSettingsMutation(data: any, tenantScoped: boolean): any {
+  const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  const safe: any = {};
+  for (const [key, value] of Object.entries(source)) {
+    const lower = String(key).toLowerCase();
+    if (
+      lower.includes('password') || lower.includes('passphrase') ||
+      lower.includes('privatekey') || lower.includes('private_key') ||
+      lower.endsWith('secret') || lower.includes('connectionstring') ||
+      key === '__tenantScopedSettingsV1'
+    ) continue;
+    if (tenantScoped && tenantSettingsBlockedKeys.has(key)) continue;
+    safe[key] = value;
+  }
+  return safe;
+}
+
+function globalSettingsBase(): any {
+  const base = { ...(appSettings || {}) };
+  delete base.__tenantScopedSettingsV1;
+  return base;
+}
+
+function effectiveSettingsForRequest(req: any): any {
+  const base = globalSettingsBase();
+  if (!isOnlineMode) return base;
+  const scoped = tenantConfigValue(appSettings?.__tenantScopedSettingsV1, req, {}, 'settings');
+  if (!scoped || typeof scoped !== 'object' || Array.isArray(scoped)) return base;
+  return { ...base, ...scoped };
 }
 
 // Aggregated All Data endpoint for super fast loading
@@ -3728,7 +3799,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
         return String(m.id) === requestId || String(m.slug) === requestId;
       });
   const sanitizedMadrasahs = visibleMadrasahs.map(sanitizeMadrasahAdminView).filter(Boolean);
-  const sanitizedSettings = sanitizeSettingsForClient(appSettings);
+  const sanitizedSettings = sanitizeSettingsForClient(effectiveSettingsForRequest(req));
 
   res.json({
     success: true,
@@ -8194,6 +8265,167 @@ app.delete("/api/questions/:id", requireAuth, requireRole(['teacher', 'guru', 'a
   res.json({ success: true, message: "Soal berhasil dihapus!" });
 });
 
+function encodeExamStatePart(value: any): string {
+  return Buffer.from(String(value ?? ''), 'utf8').toString('base64url');
+}
+
+function decodeExamStatePart(value: string): string {
+  try { return Buffer.from(String(value || ''), 'base64url').toString('utf8'); }
+  catch { return ''; }
+}
+
+function examStateTenant(req: any, studentId?: any, examId?: any): string {
+  const requested = canonicalRealtimeTenant(
+    getRequestMadrasahId(req) || req?.user?.madrasahId || req?.user?.madrasahSlug || 'default'
+  );
+  if (requested && requested !== 'BOSS') return requested;
+
+  if (examId !== undefined && examId !== null) {
+    const examMatches = (exams || []).filter((item: any) => String(item.id) === String(examId));
+    if (examMatches.length === 1) {
+      return canonicalRealtimeTenant(examMatches[0]?.madrasahId || examMatches[0]?.madrasahSlug || 'default');
+    }
+  }
+  if (studentId !== undefined && studentId !== null) {
+    const studentMatches = (students || []).filter((item: any) => String(item.id) === String(studentId));
+    if (studentMatches.length === 1) {
+      return canonicalRealtimeTenant(studentMatches[0]?.madrasahId || studentMatches[0]?.madrasahSlug || 'default');
+    }
+  }
+  return requested || 'default';
+}
+
+function examStateKey(req: any, studentId: any, examId: any): string {
+  const tenant = examStateTenant(req, studentId, examId);
+  return `v2::${encodeExamStatePart(tenant)}::${encodeExamStatePart(studentId)}::${encodeExamStatePart(examId)}`;
+}
+
+function legacyExamStateKey(studentId: any, examId: any): string {
+  return String(studentId) + '_' + String(examId);
+}
+
+function parseNamespacedExamStateKey(key: string): { tenant: string; studentId: string; examId: string } | null {
+  const parts = String(key || '').split('::');
+  if (parts.length !== 4 || parts[0] !== 'v2') return null;
+  const tenant = decodeExamStatePart(parts[1]);
+  const studentId = decodeExamStatePart(parts[2]);
+  const examId = decodeExamStatePart(parts[3]);
+  return tenant && studentId && examId ? { tenant, studentId, examId } : null;
+}
+
+function examStateExistsAtKey(key: string): boolean {
+  const stores = [
+    activeExamSessions, completedExams, forceFinishedExams, studentExamAnswers,
+    studentExamQuestions, studentExamMasterQuestions, studentExamGrades,
+    studentTabSwitches, studentOutOfTab, blockedStudents
+  ];
+  return stores.some((store: any) => store && Object.prototype.hasOwnProperty.call(store, key));
+}
+
+function legacyExamStateIsUnambiguous(req: any, studentId: any, examId: any): boolean {
+  const studentMatches = (students || []).filter((item: any) => String(item.id) === String(studentId));
+  const examMatches = (exams || []).filter((item: any) => String(item.id) === String(examId));
+  return studentMatches.length === 1 && examMatches.length === 1 &&
+    isItemForCurrentMadrasah(studentMatches[0], req) &&
+    isItemForCurrentMadrasah(examMatches[0], req);
+}
+
+function resolveExamStateKey(req: any, studentId: any, examId: any): string {
+  const namespaced = examStateKey(req, studentId, examId);
+  if (examStateExistsAtKey(namespaced)) return namespaced;
+
+  if (legacyExamStateIsUnambiguous(req, studentId, examId)) {
+    const legacy = legacyExamStateKey(studentId, examId);
+    if (examStateExistsAtKey(legacy)) return legacy;
+    const reversedLegacy = legacyExamStateKey(examId, studentId);
+    if (examStateExistsAtKey(reversedLegacy)) return reversedLegacy;
+  }
+  return namespaced;
+}
+
+function parseExamStateKeyForRequest(req: any, key: string): { studentId: string; examId: string } | null {
+  const raw = String(key || '');
+  const namespaced = parseNamespacedExamStateKey(raw);
+  if (namespaced) {
+    if (canonicalRealtimeTenant(namespaced.tenant) !== examStateTenant(req, namespaced.studentId, namespaced.examId)) return null;
+    const st = (students || []).find((item: any) =>
+      String(item.id) === namespaced.studentId && isItemForCurrentMadrasah(item, req)
+    );
+    const ex = (exams || []).find((item: any) =>
+      String(item.id) === namespaced.examId && isItemForCurrentMadrasah(item, req)
+    );
+    return st && ex ? { studentId: namespaced.studentId, examId: namespaced.examId } : null;
+  }
+
+  const tenantStudents = (students || [])
+    .filter((item: any) => isItemForCurrentMadrasah(item, req))
+    .map((item: any) => String(item.id))
+    .sort((a: string, b: string) => b.length - a.length);
+  const tenantExams = new Set(
+    (exams || []).filter((item: any) => isItemForCurrentMadrasah(item, req)).map((item: any) => String(item.id))
+  );
+
+  for (const studentId of tenantStudents) {
+    const prefix = studentId + '_';
+    if (raw.startsWith(prefix)) {
+      const parsedExamId = raw.slice(prefix.length);
+      if (tenantExams.has(parsedExamId)) return { studentId, examId: parsedExamId };
+    }
+  }
+
+  const tenantStudentSet = new Set(tenantStudents);
+  const orderedExamIds = [...tenantExams].sort((a: string, b: string) => b.length - a.length);
+  for (const parsedExamId of orderedExamIds) {
+    const prefix = parsedExamId + '_';
+    if (raw.startsWith(prefix)) {
+      const studentId = raw.slice(prefix.length);
+      if (tenantStudentSet.has(studentId)) return { studentId, examId: parsedExamId };
+    }
+  }
+  return null;
+}
+
+function normalizeExamStateMutationKey(req: any, key: string): string {
+  const parsed = parseExamStateKeyForRequest(req, key);
+  return parsed ? examStateKey(req, parsed.studentId, parsed.examId) : String(key || '');
+}
+
+function normalizeExamStateMapKeysForRequest(req: any, source: any): any {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return source;
+  const normalized: any = {};
+  for (const rawKey of Object.keys(source)) {
+    normalized[normalizeExamStateMutationKey(req, rawKey)] = source[rawKey];
+  }
+  return normalized;
+}
+
+function filterExamStateMapForRequest(mapObj: any, req: any): any {
+  const filtered: any = {};
+  if (!mapObj) return filtered;
+  const tenantStudentIds = new Set(
+    (students || []).filter((item: any) => isItemForCurrentMadrasah(item, req)).map((item: any) => String(item.id))
+  );
+  const tenantExamIds = new Set(
+    (exams || []).filter((item: any) => isItemForCurrentMadrasah(item, req)).map((item: any) => String(item.id))
+  );
+
+  for (const key of Object.keys(mapObj)) {
+    if (key.startsWith('broadcast_')) {
+      const parsedExamId = key.slice('broadcast_'.length);
+      if (tenantExamIds.has(parsedExamId)) filtered[key] = mapObj[key];
+      continue;
+    }
+    const parsed = parseExamStateKeyForRequest(req, key);
+    if (parsed) {
+      // Keep the browser contract stable while isolating server storage internally.
+      filtered[legacyExamStateKey(parsed.studentId, parsed.examId)] = mapObj[key];
+      continue;
+    }
+    if (tenantStudentIds.has(key)) filtered[key] = mapObj[key];
+  }
+  return filtered;
+}
+
 // Exam Monitoring State API (Locked strictly to teachers, proctors, and admins)
 app.get("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   const authUser = req.user;
@@ -8218,60 +8450,23 @@ app.get("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru
     });
   }
 
-  // Tenant-scoping: filter all maps by student belonging to the user's madrasah, and filter exams
-  const studentList = getMemoryKeyValue('students') || students || [];
-  const tenantStudentIds = new Set(
-    studentList
-      .filter((s: any) => String(s.madrasahId || 'default').trim() === String(userMadrasahId).trim())
-      .map((s: any) => String(s.id))
+  const tenantExams = (getMemoryKeyValue('exams') || exams || []).filter((e: any) =>
+    isItemForCurrentMadrasah(e, req)
   );
-
-  const tenantExams = (getMemoryKeyValue('exams') || exams || []).filter((e: any) => 
-    String(e.madrasahId || 'default').trim() === String(userMadrasahId).trim()
-  );
-  const tenantExamIds = new Set(tenantExams.map((e: any) => String(e.id)));
-
-  const filterMap = (mapObj: any) => {
-    const filtered: any = {};
-    if (!mapObj) return filtered;
-    for (const key of Object.keys(mapObj)) {
-      if (key.startsWith('broadcast_')) {
-        const eId = key.replace('broadcast_', '');
-        if (tenantExamIds.has(eId)) {
-          filtered[key] = mapObj[key];
-        }
-        continue;
-      }
-      let matchedStudentId = null;
-      for (const sId of tenantStudentIds) {
-        if (key.startsWith(sId + '_') || key === sId) {
-          matchedStudentId = sId;
-          break;
-        }
-      }
-      if (matchedStudentId) {
-        const remainder = key.replace(matchedStudentId + '_', '');
-        if (remainder === matchedStudentId || tenantExamIds.has(remainder) || tenantExamIds.has(key.split('_').slice(1).join('_')) || !key.includes('_')) {
-          filtered[key] = mapObj[key];
-        }
-      }
-    }
-    return filtered;
-  };
 
   res.json({
     success: true,
-    activeExamSessions: filterMap(activeExamSessions),
-    completedExams: filterMap(completedExams),
-    forceFinishedExams: filterMap(forceFinishedExams),
-    studentExamAnswers: filterMap(studentExamAnswers),
-    studentExamQuestions: filterMap(studentExamQuestions),
-    studentTabSwitches: filterMap(studentTabSwitches),
-    studentOutOfTab: filterMap(studentOutOfTab),
-    blockedStudents: filterMap(blockedStudents),
-    studentLivecamFrames: filterMap(studentLivecamFrames),
-    studentExamGrades: filterMap(studentExamGrades),
-    examMessages: filterMap(examMessages),
+    activeExamSessions: filterExamStateMapForRequest(activeExamSessions, req),
+    completedExams: filterExamStateMapForRequest(completedExams, req),
+    forceFinishedExams: filterExamStateMapForRequest(forceFinishedExams, req),
+    studentExamAnswers: filterExamStateMapForRequest(studentExamAnswers, req),
+    studentExamQuestions: filterExamStateMapForRequest(studentExamQuestions, req),
+    studentTabSwitches: filterExamStateMapForRequest(studentTabSwitches, req),
+    studentOutOfTab: filterExamStateMapForRequest(studentOutOfTab, req),
+    blockedStudents: filterExamStateMapForRequest(blockedStudents, req),
+    studentLivecamFrames: filterExamStateMapForRequest(studentLivecamFrames, req),
+    studentExamGrades: filterExamStateMapForRequest(studentExamGrades, req),
+    examMessages: filterExamStateMapForRequest(examMessages, req),
     exams: tenantExams
   });
 });
@@ -8287,7 +8482,7 @@ app.get("/api/exam/my-summary", (req, res) => {
     return res.status(400).json({ success: false, message: "studentId query param is required" });
   }
 
-  const allExams = getMemoryKeyValue('exams') || exams || [];
+  const allExams = (getMemoryKeyValue('exams') || exams || []).filter((ex: any) => isItemForCurrentMadrasah(ex, req));
   const completedList: string[] = [];
   const completedMap: Record<string, any> = {};
   const activeSessionsMap: Record<string, any> = {};
@@ -8295,14 +8490,15 @@ app.get("/api/exam/my-summary", (req, res) => {
 
   allExams.forEach((ex: any) => {
     const eId = String(ex.id);
-    const key = sId + "_" + eId;
+    const key = resolveExamStateKey(req, sId, eId);
+    const publicKey = legacyExamStateKey(sId, eId);
 
     if (completedExams[key]) {
       completedList.push(eId);
-      completedMap[key] = completedExams[key];
+      completedMap[publicKey] = completedExams[key];
     }
     if (studentExamGrades[key]) {
-      studentGrades[key] = studentExamGrades[key];
+      studentGrades[publicKey] = studentExamGrades[key];
     }
 
     const session = activeExamSessions[key];
@@ -8311,7 +8507,7 @@ app.get("/api/exam/my-summary", (req, res) => {
       if (session.endsAt) {
         remainingTime = Math.max(0, Math.floor((session.endsAt - Date.now()) / 1000));
       }
-      activeSessionsMap[key] = {
+      activeSessionsMap[publicKey] = {
         ...session,
         timeLeft: remainingTime,
         blocked: Boolean(blockedStudents[key]),
@@ -8343,8 +8539,8 @@ app.get("/api/exam/my-state", (req, res) => {
   }
 
   const eId = String(examId);
-  const key1 = sId + "_" + eId;
-  const key2 = String(sId) + "_" + String(eId);
+  const key1 = resolveExamStateKey(req, sId, eId);
+  const key2 = legacyExamStateKey(sId, eId);
 
   const session = activeExamSessions[key1] || activeExamSessions[key2] || null;
   const isCompleted = Boolean(completedExams[key1] || completedExams[key2]);
@@ -8361,7 +8557,7 @@ app.get("/api/exam/my-state", (req, res) => {
 
   // Exam info & duration extensions
   const allExams = getMemoryKeyValue('exams') || exams || [];
-  const matchedExam = allExams.find((e: any) => String(e.id) === eId) || null;
+  const matchedExam = allExams.find((e: any) => String(e.id) === eId && isItemForCurrentMadrasah(e, req)) || null;
 
   // Server-authoritative remaining time calculation
   let remainingTime: number | null = null;
@@ -8401,21 +8597,39 @@ app.get("/api/exam/my-state", (req, res) => {
 });
 
 function getExamAttemptContext(req: any, authUser: AuthSession, studentId: string, examId: string) {
-  const allExams = getMemoryKeyValue('exams') || exams || [];
-  const exam = allExams.find((e: any) => String(e.id) === String(examId));
-  if (!exam) return { error: { status: 404, message: 'Ujian tidak ditemukan.' } };
-
   const role = String(authUser.role || '').toLowerCase();
   const isBos = role === 'bos' || role === 'superadmin';
-  if (!isBos && !isItemForCurrentMadrasah(exam, req)) {
-    return { error: { status: 403, message: 'Ujian bukan milik madrasah Anda.' } };
+
+  const allExams = getMemoryKeyValue('exams') || exams || [];
+  const examCandidates = allExams.filter((e: any) => String(e.id) === String(examId));
+  const ownedExams = examCandidates.filter((e: any) => isItemForCurrentMadrasah(e, req));
+  if (ownedExams.length > 1) return { error: { status: 409, message: 'ID ujian ambigu di tenant ini.' } };
+  const exam = ownedExams[0] || (isBos && examCandidates.length === 1 ? examCandidates[0] : null);
+  if (!exam) {
+    return {
+      error: {
+        status: isBos && examCandidates.length > 1 ? 409 : 404,
+        message: isBos && examCandidates.length > 1
+          ? 'ID ujian ambigu lintas tenant; pilih tenant target secara eksplisit.'
+          : 'Ujian tidak ditemukan pada tenant yang diizinkan.'
+      }
+    };
   }
 
   const allStudents = getMemoryKeyValue('students') || students || [];
-  const student = allStudents.find((st: any) => String(st.id) === String(studentId));
-  if (!student) return { error: { status: 404, message: 'Data siswa tidak ditemukan.' } };
-  if (!isBos && !isItemForCurrentMadrasah(student, req)) {
-    return { error: { status: 403, message: 'Siswa bukan milik madrasah Anda.' } };
+  const studentCandidates = allStudents.filter((st: any) => String(st.id) === String(studentId));
+  const ownedStudents = studentCandidates.filter((st: any) => isItemForCurrentMadrasah(st, req));
+  if (ownedStudents.length > 1) return { error: { status: 409, message: 'ID siswa ambigu di tenant ini.' } };
+  const student = ownedStudents[0] || (isBos && studentCandidates.length === 1 ? studentCandidates[0] : null);
+  if (!student) {
+    return {
+      error: {
+        status: isBos && studentCandidates.length > 1 ? 409 : 404,
+        message: isBos && studentCandidates.length > 1
+          ? 'ID siswa ambigu lintas tenant; pilih tenant target secara eksplisit.'
+          : 'Data siswa tidak ditemukan pada tenant yang diizinkan.'
+      }
+    };
   }
 
   const studentRoles = ['student', 'siswa', 'class_leader', 'ketua_kelas'];
@@ -8449,7 +8663,7 @@ app.post("/api/exam/attempt/start", async (req, res) => {
   if (!sId || !examId) return res.status(400).json({ success: false, message: "studentId and examId required" });
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
   const context = getExamAttemptContext(req, authUser, sId, eId);
   if (rejectExamAttemptContext(res, context)) return;
   const matchedExam: any = context.exam;
@@ -8677,7 +8891,7 @@ app.get("/api/exam/review", requireAuth, requireRole(['teacher', 'guru', 'admin'
     const context = getExamAttemptContext(req, authUser, studentId, examId);
     if (rejectExamAttemptContext(res, context)) return;
 
-    const key = studentId + '_' + examId;
+    const key = resolveExamStateKey(req, studentId, examId);
     let masterQuestions = studentExamMasterQuestions[key];
     if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
       masterQuestions = await recoverMissingExamMasterQuestions(key, context.exam);
@@ -8751,7 +8965,7 @@ app.post("/api/exam/attempt/start-questions", async (req, res) => {
   }
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
   const context = getExamAttemptContext(req, authUser, sId, eId);
   if (rejectExamAttemptContext(res, context)) return;
   const matchedExam: any = context.exam;
@@ -8931,7 +9145,7 @@ app.post("/api/exam/attempt/answer", async (req, res) => {
   if (!sId || !examId || !questionId) return res.status(400).json({ success: false, message: "studentId, examId, and questionId are required" });
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
   const context = getExamAttemptContext(req, authUser, sId, eId);
   if (rejectExamAttemptContext(res, context)) return;
   if (completedExams[key] || forceFinishedExams[key]) return res.status(409).json({ success: false, message: "Ujian sudah selesai." });
@@ -8978,7 +9192,7 @@ app.post("/api/exam/student-state", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
   const now = Date.now();
 
   // 1. Update heartbeat session
@@ -9037,7 +9251,7 @@ app.post("/api/exam/presence", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
 
   // Update in-memory state
   studentOutOfTab[key] = outOfTab === true;
@@ -9070,7 +9284,7 @@ app.post("/api/exam/livecam/snapshot", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
 
   // Update in-memory state
   studentLivecamFrames[key] = String(livecamFrame);
@@ -9092,7 +9306,7 @@ app.post("/api/exam/heartbeat", async (req, res) => {
   }
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
   const now = Date.now();
 
   const session = activeExamSessions[key];
@@ -9142,7 +9356,7 @@ app.post("/api/exam/violation", async (req, res) => {
   }
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
   const now = Date.now();
 
   studentTabSwitches[key] = (studentTabSwitches[key] || 0) + 1;
@@ -9242,7 +9456,7 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
   if (!sId || !examId) return res.status(400).json({ success: false, message: "studentId and examId required" });
 
   const eId = String(examId);
-  const key = sId + "_" + eId;
+  const key = resolveExamStateKey(req, sId, eId);
   const context = getExamAttemptContext(req, authUser, sId, eId);
   if (rejectExamAttemptContext(res, context)) return;
   if (completedExams[key] || forceFinishedExams[key]) {
@@ -9385,7 +9599,7 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
  
   const summary = targetStudents.map((st: any) => {
     const sId = String(st.id);
-    const key = sId + "_" + eId;
+    const key = resolveExamStateKey(req, sId, eId);
  
     const session = activeExamSessions[key] || null;
     const isCompleted = Boolean(completedExams[key]);
@@ -9445,24 +9659,26 @@ async function saveDeltaDb(deltaType: string, itemKey: string, value: any) {
   }
   if (pool && !isDbQuotaExceeded) {
     const dbKey = `delta::${deltaType}::${itemKey}`;
-    try {
-      if (value === null || value === undefined) {
-        await pool.query('DELETE FROM app_store WHERE key = $1', [dbKey]);
-      } else {
-        await pool.query(`
-          INSERT INTO app_store (key, value) VALUES ($1, $2)
-          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-        `, [dbKey, JSON.stringify(value)]);
+    await dbWriteQueue.run(dbKey, async () => {
+      try {
+        if (value === null || value === undefined) {
+          await pool.query('DELETE FROM app_store WHERE key = $1', [dbKey]);
+        } else {
+          await pool.query(`
+            INSERT INTO app_store (key, value) VALUES ($1, $2)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+          `, [dbKey, JSON.stringify(value)]);
+        }
+      } catch (e) {
+        console.error('Delta write error:', e);
+        if (isOnlineMode) throw e;
       }
-    } catch (e) {
-      console.error('Delta write error:', e);
-      if (isOnlineMode) throw e;
-    }
+    });
   }
 }
 
 app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
-  const { sessionKey, sessionData, activeExamSessionsBatch, completed, answers, studentQuestions, tabSwitches, outOfTab, blocked, livecamFrame, gradesObj, messages, forceFinished } = req.body;
+  let { sessionKey, sessionData, activeExamSessionsBatch, completed, answers, studentQuestions, tabSwitches, outOfTab, blocked, livecamFrame, gradesObj, messages, forceFinished } = req.body;
   const promises: Promise<any>[] = [];
 
   const authUser = req.user;
@@ -9522,6 +9738,20 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
         return res.status(403).json({ success: false, message: "Akses ditolak: Anda tidak memiliki wewenang mengubah state siswa madrasah lain." });
       }
     }
+  }
+
+  sessionKey = sessionKey ? normalizeExamStateMutationKey(req, String(sessionKey)) : sessionKey;
+  activeExamSessionsBatch = normalizeExamStateMapKeysForRequest(req, activeExamSessionsBatch);
+  completed = normalizeExamStateMapKeysForRequest(req, completed);
+  answers = normalizeExamStateMapKeysForRequest(req, answers);
+  studentQuestions = normalizeExamStateMapKeysForRequest(req, studentQuestions);
+  tabSwitches = normalizeExamStateMapKeysForRequest(req, tabSwitches);
+  outOfTab = normalizeExamStateMapKeysForRequest(req, outOfTab);
+  blocked = normalizeExamStateMapKeysForRequest(req, blocked);
+  gradesObj = normalizeExamStateMapKeysForRequest(req, gradesObj);
+  forceFinished = normalizeExamStateMapKeysForRequest(req, forceFinished);
+  if (livecamFrame?.key) {
+    livecamFrame = { ...livecamFrame, key: normalizeExamStateMutationKey(req, String(livecamFrame.key)) };
   }
 
   if (sessionKey) {
@@ -9639,7 +9869,7 @@ app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru',
   if (!studentId || !examId) return res.status(400).json({ success: false, message: "studentId and examId required" });
   const context = getExamAttemptContext(req, req.user || getAuthUser(req), String(studentId), String(examId));
   if (rejectExamAttemptContext(res, context)) return;
-  const key = studentId + "_" + examId;
+  const key = resolveExamStateKey(req, studentId, examId);
   
   delete activeExamSessions[key];
   delete completedExams[key];
@@ -10876,8 +11106,8 @@ function computeIndonesianTextSimilarity(studentAnswer: string, keyAnswer: strin
   };
 }
 
-async function getAutoGradeAttempt(student: any, ex: any, examId: string) {
-  const key = String(student.id) + '_' + examId;
+async function getAutoGradeAttempt(req: any, student: any, ex: any, examId: string) {
+  const key = resolveExamStateKey(req, student.id, examId);
   let masterQuestions = studentExamMasterQuestions[key];
   if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
     masterQuestions = await recoverMissingExamMasterQuestions(key, ex);
@@ -10968,7 +11198,7 @@ app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru'
       String(st.classId) === String(classId) &&
       (isBos || isItemForCurrentMadrasah(st, req))
     ).filter((st: any) => {
-      const key = String(st.id) + '_' + String(examId);
+      const key = resolveExamStateKey(req, st.id, examId);
       return Boolean(completedExams[key]) || studentExamAnswers[key] !== undefined;
     });
 
@@ -10989,7 +11219,7 @@ app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru'
     let fallbackCount = 0;
 
     for (const st of targets) {
-      const attempt = await getAutoGradeAttempt(st, ex, String(examId));
+      const attempt = await getAutoGradeAttempt(req, st, ex, String(examId));
       if (!attempt || attempt.essayQuestions.length === 0) {
         skippedCount++;
         continue;
@@ -11438,9 +11668,11 @@ app.post("/api/lesson-plans", async (req, res) => {
     lp.id = "LP" + Date.now();
     lessonPlans.push(lp);
   } else {
-    const idx = lessonPlans.findIndex(item => String(item.id) === String(lp.id));
+    const resolved = resolveTenantItemIndexById(lessonPlans, lp.id, req, true);
+    if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID modul ajar ambigu lintas tenant.' });
+    const idx = resolved.index;
     if (idx !== -1) {
-      lessonPlans[idx] = lp;
+      lessonPlans[idx] = { ...lessonPlans[idx], ...lp };
     } else {
       lessonPlans.push(lp);
     }
@@ -13171,36 +13403,17 @@ app.get("/api/lkpds", (req: any, res) => {
   }
   res.json({ success: true, lkpdList: list });
 });
-app.post("/api/exams", async (req, res) => {
+app.post("/api/exams", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const mId = getRequestMadrasahId(req);
   if (Array.isArray(req.body)) {
-    const taggedIncoming = req.body.map(item => tagNewRecord(item, req));
-    let otherExams = [];
-    if (mId && mId !== 'default' && mId !== 'BOSS') {
-      const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
-      const targetId = matchM ? matchM.id : mId;
-      const targetSlug = matchM ? matchM.slug : mId;
-      otherExams = exams.filter(e => {
-        const imId = String(e.madrasahId || '').trim();
-        const imSlug = String(e.madrasahSlug || '').trim();
-        if (!imId && !imSlug) return true;
-        return imId !== targetId && imSlug !== targetSlug && imId !== targetSlug && imSlug !== targetId;
-      });
-    } else {
-      const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
-      const defId = defaultM ? defaultM.id : 'default';
-      const defSlug = defaultM ? defaultM.slug : 'default';
-      otherExams = exams.filter(e => {
-        const imId = String(e.madrasahId || 'default').trim();
-        const imSlug = String(e.madrasahSlug || 'default').trim();
-        const isDefault = imId === 'default' || imId === defId || imId === defSlug || imSlug === 'default' || imSlug === defSlug || imSlug === defId || (!e.madrasahId && !e.madrasahSlug);
-        return !isDefault;
-      });
-    }
-    exams = [...otherExams, ...taggedIncoming];
+    exams = isOnlineMode
+      ? mergeTenantCrudSyncData(exams, req.body, req)
+      : mergeTenantListData(exams, req.body, req);
   } else if (req.body && req.body.id) {
     const tagged = tagNewRecord(req.body, req);
-    const idx = exams.findIndex(e => String(e.id) === String(req.body.id));
+    const resolved = resolveTenantItemIndexById(exams, req.body.id, req, true);
+    if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID ujian ambigu lintas tenant.' });
+    const idx = resolved.index;
     if (idx >= 0) {
       exams[idx] = { ...exams[idx], ...tagged };
     } else {
@@ -13210,7 +13423,7 @@ app.post("/api/exams", async (req, res) => {
   await saveData('exams', exams);
   res.json({ success: true, exams: filterByMadrasah(exams, req) });
 });
-app.delete("/api/exams/:id", async (req, res) => {
+app.delete("/api/exams/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   exams = exams.filter(e => !(String(e.id) === String(id) && isItemForCurrentMadrasah(e, req)));
   await saveData('exams', exams);
@@ -13224,33 +13437,14 @@ app.get("/api/rooms", (req, res) => {
 app.post("/api/rooms", async (req, res) => {
   const mId = getRequestMadrasahId(req);
   if (Array.isArray(req.body)) {
-    const taggedIncoming = req.body.map(item => tagNewRecord(item, req));
-    let otherRooms = [];
-    if (mId && mId !== 'default' && mId !== 'BOSS') {
-      const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
-      const targetId = matchM ? matchM.id : mId;
-      const targetSlug = matchM ? matchM.slug : mId;
-      otherRooms = rooms.filter(r => {
-        const imId = String(r.madrasahId || '').trim();
-        const imSlug = String(r.madrasahSlug || '').trim();
-        if (!imId && !imSlug) return true;
-        return imId !== targetId && imSlug !== targetSlug && imId !== targetSlug && imSlug !== targetId;
-      });
-    } else {
-      const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
-      const defId = defaultM ? defaultM.id : 'default';
-      const defSlug = defaultM ? defaultM.slug : 'default';
-      otherRooms = rooms.filter(r => {
-        const imId = String(r.madrasahId || 'default').trim();
-        const imSlug = String(r.madrasahSlug || 'default').trim();
-        const isDefault = imId === 'default' || imId === defId || imId === defSlug || imSlug === 'default' || imSlug === defSlug || imSlug === defId || (!r.madrasahId && !r.madrasahSlug);
-        return !isDefault;
-      });
-    }
-    rooms = [...otherRooms, ...taggedIncoming];
+    rooms = isOnlineMode
+      ? mergeTenantCrudSyncData(rooms, req.body, req)
+      : mergeTenantListData(rooms, req.body, req);
   } else if (req.body && req.body.id) {
     const tagged = tagNewRecord(req.body, req);
-    const idx = rooms.findIndex(r => String(r.id) === String(req.body.id));
+    const resolved = resolveTenantItemIndexById(rooms, req.body.id, req, true);
+    if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID ruang ambigu lintas tenant.' });
+    const idx = resolved.index;
     if (idx >= 0) {
       rooms[idx] = { ...rooms[idx], ...tagged };
     } else {
@@ -13284,33 +13478,14 @@ app.get("/api/journals", async (req, res) => {
 app.post("/api/journals", async (req, res) => {
   const mId = getRequestMadrasahId(req);
   if (Array.isArray(req.body)) {
-    const taggedIncoming = req.body.map(item => tagNewRecord(item, req));
-    let otherJournals = [];
-    if (mId && mId !== 'default' && mId !== 'BOSS') {
-      const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
-      const targetId = matchM ? matchM.id : mId;
-      const targetSlug = matchM ? matchM.slug : mId;
-      otherJournals = journals.filter(j => {
-        const imId = String(j.madrasahId || '').trim();
-        const imSlug = String(j.madrasahSlug || '').trim();
-        if (!imId && !imSlug) return true;
-        return imId !== targetId && imSlug !== targetSlug && imId !== targetSlug && imSlug !== targetId;
-      });
-    } else {
-      const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
-      const defId = defaultM ? defaultM.id : 'default';
-      const defSlug = defaultM ? defaultM.slug : 'default';
-      otherJournals = journals.filter(j => {
-        const imId = String(j.madrasahId || 'default').trim();
-        const imSlug = String(j.madrasahSlug || 'default').trim();
-        const isDefault = imId === 'default' || imId === defId || imId === defSlug || imSlug === 'default' || imSlug === defSlug || imSlug === defId || (!j.madrasahId && !j.madrasahSlug);
-        return !isDefault;
-      });
-    }
-    journals = [...otherJournals, ...taggedIncoming];
+    journals = isOnlineMode
+      ? mergeTenantCrudSyncData(journals, req.body, req)
+      : mergeTenantListData(journals, req.body, req);
   } else if (req.body && req.body.id) {
     const tagged = tagNewRecord(req.body, req);
-    const idx = journals.findIndex(j => String(j.id) === String(req.body.id));
+    const resolved = resolveTenantItemIndexById(journals, req.body.id, req, true);
+    if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID jurnal ambigu lintas tenant.' });
+    const idx = resolved.index;
     if (idx >= 0) {
       journals[idx] = { ...journals[idx], ...tagged };
     } else {
@@ -13334,33 +13509,14 @@ app.get("/api/calendar-events", (req, res) => {
 app.post("/api/calendar-events", async (req, res) => {
   const mId = getRequestMadrasahId(req);
   if (Array.isArray(req.body)) {
-    const taggedIncoming = req.body.map(item => tagNewRecord(item, req));
-    let otherEvents = [];
-    if (mId && mId !== 'default' && mId !== 'BOSS') {
-      const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
-      const targetId = matchM ? matchM.id : mId;
-      const targetSlug = matchM ? matchM.slug : mId;
-      otherEvents = calendarEvents.filter(c => {
-        const imId = String(c.madrasahId || '').trim();
-        const imSlug = String(c.madrasahSlug || '').trim();
-        if (!imId && !imSlug) return true;
-        return imId !== targetId && imSlug !== targetSlug && imId !== targetSlug && imSlug !== targetId;
-      });
-    } else {
-      const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
-      const defId = defaultM ? defaultM.id : 'default';
-      const defSlug = defaultM ? defaultM.slug : 'default';
-      otherEvents = calendarEvents.filter(c => {
-        const imId = String(c.madrasahId || 'default').trim();
-        const imSlug = String(c.madrasahSlug || 'default').trim();
-        const isDefault = imId === 'default' || imId === defId || imId === defSlug || imSlug === 'default' || imSlug === defSlug || imSlug === defId || (!c.madrasahId && !c.madrasahSlug);
-        return !isDefault;
-      });
-    }
-    calendarEvents = [...otherEvents, ...taggedIncoming];
+    calendarEvents = isOnlineMode
+      ? mergeTenantCrudSyncData(calendarEvents, req.body, req)
+      : mergeTenantListData(calendarEvents, req.body, req);
   } else if (req.body && req.body.id) {
     const tagged = tagNewRecord(req.body, req);
-    const idx = calendarEvents.findIndex(c => String(c.id) === String(req.body.id));
+    const resolved = resolveTenantItemIndexById(calendarEvents, req.body.id, req, true);
+    if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID kalender ambigu lintas tenant.' });
+    const idx = resolved.index;
     if (idx >= 0) {
       calendarEvents[idx] = { ...calendarEvents[idx], ...tagged };
     } else {
@@ -13374,7 +13530,7 @@ app.delete("/api/calendar-events/:id", async (req, res) => {
   const { id } = req.params;
   calendarEvents = calendarEvents.filter(c => !(String(c.id) === String(id) && isItemForCurrentMadrasah(c, req)));
   await saveData('calendarEvents', calendarEvents);
-  res.json({ success: true, calendarEvents });
+  res.json({ success: true, calendarEvents: filterByMadrasah(calendarEvents, req) });
 });
 
 // Duplicate legacy game-submit handler removed; canonical server-side validator is defined above.
@@ -14217,33 +14373,14 @@ app.get("/api/generated-exams", (req, res) => {
 app.post("/api/generated-exams", async (req, res) => {
   const mId = getRequestMadrasahId(req);
   if (Array.isArray(req.body)) {
-    const taggedIncoming = req.body.map(item => tagNewRecord(item, req));
-    let otherExams = [];
-    if (mId && mId !== 'default' && mId !== 'BOSS') {
-      const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
-      const targetId = matchM ? matchM.id : mId;
-      const targetSlug = matchM ? matchM.slug : mId;
-      otherExams = generatedExams.filter(e => {
-        const imId = String(e.madrasahId || '').trim();
-        const imSlug = String(e.madrasahSlug || '').trim();
-        if (!imId && !imSlug) return true;
-        return imId !== targetId && imSlug !== targetSlug && imId !== targetSlug && imSlug !== targetId;
-      });
-    } else {
-      const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
-      const defId = defaultM ? defaultM.id : 'default';
-      const defSlug = defaultM ? defaultM.slug : 'default';
-      otherExams = generatedExams.filter(e => {
-        const imId = String(e.madrasahId || 'default').trim();
-        const imSlug = String(e.madrasahSlug || 'default').trim();
-        const isDefault = imId === 'default' || imId === defId || imId === defSlug || imSlug === 'default' || imSlug === defSlug || imSlug === defId || (!e.madrasahId && !e.madrasahSlug);
-        return !isDefault;
-      });
-    }
-    generatedExams = [...otherExams, ...taggedIncoming];
+    generatedExams = isOnlineMode
+      ? mergeTenantCrudSyncData(generatedExams, req.body, req)
+      : mergeTenantListData(generatedExams, req.body, req);
   } else if (req.body && req.body.id) {
     const tagged = tagNewRecord(req.body, req);
-    const idx = generatedExams.findIndex(e => String(e.id) === String(req.body.id));
+    const resolved = resolveTenantItemIndexById(generatedExams, req.body.id, req, true);
+    if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID generated exam ambigu lintas tenant.' });
+    const idx = resolved.index;
     if (idx >= 0) {
       generatedExams[idx] = { ...generatedExams[idx], ...tagged };
     } else {
@@ -14263,16 +14400,21 @@ app.delete("/api/generated-exams/:id", async (req, res) => {
 // Settings API
 app.get("/api/settings", (req, res) => {
   const authenticatedUser = getAuthUser(req);
+  const sourceSettings = authenticatedUser ? effectiveSettingsForRequest(req) : globalSettingsBase();
   const safeSettings = authenticatedUser
-    ? sanitizeSettingsForClient(appSettings)
-    : sanitizeSettingsForPublic(appSettings);
+    ? sanitizeSettingsForClient(sourceSettings)
+    : sanitizeSettingsForPublic(sourceSettings);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ success: true, settings: safeSettings, isOfflineMode });
 });
-app.put("/api/settings", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
-  appSettings = { ...appSettings, ...req.body };
+app.put("/api/settings", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+    return res.status(400).json({ success: false, message: 'Payload settings tidak valid.' });
+  }
+  const safeGlobalSettings = sanitizeSettingsMutation(req.body, false);
+  appSettings = { ...appSettings, ...safeGlobalSettings };
   await saveData('settings', appSettings);
-  res.json({ success: true, settings: sanitizeSettingsForClient(appSettings) });
+  res.json({ success: true, settings: sanitizeSettingsForClient(globalSettingsBase()) });
 });
 
 // Tenant-scoped account credential export for disaster-recovery backups.
@@ -15481,13 +15623,26 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
         return res.status(400).json({ success: false, message: 'Payload settings tidak valid.' });
       }
-      const safeSettings = { ...data };
-      for (const protectedKey of [
-        'adminPass', 'password', 'jwtSecret', 'JWT_SECRET', 'tokenLockSecret', 'TOKEN_LOCK_SECRET',
-        'localStoreSecret', 'LOCAL_STORE_SECRET', 'licensePrivateKey', 'LICENSE_PRIVATE_KEY',
-        'livekitApiSecret', 'cloudinaryApiSecret', 'cloudinaryApiKey'
-      ]) delete safeSettings[protectedKey];
-      appSettings = { ...appSettings, ...safeSettings };
+      if (isOnlineMode) {
+        const safeSettings = sanitizeSettingsMutation(data, true);
+        const currentScoped = tenantConfigValue(appSettings?.__tenantScopedSettingsV1, req, {}, 'settings');
+        const mergedScoped = {
+          ...(currentScoped && typeof currentScoped === 'object' && !Array.isArray(currentScoped) ? currentScoped : {}),
+          ...safeSettings
+        };
+        appSettings = {
+          ...appSettings,
+          __tenantScopedSettingsV1: setTenantConfigValue(
+            appSettings?.__tenantScopedSettingsV1,
+            req,
+            mergedScoped,
+            {},
+            'settings'
+          )
+        };
+      } else {
+        appSettings = { ...appSettings, ...sanitizeSettingsMutation(data, false) };
+      }
       await saveData('settings', appSettings);
     }
     else if (key === 'schoolLocations' || key === 'schoolLocationSettings') {
