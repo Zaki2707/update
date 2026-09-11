@@ -1,6 +1,58 @@
 var appState = window.appState || {};
 // CBT & Academic Modules: Bank Soal, Gemini AI Generator, Assessment, Monitoring, Evaluasi, Nilai & Jurnal
 
+function qbEscapeHtml(value) {
+    const raw = String(value ?? '');
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(raw);
+    return raw.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+function qbEscapeAttr(value) {
+    const raw = String(value ?? '');
+    if (typeof window.escapeHtmlAttr === 'function') return window.escapeHtmlAttr(raw);
+    return qbEscapeHtml(raw);
+}
+function qbInlineArg(value) {
+    return qbEscapeAttr(JSON.stringify(String(value ?? '')));
+}
+
+async function loadQuestionBankFromServer(force = false) {
+    // QUESTION_BANK_LOAD_GUARD: an empty bank is a valid loaded state, not a reason to refetch forever.
+    if (appState._questionBankLoadPromise && !force) return appState._questionBankLoadPromise;
+    if (appState._questionBankLoaded && !force) return true;
+
+    const task = (async () => {
+        let ok = false;
+        try {
+            const [grpRes, qRes] = await Promise.all([
+                fetch('/api/question-bank-groups').then(r => r.ok ? r.json() : ({ success: false })).catch(() => ({ success: false })),
+                fetch('/api/questions').then(r => r.ok ? r.json() : ({ success: false })).catch(() => ({ success: false }))
+            ]);
+            if (grpRes && grpRes.success && Array.isArray(grpRes.groups)) {
+                appState.questionBankGroups = grpRes.groups;
+                ok = true;
+            }
+            if (qRes && qRes.success && Array.isArray(qRes.questions)) {
+                appState.questionBank = qRes.questions;
+                ok = true;
+            }
+        } catch (e) {
+            console.warn('loadQuestionBankFromServer error:', e);
+        } finally {
+            appState._questionBankLoaded = true;
+            appState._questionBankLoadError = ok ? '' : 'Gagal memuat bank soal dari server.';
+        }
+        return ok;
+    })();
+
+    appState._questionBankLoadPromise = task;
+    try {
+        return await task;
+    } finally {
+        appState._questionBankLoadPromise = null;
+    }
+}
+window.loadQuestionBankFromServer = loadQuestionBankFromServer;
+
 function getTeacherAllowedSubjects() {
     if (appState.role !== 'teacher') {
         return appState.subjects || [];
@@ -8,33 +60,104 @@ function getTeacherAllowedSubjects() {
     const currentTeacher = appState.currentUser;
     if (!currentTeacher) return [];
     
-    const teacherMapelNames = Array.isArray(currentTeacher.mapel) 
-        ? currentTeacher.mapel 
+    let teacherMapelList = Array.isArray(currentTeacher.mapel) 
+        ? [...currentTeacher.mapel] 
         : (currentTeacher.mapel ? [currentTeacher.mapel] : []);
         
-    if (appState.teachers) {
-        const found = appState.teachers.find(t => String(t.id) === String(currentTeacher.id));
+    if (appState.teachers && Array.isArray(appState.teachers)) {
+        const found = appState.teachers.find(t => 
+            String(t.id || '') === String(currentTeacher.id || '') || 
+            String(t.username || '') === String(currentTeacher.username || '') || 
+            (t.nip && String(t.nip) === String(currentTeacher.nip || ''))
+        );
         if (found && Array.isArray(found.mapel)) {
             found.mapel.forEach(m => {
-                if (!teacherMapelNames.includes(m)) teacherMapelNames.push(m);
+                if (!teacherMapelList.includes(m)) teacherMapelList.push(m);
             });
         }
     }
+
+    if (teacherMapelList.length === 0) {
+        return [];
+    }
     
-    return (appState.subjects || []).filter(s => teacherMapelNames.includes(s.name));
+    // Normalisasi untuk pencocokan toleran (menghilangkan spasi berlebih, huruf besar/kecil, karakter simbol &)
+    const normalize = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const matched = (appState.subjects || []).filter(s => {
+        const sNormName = normalize(s.name);
+        const sNormCode = normalize(s.code);
+        const sId = String(s.id || '').trim();
+
+        return teacherMapelList.some(m => {
+            const mNorm = normalize(m);
+            const mId = String(m || '').trim();
+            return mId === sId ||
+                   mNorm === sNormName || 
+                   mNorm === sNormCode;
+        });
+    });
+
+    return matched;
 }
 
 function renderQuestionBankModule(container) {
+    if (!container) container = document.getElementById('view-container');
+    if (!container) return;
+
     const questionBank = Array.isArray(appState.questionBank) ? appState.questionBank : [];
-    let questionBankGroups = Array.isArray(appState.questionBankGroups) ? appState.questionBankGroups : [];
+    const allQuestionBankGroups = Array.isArray(appState.questionBankGroups) ? appState.questionBankGroups : [];
     const subjects = Array.isArray(appState.subjects) ? appState.subjects : [];
     const classes = Array.isArray(appState.classes) ? appState.classes : [];
 
+    // Jika data belum termuat di RAM, muat dari server secara otomatis
+    if (!appState._questionBankLoaded && (allQuestionBankGroups.length === 0 || questionBank.length === 0) && !appState._loadingQuestionBank) {
+        appState._loadingQuestionBank = true;
+        container.innerHTML = `
+            <div class="bg-white p-12 rounded-3xl text-center text-slate-500 font-semibold border border-slate-100 shadow-sm">
+                <i class="fa-solid fa-spinner animate-spin text-2xl text-emerald-600 block mb-3"></i>
+                <span class="text-sm">Memuat data bank soal dari server...</span>
+            </div>
+        `;
+        loadQuestionBankFromServer().then(() => {
+            appState._loadingQuestionBank = false;
+            renderQuestionBankModule(container);
+        }).catch(() => {
+            appState._loadingQuestionBank = false;
+            renderQuestionBankModule(container);
+        });
+        return;
+    }
+
     const isTeacher = appState.role === 'teacher';
+    let questionBankGroups = allQuestionBankGroups;
+    let allowedSubjectNames = '';
+
     if (isTeacher) {
         const allowed = getTeacherAllowedSubjects();
         const allowedIds = allowed.map(s => String(s.id));
-        questionBankGroups = questionBankGroups.filter(bg => allowedIds.includes(String(bg.subjectId)));
+        const allowedNames = allowed.map(s => String(s.name).toLowerCase());
+        const normalize = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const allowedNormNames = allowed.map(s => normalize(s.name));
+
+        allowedSubjectNames = allowed.map(s => qbEscapeHtml(s.name)).join(', ') || 'Belum diatur';
+
+        // Filter ketat: Hanya bank soal yang sesuai dengan mapel yang diampu oleh guru ini
+        questionBankGroups = allQuestionBankGroups.filter(bg => {
+            const bgSubId = String(bg.subjectId || '').trim();
+            if (allowedIds.includes(bgSubId)) return true;
+
+            // Cari objek mapel dari bg.subjectId
+            const sub = subjects.find(s => String(s.id) === bgSubId);
+            if (sub && (allowedIds.includes(String(sub.id)) || allowedNames.includes(String(sub.name).toLowerCase()))) {
+                return true;
+            }
+
+            // Cek jika subjectId / code di group menggunakan nama mapel langsung
+            const normBgSub = normalize(bgSubId);
+            const normBgCode = normalize(bg.code);
+            return allowedNormNames.some(an => an === normBgSub || normBgSub.includes(an) || normBgCode.includes(an));
+        });
     }
 
     const activeCode = appState.activeBankGroupCode || '';
@@ -45,7 +168,12 @@ function renderQuestionBankModule(container) {
                 <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
                     <div>
                         <h1 class="text-xl sm:text-2xl font-bold text-slate-800">Bank Soal Madrasah</h1>
-                        <p class="text-xs text-slate-400 mt-0.5">Kelola kode soal, mapel, dan kelas ujian</p>
+                        <p class="text-xs text-slate-400 mt-0.5">
+                            ${isTeacher 
+                                ? `Bank Soal Mapel Anda: <span class="font-semibold text-emerald-700">${allowedSubjectNames}</span> (${questionBankGroups.length} Bank Soal)` 
+                                : `Kelola semua bank soal madrasah (${questionBankGroups.length} Bank Soal, ${questionBank.length} Butir Soal)`
+                            }
+                        </p>
                     </div>
                     <div class="flex items-center space-x-2">
                         <button type="button" onclick="openConvertQuestionModal()" class="px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2 transition cursor-pointer">
@@ -59,27 +187,34 @@ function renderQuestionBankModule(container) {
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     ${questionBankGroups.length === 0 ? `
-                        <div class="bg-white p-12 rounded-3xl text-center text-slate-400 text-sm border col-span-2">
-                            Belum ada kode bank soal. Klik "Tambah Soal" untuk membuat.
+                        <div class="bg-white p-12 rounded-3xl text-center text-slate-400 text-sm border col-span-2 space-y-3">
+                            <i class="fa-solid fa-box-open text-4xl text-slate-300"></i>
+                            <p class="font-semibold text-slate-600">
+                                ${isTeacher 
+                                    ? `Belum ada bank soal untuk mata pelajaran Anda (${allowedSubjectNames}).` 
+                                    : 'Belum ada kode bank soal di sistem.'
+                                }
+                            </p>
+                            <p class="text-xs text-slate-400">Klik tombol "Tambah Soal" di atas untuk membuat bank soal baru.</p>
                         </div>
                     ` : questionBankGroups.map(bg => {
                         const subObj = subjects.find(s => String(s.id) === String(bg.subjectId));
                         const clsObj = classes.find(c => String(c.id) === String(bg.classId));
-                        const count = questionBank.filter(q => q && String(q.code) === String(bg.code)).length;
+                        const count = questionBank.filter(q => q && String(q.code).trim().toLowerCase() === String(bg.code).trim().toLowerCase()).length;
 
                         return `
                             <div class="bg-white p-6 rounded-3xl border shadow-sm space-y-4 flex flex-col justify-between hover:border-emerald-500 transition">
                                 <div>
                                     <div class="flex justify-between items-start">
-                                        <span class="px-3 py-1 bg-emerald-100 text-emerald-800 text-xs font-bold rounded-xl font-mono">${bg.code}</span>
-                                        <button type="button" onclick="deleteQuestionBankGroup('${bg.id}')" class="text-rose-400 hover:text-rose-600 p-1"><i class="fa-solid fa-trash"></i></button>
+                                        <span class="px-3 py-1 bg-emerald-100 text-emerald-800 text-xs font-bold rounded-xl font-mono">${qbEscapeHtml(bg.code)}</span>
+                                        <button type="button" onclick="deleteQuestionBankGroup(${qbInlineArg(bg.id)})" class="text-rose-400 hover:text-rose-600 p-1 cursor-pointer"><i class="fa-solid fa-trash"></i></button>
                                     </div>
-                                    <h3 class="font-bold text-slate-800 text-base mt-3">${subObj ? subObj.name : 'Mata Pelajaran'} - ${clsObj ? clsObj.name : 'Kelas'}</h3>
+                                    <h3 class="font-bold text-slate-800 text-base mt-3">${qbEscapeHtml(subObj ? subObj.name : (bg.code || 'Mata Pelajaran'))} - ${qbEscapeHtml(clsObj ? clsObj.name : 'Kelas')}</h3>
                                     <p class="text-xs text-slate-500 mt-1"><i class="fa-solid fa-book-open mr-1.5 text-emerald-600"></i>Total Butir Soal: <b>${count} Soal</b></p>
                                 </div>
                                 <div class="grid grid-cols-2 gap-2 mt-2">
-                                    <button type="button" onclick="selectQuestionBankGroup('${bg.code}')" class="py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer">Kelola Soal</button>
-                                    <button type="button" onclick="openPreviewQuestionBankModal('${bg.code}')" class="py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer"><i class="fa-solid fa-eye mr-1"></i>Pratinjau</button>
+                                    <button type="button" onclick="selectQuestionBankGroup(${qbInlineArg(bg.code)})" class="py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer">Kelola Soal</button>
+                                    <button type="button" onclick="openPreviewQuestionBankModal(${qbInlineArg(bg.code)})" class="py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-2xl text-xs shadow transition cursor-pointer"><i class="fa-solid fa-eye mr-1"></i>Pratinjau</button>
                                 </div>
                             </div>
                         `;
@@ -91,9 +226,14 @@ function renderQuestionBankModule(container) {
     }
 
     const group = questionBankGroups.find(bg => String(bg.code) === String(activeCode));
+    if (!group) {
+        appState.activeBankGroupCode = null;
+        renderQuestionBankModule(container);
+        return;
+    }
     const subObj = subjects.find(s => String(s.id) === String(group?.subjectId));
     const clsObj = classes.find(c => String(c.id) === String(group?.classId));
-    const questions = questionBank.filter(q => q && String(q.code) === String(activeCode));
+    const questions = questionBank.filter(q => q && String(q.code).trim().toLowerCase() === String(activeCode).trim().toLowerCase());
 
     container.innerHTML = `
         <div class="space-y-6 pb-8">
@@ -103,8 +243,8 @@ function renderQuestionBankModule(container) {
                         <i class="fa-solid fa-arrow-left"></i>
                     </button>
                     <div>
-                        <span class="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold font-mono">${activeCode}</span>
-                        <h1 class="text-lg sm:text-xl font-bold text-slate-800 mt-1">${subObj ? subObj.name : ''} - ${clsObj ? clsObj.name : ''}</h1>
+                        <span class="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold font-mono">${qbEscapeHtml(activeCode)}</span>
+                        <h1 class="text-lg sm:text-xl font-bold text-slate-800 mt-1">${qbEscapeHtml(subObj ? subObj.name : '')} - ${qbEscapeHtml(clsObj ? clsObj.name : '')}</h1>
                     </div>
                 </div>
 
