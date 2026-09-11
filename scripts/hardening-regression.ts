@@ -102,8 +102,8 @@ function testServerGuards() {
   for (const route of staffAiRoutes) {
     assert.equal(server.includes('app.post("' + route + '"' + staffMiddlewareMarker), true, 'AI/module route is not explicitly staff-only: ' + route);
   }
-  assert.match(server, /ID ujian ambigu lintas tenant\. Pilih madrasah target terlebih dahulu\./);
-  assert.match(server, /ID LKPD ambigu lintas tenant\. Pilih madrasah target terlebih dahulu\./);
+  assert.match(server, /ID ujian ambigu lintas tenant\. Pilih tenant target secara eksplisit\./);
+  assert.match(server, /ID LKPD ambigu lintas tenant\. Pilih tenant target secara eksplisit\./);
   assert.match(server, /TEACHER_SELF_UPDATE_SCOPE/);
   assert.match(server, /SUBJECT_RENAME_CASCADE/);
   assert.match(fs.readFileSync('src/cbtModules.js', 'utf8'), /QUESTION_BANK_LOAD_GUARD/);
@@ -112,6 +112,24 @@ function testServerGuards() {
   assert.match(server, /=== lkpdTenant/);
   assert.equal(server.includes("const store = readLocalStore();\n    let lkpdList = store.lkpdList || [];"), false);
   assert.match(server, /default-src 'none'; style-src 'none'; script-src 'none'; sandbox/);
+  assert.match(server, /ATOMIC_BATCH_PERSISTENCE/);
+  assert.match(server, /await client\.query\('BEGIN'\)/);
+  assert.match(server, /await client\.query\('COMMIT'\)/);
+  assert.match(server, /await client\.query\('ROLLBACK'\)/);
+  assert.match(server, /rewardAlreadyClaimed/);
+  assert.match(server, /game-reward::/);
+  assert.match(server, /Jawaban terlalu besar\. Maksimal 64 KB per soal\./);
+  assert.match(server, /Format frame livecam tidak valid\./);
+  assert.match(server, /QUESTION_BANK_TEACHER_SUBJECT_SCOPE/);
+  assert.match(server, /teacher-subject-merge/);
+  assert.match(server, /LKPD_STUDENT_STATE_V1/);
+  assert.match(server, /app\.post\("\/api\/lkpd\/student-state"/);
+  assert.match(server, /Ujian dan kelas harus berasal dari tenant yang sama\./);
+  assert.match(server, /LKPD dan kelas harus berasal dari tenant yang sama\./);
+  const lkpd = fs.readFileSync('src/lkpdModule.js', 'utf8');
+  assert.match(lkpd, /fetch\('\/api\/lkpd\/student-state'/);
+  assert.equal(lkpd.includes("const res = await fetch('/api/exam-monitoring-state')"), false);
+  assert.equal(server.includes('if (isOnlineMode && isStudentSyncRole)'), false);
 
   for (const destructive of [
     'exams = [...otherExams, ...taggedIncoming]',
