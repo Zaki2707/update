@@ -1824,6 +1824,44 @@ function scheduleDbWrite(key: string) {
   }
 }
 
+async function verifyOnlineArrayPersistence(key: string, expectedValue: any) {
+  if (!isOnlineMode) return;
+  if (key !== 'questions' && key !== 'questionBankGroups') return;
+  if (!pool || isDbQuotaExceeded) {
+    throw new Error(`ONLINE_DATABASE_UNAVAILABLE: cannot verify ${key}`);
+  }
+
+  const result = await pool.query('SELECT value FROM app_store WHERE key = $1', [key]);
+  if (!result.rows || result.rows.length !== 1) {
+    throw new Error(`PERSISTENCE_VERIFY_FAILED: ${key} row missing after write`);
+  }
+
+  let persisted = result.rows[0].value;
+  if (typeof persisted === 'string') {
+    try {
+      persisted = JSON.parse(persisted);
+    } catch {
+      throw new Error(`PERSISTENCE_VERIFY_FAILED: ${key} is not valid JSON after write`);
+    }
+  }
+
+  if (!Array.isArray(expectedValue) || !Array.isArray(persisted)) {
+    throw new Error(`PERSISTENCE_VERIFY_FAILED: ${key} is not an array after write`);
+  }
+  if (persisted.length !== expectedValue.length) {
+    throw new Error(`PERSISTENCE_VERIFY_FAILED: ${key} expected ${expectedValue.length} records, persisted ${persisted.length}`);
+  }
+
+  const expectedIds = expectedValue.map((item: any) => String(item?.id || '')).filter(Boolean);
+  if (expectedIds.length === expectedValue.length) {
+    const persistedIds = new Set(persisted.map((item: any) => String(item?.id || '')).filter(Boolean));
+    const missingId = expectedIds.find((id: string) => !persistedIds.has(id));
+    if (missingId) {
+      throw new Error(`PERSISTENCE_VERIFY_FAILED: ${key} is missing an expected record after write`);
+    }
+  }
+}
+
 async function saveData(key: string, value: any, immediate = true) {
   if (isOnlineMode && !isRestoring) {
     if (dbInitPromise) await dbInitPromise;
@@ -1876,6 +1914,12 @@ async function saveData(key: string, value: any, immediate = true) {
     } else {
       scheduleDbWrite(key);
     }
+  }
+
+  // Question bank writes are low-frequency but critical. Never acknowledge an online
+  // mutation unless the authoritative app_store row can be read back with the same snapshot.
+  if (isOnlineMode && immediate && (key === 'questions' || key === 'questionBankGroups')) {
+    await verifyOnlineArrayPersistence(key, value);
   }
 }
 
@@ -1930,6 +1974,14 @@ async function saveDataBatch(items: { key: string; value: any }[], immediate = t
     } else {
       for (const item of items) {
         scheduleDbWrite(item.key);
+      }
+    }
+  }
+
+  if (isOnlineMode && immediate) {
+    for (const item of items) {
+      if (item.key === 'questions' || item.key === 'questionBankGroups') {
+        await verifyOnlineArrayPersistence(item.key, item.value);
       }
     }
   }
@@ -8002,11 +8054,11 @@ app.post('/api/theme-assets/release', requireAuth, requireRole(['admin', 'bos', 
 });
 
 // 8. Question Bank Groups API
-app.get("/api/question-bank-groups", (req, res) => {
+app.get("/api/question-bank-groups", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
   res.json({ success: true, groups: filterByMadrasah(questionBankGroups, req) });
 });
 
-app.post("/api/question-bank-groups", async (req, res) => {
+app.post("/api/question-bank-groups", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { code, subjectId, classId } = req.body;
   if (!code) {
     return res.status(400).json({ success: false, message: "Kode bank soal wajib diisi." });
@@ -8022,7 +8074,7 @@ app.post("/api/question-bank-groups", async (req, res) => {
   res.json({ success: true, group: newGrp });
 });
 
-app.delete("/api/question-bank-groups/:id", async (req, res) => {
+app.delete("/api/question-bank-groups/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   questionBankGroups = questionBankGroups.filter(bg => !(String(bg.id) === String(id) && isItemForCurrentMadrasah(bg, req)));
   await saveData('questionBankGroups', questionBankGroups);
@@ -8034,50 +8086,37 @@ app.get("/api/questions", requireAuth, requireRole(['teacher', 'guru', 'admin', 
   res.json({ success: true, questions: filterByMadrasah(questions, req) });
 });
 
-app.post("/api/questions/batch", async (req, res) => {
-  const authUser = getAuthUser(req);
-  const isTeacherOrAdmin = Boolean(authUser && (
-    authUser.role === 'teacher' || authUser.role === 'guru' ||
-    authUser.role === 'admin' || authUser.role === 'bos' || authUser.role === 'superadmin'
-  ));
-  if (!isTeacherOrAdmin) {
-    return res.status(403).json({ success: false, message: "Akses ditolak: Hanya guru dan admin yang dapat mengelola bank soal." });
+app.post("/api/questions/batch", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  if (!Array.isArray(req.body)) {
+    return res.status(400).json({ success: false, message: "Invalid payload, expected an array." });
   }
 
-  if (Array.isArray(req.body)) {
-    const taggedIncoming = req.body.map(q => tagNewRecord(q, req));
-    const mId = getRequestMadrasahId(req);
-    let otherQuestions = [];
-    if (mId && mId !== 'default' && mId !== 'BOSS') {
-      const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
-      const targetId = matchM ? matchM.id : mId;
-      const targetSlug = matchM ? matchM.slug : mId;
-      otherQuestions = questions.filter(q => {
-        const imId = String(q.madrasahId || '').trim();
-        const imSlug = String(q.madrasahSlug || '').trim();
-        if (!imId && !imSlug) return true;
-        return imId !== targetId && imSlug !== targetSlug && imId !== targetSlug && imSlug !== targetId;
-      });
-    } else {
-      const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
-      const defId = defaultM ? defaultM.id : 'default';
-      const defSlug = defaultM ? defaultM.slug : 'default';
-      otherQuestions = questions.filter(q => {
-        const imId = String(q.madrasahId || 'default').trim();
-        const imSlug = String(q.madrasahSlug || 'default').trim();
-        const isDefault = imId === 'default' || imId === defId || imId === defSlug || imSlug === 'default' || imSlug === defSlug || imSlug === defId || (!q.madrasahId && !q.madrasahSlug);
-        return !isDefault;
-      });
-    }
-    questions = [...otherQuestions, ...taggedIncoming];
-    await saveData('questions', questions);
-    res.json({ success: true, questions: taggedIncoming });
+  const incoming = req.body;
+  const beforeTenantCount = filterByMadrasah(questions, req).length;
+
+  if (isOnlineMode) {
+    // ONLINE is server-authoritative. Browser/import state may be stale or partial, so
+    // omission is NEVER a deletion signal. Only explicit DELETE endpoints may shrink it.
+    questions = mergeTenantCrudSyncData(questions, incoming, req);
   } else {
-    res.status(400).json({ success: false, message: "Invalid payload, expected an array." });
+    // Preserve the legacy offline replace-list behavior.
+    questions = mergeTenantListData(questions, incoming, req);
   }
+
+  const afterTenantCount = filterByMadrasah(questions, req).length;
+  if (isOnlineMode && afterTenantCount < beforeTenantCount) {
+    throw new Error(`QUESTION_BANK_SHRINK_GUARD: refusing to shrink from ${beforeTenantCount} to ${afterTenantCount} via batch`);
+  }
+
+  await saveData('questions', questions);
+  res.json({
+    success: true,
+    questions: filterByMadrasah(questions, req),
+    mode: isOnlineMode ? 'merge-non-destructive' : 'replace-offline'
+  });
 });
 
-app.post("/api/questions", async (req, res) => {
+app.post("/api/questions", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const authUser = getAuthUser(req);
   const isTeacherOrAdmin = Boolean(authUser && (
     authUser.role === 'teacher' || authUser.role === 'guru' ||
@@ -8106,7 +8145,7 @@ app.post("/api/questions", async (req, res) => {
   res.json({ success: true, question: newQ });
 });
 
-app.put("/api/questions/:id", async (req, res) => {
+app.put("/api/questions/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   const authUser = getAuthUser(req);
   const isTeacherOrAdmin = Boolean(authUser && (
     authUser.role === 'teacher' || authUser.role === 'guru' ||
@@ -8117,19 +8156,29 @@ app.put("/api/questions/:id", async (req, res) => {
   }
 
   const { id } = req.params;
-  const idx = questions.findIndex(q => String(q.id) === String(id));
-  if (idx < 0) {
-    return res.status(404).json({ success: false, message: "Soal tidak ditemukan." });
+  const resolved = resolveTenantItemIndexById(questions, id, req, false);
+  if (resolved.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID soal ambigu lintas tenant." });
   }
-  questions[idx] = {
-    ...questions[idx],
-    ...req.body
-  };
+  if (resolved.index < 0) {
+    return res.status(404).json({ success: false, message: "Soal tidak ditemukan pada madrasah ini." });
+  }
+
+  const cleanBody = { ...(req.body || {}) };
+  delete cleanBody.id;
+  delete cleanBody.madrasahId;
+  delete cleanBody.madrasahSlug;
+  questions[resolved.index] = tagNewRecord({
+    ...questions[resolved.index],
+    ...cleanBody,
+    id: questions[resolved.index].id
+  }, req);
+
   await saveData('questions', questions);
-  res.json({ success: true, question: questions[idx] });
+  res.json({ success: true, question: questions[resolved.index] });
 });
 
-app.delete("/api/questions/:id", async (req, res) => {
+app.delete("/api/questions/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const authUser = getAuthUser(req);
   const isTeacherOrAdmin = Boolean(authUser && (
     authUser.role === 'teacher' || authUser.role === 'guru' ||
