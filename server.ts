@@ -9474,8 +9474,16 @@ app.post("/api/exam/attempt/answer", async (req, res) => {
   const sId = resolveStudentId(req, authUser);
   const { examId, questionId, answer, currentIndex } = req.body;
   if (!sId || !examId || !questionId) return res.status(400).json({ success: false, message: "studentId, examId, and questionId are required" });
-
   const eId = String(examId);
+  const qId = String(questionId);
+  if (eId.length > 256 || qId.length > 256) {
+    return res.status(400).json({ success: false, message: "ID ujian/soal tidak valid." });
+  }
+  let answerBytes = Number.MAX_SAFE_INTEGER;
+  try { answerBytes = Buffer.byteLength(JSON.stringify(answer ?? null), 'utf8'); } catch (_) {}
+  if (answerBytes > 64 * 1024) {
+    return res.status(413).json({ success: false, message: "Jawaban terlalu besar. Maksimal 64 KB per soal." });
+  }
   const key = resolveExamStateKey(req, sId, eId);
   const context = getExamAttemptContext(req, authUser, sId, eId);
   if (rejectExamAttemptContext(res, context)) return;
@@ -9523,6 +9531,9 @@ app.post("/api/exam/student-state", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
+  if (eId.length > 256) return res.status(400).json({ success: false, message: "examId tidak valid." });
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
   const now = Date.now();
 
@@ -9549,6 +9560,9 @@ app.post("/api/exam/student-state", requireAuth, async (req, res) => {
     const frameText = String(livecamFrame);
     if (Buffer.byteLength(frameText, 'utf8') > 2 * 1024 * 1024) {
       return res.status(413).json({ success: false, message: "Frame livecam terlalu besar." });
+    }
+    if (!parseSafeRasterDataUrl(frameText)) {
+      return res.status(400).json({ success: false, message: "Format frame livecam tidak valid." });
     }
     studentLivecamFrames[key] = frameText;
     broadcastStateUpdate('studentLivecamFrames');
@@ -9586,6 +9600,9 @@ app.post("/api/exam/presence", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
+  if (eId.length > 256) return res.status(400).json({ success: false, message: "examId tidak valid." });
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
 
   // Update in-memory state
@@ -9619,10 +9636,20 @@ app.post("/api/exam/livecam/snapshot", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
+  if (eId.length > 256) return res.status(400).json({ success: false, message: "examId tidak valid." });
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
+  const frameText = String(livecamFrame);
+  if (Buffer.byteLength(frameText, 'utf8') > 2 * 1024 * 1024) {
+    return res.status(413).json({ success: false, message: "Frame livecam terlalu besar." });
+  }
+  if (!parseSafeRasterDataUrl(frameText)) {
+    return res.status(400).json({ success: false, message: "Format frame livecam tidak valid." });
+  }
 
   // Update in-memory state
-  studentLivecamFrames[key] = String(livecamFrame);
+  studentLivecamFrames[key] = frameText;
   broadcastStateUpdate('studentLivecamFrames');
 
   res.json({ success: true });
@@ -9641,6 +9668,9 @@ app.post("/api/exam/heartbeat", async (req, res) => {
   }
 
   const eId = String(examId);
+  if (eId.length > 256) return res.status(400).json({ success: false, message: "examId tidak valid." });
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
   const now = Date.now();
 
