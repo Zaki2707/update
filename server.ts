@@ -8435,6 +8435,89 @@ function legacyExamStateKey(studentId: any, examId: any): string {
   return String(studentId) + '_' + String(examId);
 }
 
+function examBroadcastStateKey(req: any, examId: any): string {
+  const tenant = examStateTenant(req, undefined, examId);
+  return `bcastv2::${encodeExamStatePart(tenant)}::${encodeExamStatePart(examId)}`;
+}
+
+function parseNamespacedExamBroadcastKey(key: string): { tenant: string; examId: string } | null {
+  const parts = String(key || '').split('::');
+  if (parts.length !== 3 || parts[0] !== 'bcastv2') return null;
+  const tenant = decodeExamStatePart(parts[1]);
+  const examId = decodeExamStatePart(parts[2]);
+  return tenant && examId ? { tenant, examId } : null;
+}
+
+function legacyExamIdIsUnambiguous(req: any, examId: any): boolean {
+  const matches = (exams || []).filter((item: any) => String(item.id) === String(examId));
+  return matches.length === 1 && isItemForCurrentMadrasah(matches[0], req);
+}
+
+function resolveExamBroadcastMessageKey(req: any, examId: any): string {
+  const namespaced = examBroadcastStateKey(req, examId);
+  if (Object.prototype.hasOwnProperty.call(examMessages || {}, namespaced)) return namespaced;
+  const legacy = 'broadcast_' + String(examId);
+  if (legacyExamIdIsUnambiguous(req, examId) && Object.prototype.hasOwnProperty.call(examMessages || {}, legacy)) return legacy;
+  return namespaced;
+}
+
+function resolveExamViolationLogKey(req: any, examId: any): string {
+  const namespaced = examBroadcastStateKey(req, examId);
+  if (Object.prototype.hasOwnProperty.call(examViolationLogs || {}, namespaced)) return namespaced;
+  const legacy = String(examId);
+  if (legacyExamIdIsUnambiguous(req, examId) && Object.prototype.hasOwnProperty.call(examViolationLogs || {}, legacy)) return legacy;
+  return namespaced;
+}
+
+function normalizeExamMessageKeyForRequest(req: any, rawKey: string): string {
+  const raw = String(rawKey || '');
+  const namespacedBroadcast = parseNamespacedExamBroadcastKey(raw);
+  if (namespacedBroadcast) {
+    const expectedTenant = examStateTenant(req, undefined, namespacedBroadcast.examId);
+    return canonicalRealtimeTenant(namespacedBroadcast.tenant) === expectedTenant ? raw : '';
+  }
+  if (raw.startsWith('broadcast_')) {
+    const examId = raw.slice('broadcast_'.length);
+    const exam = (exams || []).find((item: any) => String(item.id) === examId && isItemForCurrentMadrasah(item, req));
+    return exam ? examBroadcastStateKey(req, examId) : '';
+  }
+  const parsed = parseExamStateKeyForRequest(req, raw);
+  return parsed ? examStateKey(req, parsed.studentId, parsed.examId) : '';
+}
+
+function normalizeExamMessageMapKeysForRequest(req: any, source: any): any {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return source;
+  const normalized: any = {};
+  for (const [rawKey, value] of Object.entries(source)) {
+    const key = normalizeExamMessageKeyForRequest(req, rawKey);
+    if (key) normalized[key] = value;
+  }
+  return normalized;
+}
+
+function examMessageKeyBelongsToRequest(req: any, rawKey: string): boolean {
+  const raw = String(rawKey || '');
+  const bcast = parseNamespacedExamBroadcastKey(raw);
+  if (bcast) {
+    return canonicalRealtimeTenant(bcast.tenant) === examStateTenant(req, undefined, bcast.examId);
+  }
+  if (raw.startsWith('broadcast_')) {
+    const examId = raw.slice('broadcast_'.length);
+    return (exams || []).some((item: any) => String(item.id) === examId && isItemForCurrentMadrasah(item, req));
+  }
+  return Boolean(parseExamStateKeyForRequest(req, raw));
+}
+
+function isAttemptBlocked(req: any, studentId: any, examId: any, resolvedKey?: string): boolean {
+  const key = resolvedKey || resolveExamStateKey(req, studentId, examId);
+  if (Boolean(blockedStudents[key])) return true;
+  if (!legacyExamStateIsUnambiguous(req, studentId, examId)) return false;
+  return Boolean(
+    blockedStudents[legacyExamStateKey(studentId, examId)] ||
+    blockedStudents[legacyExamStateKey(examId, studentId)]
+  );
+}
+
 function parseNamespacedExamStateKey(key: string): { tenant: string; studentId: string; examId: string } | null {
   const parts = String(key || '').split('::');
   if (parts.length !== 4 || parts[0] !== 'v2') return null;
@@ -8541,6 +8624,14 @@ function filterExamStateMapForRequest(mapObj: any, req: any): any {
   );
 
   for (const key of Object.keys(mapObj)) {
+    const namespacedBroadcast = parseNamespacedExamBroadcastKey(key);
+    if (namespacedBroadcast) {
+      const expectedTenant = examStateTenant(req, undefined, namespacedBroadcast.examId);
+      if (canonicalRealtimeTenant(namespacedBroadcast.tenant) === expectedTenant && tenantExamIds.has(namespacedBroadcast.examId)) {
+        filtered['broadcast_' + namespacedBroadcast.examId] = mapObj[key];
+      }
+      continue;
+    }
     if (key.startsWith('broadcast_')) {
       const parsedExamId = key.slice('broadcast_'.length);
       if (tenantExamIds.has(parsedExamId)) filtered[key] = mapObj[key];
@@ -8676,13 +8767,13 @@ app.get("/api/exam/my-state", (req, res) => {
   const session = activeExamSessions[key1] || activeExamSessions[key2] || null;
   const isCompleted = Boolean(completedExams[key1] || completedExams[key2]);
   const isForceDone = Boolean(forceFinishedExams[key1] || forceFinishedExams[key2] || completedExams[key1] === 'force_finish' || completedExams[key2] === 'force_finish');
-  const isBlocked = Boolean(blockedStudents[key1] || blockedStudents[key2]);
+  const isBlocked = isAttemptBlocked(req, sId, eId, key1);
   const outOfTab = Boolean(studentOutOfTab[key1] || studentOutOfTab[key2]);
   const tabSwitches = studentTabSwitches[key1] || studentTabSwitches[key2] || 0;
   const savedAnswers = (session && session.answers) || studentExamAnswers[key1] || studentExamAnswers[key2] || {};
 
   // Broadcast and personal messages
-  const msgBroadcast = examMessages['broadcast_' + eId] || null;
+  const msgBroadcast = examMessages[resolveExamBroadcastMessageKey(req, eId)] || null;
   const msgPersonal = examMessages[key1] || examMessages[key2] || null;
   const latestMessage = msgPersonal || msgBroadcast || null;
 
@@ -8802,7 +8893,7 @@ app.post("/api/exam/attempt/start", async (req, res) => {
   if (completedExams[key] || forceFinishedExams[key]) {
     return res.status(409).json({ success: false, message: "Ujian ini sudah selesai dan tidak dapat dimulai ulang." });
   }
-  if (blockedStudents[key] || blockedStudents[eId + '_' + sId]) {
+  if (isAttemptBlocked(req, sId, eId, key)) {
     return res.status(403).json({ success: false, message: "Akses ujian sedang diblokir oleh pengawas." });
   }
 
@@ -9280,7 +9371,7 @@ app.post("/api/exam/attempt/answer", async (req, res) => {
   const context = getExamAttemptContext(req, authUser, sId, eId);
   if (rejectExamAttemptContext(res, context)) return;
   if (completedExams[key] || forceFinishedExams[key]) return res.status(409).json({ success: false, message: "Ujian sudah selesai." });
-  if (blockedStudents[key] || blockedStudents[eId + '_' + sId]) return res.status(403).json({ success: false, message: "Akses ujian sedang diblokir." });
+  if (isAttemptBlocked(req, sId, eId, key)) return res.status(403).json({ success: false, message: "Akses ujian sedang diblokir." });
 
   const session = activeExamSessions[key];
   if (!session) return res.status(409).json({ success: false, message: "Session ujian tidak aktif. Muat ulang dan lanjutkan ujian." });
@@ -9354,9 +9445,9 @@ app.post("/api/exam/student-state", requireAuth, async (req, res) => {
     broadcastStateUpdate('studentLivecamFrames');
   }
 
-  const isBlocked = Boolean(blockedStudents[key]);
+  const isBlocked = isAttemptBlocked(req, sId, eId, key);
   const isForceDone = Boolean(forceFinishedExams[key] || completedExams[key] === 'force_finish');
-  const bMsg = examMessages['broadcast_' + eId] || null;
+  const bMsg = examMessages[resolveExamBroadcastMessageKey(req, eId)] || null;
   const pMsg = examMessages[key] || null;
 
   res.json({
@@ -9462,9 +9553,9 @@ app.post("/api/exam/heartbeat", async (req, res) => {
   });
 
   // Check if student has pending messages or auto-block
-  const isBlocked = Boolean(blockedStudents[key]);
+  const isBlocked = isAttemptBlocked(req, sId, eId, key);
   const isForceDone = Boolean(forceFinishedExams[key] || completedExams[key] === 'force_finish');
-  const bMsg = examMessages['broadcast_' + eId] || null;
+  const bMsg = examMessages[resolveExamBroadcastMessageKey(req, eId)] || null;
   const pMsg = examMessages[key] || null;
 
   res.json({
@@ -9491,48 +9582,50 @@ app.post("/api/exam/violation", async (req, res) => {
   }
 
   const eId = String(examId);
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
   const now = Date.now();
 
   studentTabSwitches[key] = (studentTabSwitches[key] || 0) + 1;
   studentOutOfTab[key] = true;
 
-  const allExams = getMemoryKeyValue('exams') || exams || [];
-  const matchedExam = allExams.find((e: any) => String(e.id) === eId);
+  const matchedExam = context.exam;
   const autoBlockLimit = matchedExam ? parseInt(matchedExam.autoBlock || 0, 10) : 0;
   let autoBlocked = false;
 
   if (autoBlockLimit > 0 && studentTabSwitches[key] >= autoBlockLimit) {
     blockedStudents[key] = true;
-    blockedStudents[eId + "_" + sId] = true;
     autoBlocked = true;
     await saveDeltaDb('blockedStudents', key, true);
-    await saveDeltaDb('blockedStudents', eId + "_" + sId, true);
     broadcastStateUpdate('blockedStudents');
   }
 
-  // Record into structured violation logs
-  if (!examViolationLogs[eId]) examViolationLogs[eId] = [];
-  const targetStudent = (getMemoryKeyValue('students') || students || []).find((s: any) => String(s.id) === sId);
+  // Record into a tenant+exam-scoped structured violation log.
+  const violationKey = resolveExamViolationLogKey(req, eId);
+  if (!examViolationLogs[violationKey]) examViolationLogs[violationKey] = [];
+  const targetStudent = context.student;
+  const safeReason = String(reason || 'Keluar Tab / Split Screen').slice(0, 500);
   const violationItem = {
-    id: "viol_" + now + "_" + Math.random().toString(36).substring(2, 7),
+    id: "viol_" + now + "_" + crypto.randomBytes(6).toString('hex'),
     studentId: sId,
     studentName: targetStudent ? targetStudent.name : sId,
     nis: targetStudent ? targetStudent.nis : '',
     className: targetStudent ? (targetStudent.classId || targetStudent.className || '') : '',
     examId: eId,
-    reason: reason || 'Keluar Tab / Split Screen',
+    reason: safeReason,
     timestamp: now,
+    clientTimestamp: Number.isFinite(Number(clientTimestamp)) ? Number(clientTimestamp) : null,
     tabSwitches: studentTabSwitches[key],
     autoBlocked: autoBlocked
   };
-  examViolationLogs[eId].unshift(violationItem);
-  if (examViolationLogs[eId].length > 500) examViolationLogs[eId].pop();
+  examViolationLogs[violationKey].unshift(violationItem);
+  if (examViolationLogs[violationKey].length > 500) examViolationLogs[violationKey].pop();
 
   await Promise.all([
     saveDeltaDb('studentTabSwitches', key, studentTabSwitches[key]),
     saveDeltaDb('studentOutOfTab', key, true),
-    saveDeltaDb('examViolationLogs', eId, examViolationLogs[eId])
+    saveDeltaDb('examViolationLogs', violationKey, examViolationLogs[violationKey])
   ]);
 
   // Poin 1 & 11: Real-time Event-driven micro-broadcast for violations & block status (no broadcast storms)
@@ -9542,7 +9635,7 @@ app.post("/api/exam/violation", async (req, res) => {
     studentId: sId,
     tabSwitches: studentTabSwitches[key],
     autoBlocked: autoBlocked,
-    reason: reason || 'Keluar Tab / Split Screen',
+    reason: safeReason,
     timestamp: now
   });
 
@@ -9550,7 +9643,7 @@ app.post("/api/exam/violation", async (req, res) => {
     success: true,
     tabSwitches: studentTabSwitches[key],
     autoBlocked: autoBlocked,
-    reason: reason || 'Keluar Tab / Split Screen',
+    reason: safeReason,
     violation: violationItem
   });
 });
@@ -9559,11 +9652,16 @@ app.post("/api/exam/violation", async (req, res) => {
 app.get("/api/exams/:examId/violations", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   const { examId } = req.params;
   const authUser = req.user || getAuthUser(req);
-  const exam = (getMemoryKeyValue('exams') || exams || []).find((x: any) => String(x.id) === String(examId));
-  if (!exam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan." });
   const role = String(authUser?.role || '').toLowerCase();
-  if (role !== 'bos' && role !== 'superadmin' && !isItemForCurrentMadrasah(exam, req)) return res.status(403).json({ success: false, message: "Ujian bukan milik madrasah Anda." });
-  const list = examViolationLogs[String(examId)] || [];
+  const isBoss = role === 'bos' || role === 'superadmin';
+  const candidates = (getMemoryKeyValue('exams') || exams || []).filter((x: any) => String(x.id) === String(examId));
+  const owned = candidates.filter((x: any) => isItemForCurrentMadrasah(x, req));
+  const exam = owned.length === 1 ? owned[0] : (isBoss && candidates.length === 1 ? candidates[0] : null);
+  if (!exam) {
+    return res.status(candidates.length > 1 ? 409 : 404).json({ success: false, message: candidates.length > 1 ? "ID ujian ambigu lintas tenant." : "Ujian tidak ditemukan." });
+  }
+  const violationKey = resolveExamViolationLogKey(req, examId);
+  const list = examViolationLogs[violationKey] || [];
   res.json({
     success: true,
     examId: String(examId),
@@ -9739,7 +9837,7 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
     const session = activeExamSessions[key] || null;
     const isCompleted = Boolean(completedExams[key]);
     const isForceDone = Boolean(forceFinishedExams[key] || completedExams[key] === 'force_finish');
-    const isBlocked = Boolean(blockedStudents[key]);
+    const isBlocked = isAttemptBlocked(req, sId, eId, key);
     const isOutOfTab = Boolean(studentOutOfTab[key]);
     const tabSwitches = studentTabSwitches[key] || 0;
     const grade = studentExamGrades[key] || null;
@@ -9885,6 +9983,7 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
   blocked = normalizeExamStateMapKeysForRequest(req, blocked);
   gradesObj = normalizeExamStateMapKeysForRequest(req, gradesObj);
   forceFinished = normalizeExamStateMapKeysForRequest(req, forceFinished);
+  messages = normalizeExamMessageMapKeysForRequest(req, messages);
   if (livecamFrame?.key) {
     livecamFrame = { ...livecamFrame, key: normalizeExamStateMutationKey(req, String(livecamFrame.key)) };
   }
@@ -9985,8 +10084,18 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
     broadcastStateUpdate('blockedStudents');
   }
   if (messages) {
-    if (req.body.replaceMessages && isBos) examMessages = messages;
-    else examMessages = { ...examMessages, ...messages };
+    if (req.body.replaceMessages) {
+      if (isBos) {
+        examMessages = messages;
+      } else {
+        const preserved = Object.fromEntries(
+          Object.entries(examMessages || {}).filter(([key]) => !examMessageKeyBelongsToRequest(req, key))
+        );
+        examMessages = { ...preserved, ...messages };
+      }
+    } else {
+      examMessages = { ...examMessages, ...messages };
+    }
     await saveData('examMessages', examMessages);
   }
   if (livecamFrame && livecamFrame.key && livecamFrame.frame) {
