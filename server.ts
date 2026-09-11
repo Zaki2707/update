@@ -2628,6 +2628,10 @@ app.use((req: any, res, next) => {
     const aiLimit = isOnlineMode ? 120 : 1200;
     if (!enforceApiRateLimit(req, res, `ai:${authUser.id}`, aiLimit, 10 * 60 * 1000)) return;
   }
+  if (method === 'POST' && /^\/api\/games\/[^/]+\/submit$/.test(p)) {
+    const gameSubmitLimit = isOnlineMode ? 120 : 600;
+    if (!enforceApiRateLimit(req, res, `game-submit:${authUser.id}`, gameSubmitLimit, 10 * 60 * 1000)) return;
+  }
 
   const contextTenant = canonicalRealtimeTenant(
     getRequestMadrasahId(req) || authUser.madrasahId || (authUser as any).madrasahSlug || 'default'
@@ -4352,9 +4356,15 @@ function normalizeGameText(text: any): string {
 app.post("/api/games/:id/submit", async (req, res) => {
   try {
     const { id } = req.params;
-    const { submittedAnswer, studentId, isPreview, passed } = req.body;
+    const { submittedAnswer, studentId, isPreview, passed } = req.body || {};
     const authUser = (req as any).user || getAuthUser(req);
     if (!authUser) return res.status(401).json({ success: false, message: "Silakan login terlebih dahulu." });
+
+    const submittedText = String(submittedAnswer ?? '');
+    if (Buffer.byteLength(submittedText, 'utf8') > 16 * 1024) {
+      return res.status(413).json({ success: false, message: "Jawaban game terlalu besar." });
+    }
+
     const authRole = String(authUser.role || '').toLowerCase();
     const isStudentRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(authRole);
     const isBossRole = authRole === 'bos' || authRole === 'superadmin';
@@ -4374,7 +4384,8 @@ app.post("/api/games/:id/submit", async (req, res) => {
     if (!isBossRole && game?.madrasahId && !isItemForCurrentMadrasah(game, req)) {
       return res.status(403).json({ success: false, message: "Game bukan milik madrasah Anda." });
     }
-    const normSubmitted = normalizeGameText(submittedAnswer);
+
+    const normSubmitted = normalizeGameText(submittedText);
     let isCorrect = false;
     const completionGameTypes = ["memory_match", "match_pairs", "word_search", "spot_difference", "image_puzzle", "escape_room", "learning_adventure"];
 
@@ -4382,23 +4393,24 @@ app.post("/api/games/:id/submit", async (req, res) => {
       const normCorrectTF = normalizeGameText(game.correctAnswer || "BENAR");
       isCorrect = normSubmitted === normCorrectTF;
     } else if (completionGameTypes.includes(game.gameType)) {
-      isCorrect = passed === true || normSubmitted === "completed" || normSubmitted === "success" || normSubmitted === "passed" || normSubmitted === normalizeGameText(game.answerKey);
+      // Completion games remain client-assisted because their interactive state lives in the browser.
+      // XP replay is constrained below so a forged/repeated completion cannot farm unlimited XP.
+      isCorrect = passed === true || normSubmitted === "completed" || normSubmitted === "success" ||
+        normSubmitted === "passed" || (Boolean(game.answerKey) && normSubmitted === normalizeGameText(game.answerKey));
     } else {
       const normTarget = normalizeGameText(game.answerKey);
       if (normTarget) {
         isCorrect = (normSubmitted === normTarget);
-        // Also check if answer contains target or vice versa for minor variations
         if (!isCorrect && normSubmitted.length > 2 && normTarget.length > 2) {
           if (normSubmitted.includes(normTarget) || normTarget.includes(normSubmitted)) {
             isCorrect = true;
           }
         }
       } else {
-        isCorrect = false; // No authoritative answer key: never award XP by default.
+        isCorrect = false;
       }
     }
 
-    const rewardXp = isCorrect ? (game.rewardXp || 100) : 0;
     const studentResolution = findStudentForRequest(req, effectiveStudentId);
     if (studentResolution.ambiguous) {
       return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant." });
@@ -4408,50 +4420,64 @@ app.post("/api/games/:id/submit", async (req, res) => {
       return res.status(404).json({ success: false, message: "Siswa tidak ditemukan pada tenant yang diizinkan." });
     }
 
-    let newTotalXp = 0;
-    let dailyStreak = 1;
-
-    if (student && !isPreview && isCorrect) {
-      student.gameXp = (student.gameXp || 0) + rewardXp;
-
+    const rewardLockKey = `game-reward::${gameTenantNamespace(req)}::${effectiveStudentId || 'preview'}::${String(id)}`;
+    const rewardResult = await storeMutationQueue.run(rewardLockKey, async () => {
       const todayStr = getJakartaTodayDateStr();
-      if (student.lastGameDate === todayStr) {
-        dailyStreak = student.dailyStreak || 1;
-      } else {
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-        const yStr = yesterday.toISOString().split("T")[0];
-        if (student.lastGameDate === yStr) {
-          dailyStreak = (student.dailyStreak || 1) + 1;
-        } else {
-          dailyStreak = 1;
+      const alreadyRewardedToday = Boolean(student && !isPreview && isCorrect && (gameAttempts || []).some((attempt: any) => {
+        if (!attempt || !isItemForCurrentMadrasah(attempt, req)) return false;
+        if (String(attempt.gameId) !== String(id) || String(attempt.studentId) !== String(effectiveStudentId)) return false;
+        if (!attempt.isCorrect || Number(attempt.earnedXp || 0) <= 0) return false;
+        const attemptDate = String(attempt.rewardDate || attempt.timestamp || '').slice(0, 10);
+        return attemptDate === todayStr;
+      }));
+
+      const configuredReward = Math.max(0, Math.min(10000, Math.floor(Number(game.rewardXp ?? 100) || 0)));
+      const awardedXp = student && !isPreview && isCorrect && !alreadyRewardedToday ? configuredReward : 0;
+      let dailyStreak = student?.dailyStreak || 1;
+
+      if (student && awardedXp > 0) {
+        student.gameXp = Number(student.gameXp || 0) + awardedXp;
+        if (student.lastGameDate !== todayStr) {
+          const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+          const yStr = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Jakarta',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+          }).format(yesterday);
+          dailyStreak = student.lastGameDate === yStr ? Number(student.dailyStreak || 1) + 1 : 1;
+          student.lastGameDate = todayStr;
+          student.dailyStreak = dailyStreak;
         }
-        student.lastGameDate = todayStr;
-        student.dailyStreak = dailyStreak;
+        await saveData("students", students);
       }
 
-      newTotalXp = student.gameXp;
-      await saveData("students", students);
-    }
+      const attemptLog = tagNewRecord({
+        id: "ATTEMPT_" + Date.now() + "_" + crypto.randomBytes(6).toString('hex'),
+        gameId: id,
+        studentId: effectiveStudentId,
+        submittedAnswer: submittedText,
+        isCorrect,
+        earnedXp: awardedXp,
+        rewardDate: todayStr,
+        rewardAlreadyClaimed: alreadyRewardedToday,
+        timestamp: getJakartaIsoString()
+      }, req);
+      gameAttempts.push(attemptLog);
+      await saveData("gameAttempts", gameAttempts);
 
-    const attemptLog = tagNewRecord({
-      id: "ATTEMPT_" + Date.now(),
-      gameId: id,
-      studentId: effectiveStudentId,
-      submittedAnswer,
-      isCorrect,
-      earnedXp: rewardXp,
-      timestamp: getJakartaIsoString()
-    }, req);
-    gameAttempts.push(attemptLog);
-    await saveData("gameAttempts", gameAttempts);
+      return {
+        earnedXp: awardedXp,
+        newTotalXp: Number(student?.gameXp || 0),
+        dailyStreak,
+        rewardAlreadyClaimed: alreadyRewardedToday
+      };
+    });
 
     res.json({
       success: true,
       isCorrect,
-      earnedXp: rewardXp,
-      newTotalXp,
-      dailyStreak
+      ...rewardResult
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err, "Gagal memproses jawaban") });
@@ -4520,6 +4546,13 @@ app.post("/api/game/active-sessions", (req: any, res) => {
     const requested = String(req.body?.studentId || '');
     const studentId = self ? String(authUser?.id || '') : requested;
     const sessionData = req.body?.sessionData;
+    if (sessionData !== null && sessionData !== undefined) {
+      let sessionBytes = Number.MAX_SAFE_INTEGER;
+      try { sessionBytes = Buffer.byteLength(JSON.stringify(sessionData), 'utf8'); } catch (_) {}
+      if (sessionBytes > 64 * 1024) {
+        return res.status(413).json({ success: false, message: "State sesi game terlalu besar." });
+      }
+    }
     if (self && requested && requested !== studentId) return res.status(403).json({ success: false, message: "Siswa hanya dapat memperbarui sesi miliknya." });
     const targetResolution = findStudentForRequest(req, studentId);
     if (targetResolution.ambiguous) return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant." });
@@ -9854,8 +9887,16 @@ app.post("/api/exam/attempt/answer", async (req, res) => {
   const sId = resolveStudentId(req, authUser);
   const { examId, questionId, answer, currentIndex } = req.body;
   if (!sId || !examId || !questionId) return res.status(400).json({ success: false, message: "studentId, examId, and questionId are required" });
-
   const eId = String(examId);
+  const qId = String(questionId);
+  if (eId.length > 256 || qId.length > 256) {
+    return res.status(400).json({ success: false, message: "ID ujian/soal tidak valid." });
+  }
+  let answerBytes = Number.MAX_SAFE_INTEGER;
+  try { answerBytes = Buffer.byteLength(JSON.stringify(answer ?? null), 'utf8'); } catch (_) {}
+  if (answerBytes > 64 * 1024) {
+    return res.status(413).json({ success: false, message: "Jawaban terlalu besar. Maksimal 64 KB per soal." });
+  }
   const key = resolveExamStateKey(req, sId, eId);
   const context = getExamAttemptContext(req, authUser, sId, eId);
   if (rejectExamAttemptContext(res, context)) return;
@@ -9903,6 +9944,9 @@ app.post("/api/exam/student-state", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
+  if (eId.length > 256) return res.status(400).json({ success: false, message: "examId tidak valid." });
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
   const now = Date.now();
 
@@ -9929,6 +9973,9 @@ app.post("/api/exam/student-state", requireAuth, async (req, res) => {
     const frameText = String(livecamFrame);
     if (Buffer.byteLength(frameText, 'utf8') > 2 * 1024 * 1024) {
       return res.status(413).json({ success: false, message: "Frame livecam terlalu besar." });
+    }
+    if (!parseSafeRasterDataUrl(frameText)) {
+      return res.status(400).json({ success: false, message: "Format frame livecam tidak valid." });
     }
     studentLivecamFrames[key] = frameText;
     broadcastStateUpdate('studentLivecamFrames');
@@ -9966,6 +10013,9 @@ app.post("/api/exam/presence", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
+  if (eId.length > 256) return res.status(400).json({ success: false, message: "examId tidak valid." });
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
 
   // Update in-memory state
@@ -9999,10 +10049,20 @@ app.post("/api/exam/livecam/snapshot", requireAuth, async (req, res) => {
   }
 
   const eId = String(examId);
+  if (eId.length > 256) return res.status(400).json({ success: false, message: "examId tidak valid." });
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
+  const frameText = String(livecamFrame);
+  if (Buffer.byteLength(frameText, 'utf8') > 2 * 1024 * 1024) {
+    return res.status(413).json({ success: false, message: "Frame livecam terlalu besar." });
+  }
+  if (!parseSafeRasterDataUrl(frameText)) {
+    return res.status(400).json({ success: false, message: "Format frame livecam tidak valid." });
+  }
 
   // Update in-memory state
-  studentLivecamFrames[key] = String(livecamFrame);
+  studentLivecamFrames[key] = frameText;
   broadcastStateUpdate('studentLivecamFrames');
 
   res.json({ success: true });
@@ -10021,6 +10081,9 @@ app.post("/api/exam/heartbeat", async (req, res) => {
   }
 
   const eId = String(examId);
+  if (eId.length > 256) return res.status(400).json({ success: false, message: "examId tidak valid." });
+  const context = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, context)) return;
   const key = resolveExamStateKey(req, sId, eId);
   const now = Date.now();
 
@@ -10296,27 +10359,26 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
   const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
   const userMadrasahId = getRequestMadrasahId(req);
 
-  const activeExam = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
-  if (!activeExam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan." });
-
-  if (!isBos && activeExam) {
-    const examMId = String(activeExam.madrasahId || 'default').trim();
-    if (examMId !== String(userMadrasahId).trim()) {
-      return res.status(403).json({ success: false, message: "Akses ditolak: Anda tidak memiliki wewenang memantau ujian dari madrasah lain." });
-    }
+  const examSource = getMemoryKeyValue('exams') || exams || [];
+  const resolvedExam = resolveTenantItemIndexById(examSource, eId, req);
+  if (resolvedExam.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant. Pilih tenant target secara eksplisit." });
   }
- 
+  const activeExam = resolvedExam.item;
+  if (!activeExam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan pada tenant yang diizinkan." });
+
+  const examTenant = canonicalRealtimeTenant(activeExam.madrasahId || activeExam.madrasahSlug || 'default');
   let studentList = getMemoryKeyValue('students') || students || [];
-  if (!isBos) {
-    studentList = studentList.filter((s: any) => String(s.madrasahId || 'default').trim() === String(userMadrasahId).trim());
-  }
+  studentList = studentList.filter((student: any) =>
+    canonicalRealtimeTenant(student.madrasahId || student.madrasahSlug || 'default') === examTenant
+  );
 
-  const activeExamInMem = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
- 
   // Filter students by assigned classes if defined on the exam
   let targetStudents = studentList;
-  if (activeExamInMem && activeExamInMem.classes && activeExamInMem.classes.length > 0 && !activeExamInMem.classes.includes('ALL')) {
-    targetStudents = studentList.filter((s: any) => activeExamInMem.classes.includes(String(s.classId || s.className || s.class)));
+  if (activeExam.classes && activeExam.classes.length > 0 && !activeExam.classes.includes('ALL')) {
+    targetStudents = studentList.filter((student: any) =>
+      activeExam.classes.includes(String(student.classId || student.className || student.class))
+    );
   }
  
   const summary = targetStudents.map((st: any) => {
