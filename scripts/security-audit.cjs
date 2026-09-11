@@ -26,6 +26,8 @@ const checks = [
   ['No hardcoded SQL password fallback', !/password:\s*process\.env\.SQL_PASSWORD\s*\|\|/.test(server)],
   ['Settings response strips adminPass', server.includes('function sanitizeSettingsForClient') && server.includes("'adminPass', 'password', 'jwtSecret'") && server.includes('delete safe[key]')],
   ['Public settings strip realtime credentials', server.includes('function sanitizeSettingsForPublic') && server.includes("'turnUrl', 'turnUsername', 'turnCredential'") && server.includes("'livekitUrl', 'livekitApiKey'") && server.includes('authenticatedUser\n    ? sanitizeSettingsForClient(appSettings)\n    : sanitizeSettingsForPublic(appSettings)')],
+  ['Online restored images are Cloudinary authoritative', server.includes('Cloudinary wajib dikonfigurasi pada mode online.') && server.includes('Upload foto ke Cloudinary gagal. Foto tidak dianggap tersimpan.') && server.includes("return value.startsWith('data:image/') ? await saveBase64ToFirestore(value) : value;")],
+  ['Cloudinary local uploads are offline-only', server.includes('// Local files are a real source only in OFFLINE mode. Online never depends on Cloud Run disk.') && server.includes('// In offline mode, orphan local files are also valid candidates for backup.')],
   ['Login response token not logged', !app.includes("console.log('Login response:', data)")],
   ['Student fallback strips answer key', assessment.includes('stripStudentQuestionSecrets') && assessment.includes('delete safe.answer')],
   ['Online request body limit reduced', server.includes("isOnlineMode ? '25mb' : '50mb'")],
