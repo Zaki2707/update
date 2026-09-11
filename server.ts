@@ -6827,14 +6827,18 @@ app.put("/api/users/change-role", requireAuth, requireRole(['admin', 'bos', 'sup
 
 app.delete("/api/students/:id", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  const targetStudent = students.find(s => String(s.id) === String(id));
-  
-  if (!targetStudent) {
-    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan." });
-  }
-
   const authUser = getAuthUser(req);
   const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  const candidates = students.filter((s: any) => String(s.id) === String(id));
+  const targetStudent = candidates.find((s: any) => isItemForCurrentMadrasah(s, req)) ||
+    (isBos && candidates.length === 1 ? candidates[0] : null);
+  
+  if (!targetStudent) {
+    if (isBos && candidates.length > 1) {
+      return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant; pilih tenant target secara eksplisit." });
+    }
+    return res.status(404).json({ success: false, message: "Siswa tidak ditemukan pada madrasah ini." });
+  }
 
   if (!isBos && !isItemForCurrentMadrasah(targetStudent, req)) {
     return res.status(403).json({ success: false, message: "Akses ditolak." });
@@ -6852,7 +6856,10 @@ app.delete("/api/students/:id", requireAuth, requireRole(['admin', 'bos', 'super
 
   // 2. Delete attendance photos from Firestore for this student
   if (db) {
-    const studentAttRecords = (attendance || []).filter(a => String(a.studentId) === String(id) || (targetNis && String(a.nis) === targetNis));
+    const studentAttRecords = (attendance || []).filter((a: any) =>
+      isItemForCurrentMadrasah(a, req) &&
+      (String(a.studentId) === String(id) || (targetNis && String(a.nis) === targetNis))
+    );
     for (const rec of studentAttRecords) {
       if (rec && rec.photo && rec.photo.startsWith('/api/photos/')) {
         const docId = rec.photo.replace('/api/photos/', '');
@@ -6864,18 +6871,20 @@ app.delete("/api/students/:id", requireAuth, requireRole(['admin', 'bos', 'super
   }
 
   // 3. Remove student from students list
-  students = students.filter(s => String(s.id) !== String(id));
+  students = students.filter((s: any) => !(String(s.id) === String(id) && isItemForCurrentMadrasah(s, req)));
   await saveData('students', students);
 
   // 4. Cascade remove attendance records
   if (Array.isArray(attendance)) {
-    attendance = attendance.filter(a => String(a.studentId) !== String(id) && (!targetNis || String(a.nis) !== targetNis));
+    attendance = attendance.filter((a: any) => !isItemForCurrentMadrasah(a, req) ||
+      (String(a.studentId) !== String(id) && (!targetNis || String(a.nis) !== targetNis)));
     await saveData('attendance', attendance);
   }
 
   // 5. Cascade remove grades records
   if (Array.isArray(grades)) {
-    grades = grades.filter(g => String(g.studentId) !== String(id) && (!targetNis || String(g.nis) !== targetNis));
+    grades = grades.filter((g: any) => !isItemForCurrentMadrasah(g, req) ||
+      (String(g.studentId) !== String(id) && (!targetNis || String(g.nis) !== targetNis)));
     await saveData('grades', grades);
   }
 
@@ -6893,11 +6902,9 @@ app.post("/api/students/delete-bulk", requireAuth, requireRole(['admin', 'bos', 
 
   const requestedIds = new Set(ids.map((id: any) => String(id)));
 
-  const targetStudents = students.filter((st: any) => {
-    if (!requestedIds.has(String(st.id))) return false;
-    if (isBos) return true;
-    return isItemForCurrentMadrasah(st, req);
-  });
+  const targetStudents = students.filter((st: any) =>
+    requestedIds.has(String(st.id)) && isItemForCurrentMadrasah(st, req)
+  );
 
   const allowedIdsSet = new Set(targetStudents.map((st: any) => String(st.id)));
   const allowedIdsArr = Array.from(allowedIdsSet);
@@ -6913,7 +6920,10 @@ app.post("/api/students/delete-bulk", requireAuth, requireRole(['admin', 'bos', 
         }
       }
     }
-    const studentAttRecords = (attendance || []).filter(a => allowedIdsSet.has(String(a.studentId)) || (a.nis && targetNisSet.has(String(a.nis))));
+    const studentAttRecords = (attendance || []).filter((a: any) =>
+      isItemForCurrentMadrasah(a, req) &&
+      (allowedIdsSet.has(String(a.studentId)) || (a.nis && targetNisSet.has(String(a.nis))))
+    );
     for (const rec of studentAttRecords) {
       if (rec && rec.photo && rec.photo.startsWith('/api/photos/')) {
         const docId = rec.photo.replace('/api/photos/', '');
@@ -6925,18 +6935,20 @@ app.post("/api/students/delete-bulk", requireAuth, requireRole(['admin', 'bos', 
   }
 
   // 2. Remove students
-  students = students.filter(s => !allowedIdsSet.has(String(s.id)));
+  students = students.filter((s: any) => !isItemForCurrentMadrasah(s, req) || !allowedIdsSet.has(String(s.id)));
   await saveData('students', students);
 
   // 3. Cascade remove attendance
   if (Array.isArray(attendance)) {
-    attendance = attendance.filter(a => !allowedIdsSet.has(String(a.studentId)) && (!a.nis || !targetNisSet.has(String(a.nis))));
+    attendance = attendance.filter((a: any) => !isItemForCurrentMadrasah(a, req) ||
+      (!allowedIdsSet.has(String(a.studentId)) && (!a.nis || !targetNisSet.has(String(a.nis)))));
     await saveData('attendance', attendance);
   }
 
   // 4. Cascade remove grades
   if (Array.isArray(grades)) {
-    grades = grades.filter(g => !allowedIdsSet.has(String(g.studentId)) && (!g.nis || !targetNisSet.has(String(g.nis))));
+    grades = grades.filter((g: any) => !isItemForCurrentMadrasah(g, req) ||
+      (!allowedIdsSet.has(String(g.studentId)) && (!g.nis || !targetNisSet.has(String(g.nis)))));
     await saveData('grades', grades);
   }
 
@@ -9649,8 +9661,13 @@ app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
   } else if (recipientId === 'admin') {
     targetKey = signalingAdminKey(req, user);
   } else {
-    const target = (students || []).find((x: any) => String(x.id) === recipientId && (boss || isItemForCurrentMadrasah(x, req)));
-    if (!target) return res.status(404).json({ success: false, message: "Siswa tujuan tidak ditemukan pada tenant yang diizinkan." });
+    const targetCandidates = (students || []).filter((x: any) => String(x.id) === recipientId);
+    const target = targetCandidates.find((x: any) => isItemForCurrentMadrasah(x, req)) ||
+      (boss && targetCandidates.length === 1 ? targetCandidates[0] : null);
+    if (!target) {
+      const status = boss && targetCandidates.length > 1 ? 409 : 404;
+      return res.status(status).json({ success: false, message: status === 409 ? "ID siswa ambigu lintas tenant; pilih tenant target secara eksplisit." : "Siswa tujuan tidak ditemukan pada tenant yang diizinkan." });
+    }
     if (!boss && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa tujuan bukan milik madrasah Anda." });
     targetKey = signalingStudentKey(req, user, recipientId, target);
   }
@@ -9696,10 +9713,18 @@ app.post("/api/exam/livekit-token", requireAuth, async (req: any, res) => {
     const m = roomName.match(/^room_exam_(.+)$/);
     if (!user || !m) return res.status(400).json({ success: false, message: "roomName ujian tidak valid." });
     const examId = String(m[1]);
-    const exam = (getMemoryKeyValue('exams') || exams || []).find((x: any) => String(x.id) === examId);
-    if (!exam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan." });
     const role = String(user.role || '').toLowerCase(), student = isStudentAuthRole(role), staff = isStaffAuthRole(role), boss = role === 'bos' || role === 'superadmin';
     if (!student && !staff) return res.status(403).json({ success: false, message: "Role LiveKit ditolak." });
+
+    const examCandidates = (getMemoryKeyValue('exams') || exams || []).filter((x: any) => String(x.id) === examId);
+    const exam = examCandidates.find((x: any) => isItemForCurrentMadrasah(x, req)) ||
+      (boss && examCandidates.length === 1 ? examCandidates[0] : null);
+    if (!exam) {
+      if (boss && examCandidates.length > 1) {
+        return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant; pilih tenant target secara eksplisit." });
+      }
+      return res.status(404).json({ success: false, message: "Ujian tidak ditemukan pada tenant yang diizinkan." });
+    }
     if (!boss && !isItemForCurrentMadrasah(exam, req)) return res.status(403).json({ success: false, message: "Ujian bukan milik madrasah Anda." });
     if (student) {
       const context = getExamAttemptContext(req, user, String(user.id), examId);
@@ -15515,9 +15540,10 @@ async function startServer() {
             if (student) { if (recipient !== 'admin') return; targetKey = 'admin::' + tenant; }
             else if (recipient === 'admin') targetKey = 'admin::' + tenant;
             else {
-              const target = (students || []).find((x: any) =>
-                String(x.id) === recipient && (boss || signalingItemTenant(x) === tenant)
-              );
+              const targetCandidates = (students || []).filter((x: any) => String(x.id) === recipient);
+              const target = boss
+                ? (targetCandidates.length === 1 ? targetCandidates[0] : null)
+                : targetCandidates.find((x: any) => signalingItemTenant(x) === tenant);
               if (!target) return;
               const targetTenant = signalingItemTenant(target);
               if (!boss && targetTenant !== tenant) return;
