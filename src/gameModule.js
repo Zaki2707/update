@@ -7,6 +7,35 @@ const appState = window.appState || {};
 const safeSetLocalStorage = window.safeSetLocalStorage || function(k, v) { try { localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)); } catch(e){} };
 const showToast = window.showToast || function(m, t) { console.log(m); };
 
+function gameEscapeHtml(value) {
+    if (window.escapeHtml) return window.escapeHtml(value);
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+}
+
+function gameEscapeAttr(value) {
+    return gameEscapeHtml(value);
+}
+
+function gameEncodedArg(value) {
+    return encodeURIComponent(String(value ?? ''));
+}
+
+function gameSafeImageUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=\r\n]+$/i.test(raw)) return raw;
+    if (/^\/api\/photos\/[A-Za-z0-9._-]+$/.test(raw)) return raw;
+    try {
+        const url = new URL(raw, window.location.origin);
+        if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+        return url.href.replace(/['"()\\]/g, ch => '%' + ch.charCodeAt(0).toString(16).toUpperCase());
+    } catch (_) {
+        return '';
+    }
+}
+
 // --- CONFIRMATION MODAL POPUP HELPER ---
 export function showGameConfirmModal({ title, message, confirmText = 'Ya, Hapus', cancelText = 'Batal', isDanger = true, onConfirm }) {
     const modalHtml = `
@@ -16,15 +45,15 @@ export function showGameConfirmModal({ title, message, confirmText = 'Ya, Hapus'
                     <i class="fa-solid ${isDanger ? 'fa-trash-can' : 'fa-triangle-exclamation'}"></i>
                 </div>
                 <div>
-                    <h3 class="text-lg font-black text-slate-900">${title || 'Konfirmasi Tindakan'}</h3>
-                    <p class="text-xs text-slate-500 mt-1.5 leading-relaxed">${message || 'Apakah Anda yakin ingin melanjutkan tindakan ini? Data yang dihapus tidak dapat dipulihkan.'}</p>
+                    <h3 class="text-lg font-black text-slate-900">${gameEscapeHtml(title || 'Konfirmasi Tindakan')}</h3>
+                    <p class="text-xs text-slate-500 mt-1.5 leading-relaxed">${gameEscapeHtml(message || 'Apakah Anda yakin ingin melanjutkan tindakan ini? Data yang dihapus tidak dapat dipulihkan.')}</p>
                 </div>
                 <div class="grid grid-cols-2 gap-2.5 pt-2">
                     <button type="button" id="game-confirm-cancel-btn" class="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs rounded-xl transition cursor-pointer">
-                        ${cancelText}
+                        ${gameEscapeHtml(cancelText)}
                     </button>
                     <button type="button" id="game-confirm-ok-btn" class="w-full py-2.5 ${isDanger ? 'bg-rose-600 hover:bg-rose-700 text-white' : 'bg-amber-500 hover:bg-amber-600 text-slate-950'} font-extrabold text-xs rounded-xl shadow-md transition cursor-pointer">
-                        ${confirmText}
+                        ${gameEscapeHtml(confirmText)}
                     </button>
                 </div>
             </div>
@@ -656,8 +685,8 @@ export function renderGameAdminModule(container) {
                                         ${g.difficulty || 'Mudah'}
                                     </span>
                                 </div>
-                                <h3 class="font-extrabold text-base text-slate-800 group-hover:text-emerald-700 transition line-clamp-1">${g.title}</h3>
-                                <p class="text-xs text-slate-500 mt-1 line-clamp-2">${g.prompt || 'Selesaikan tantangan untuk mendapatkan XP.'}</p>
+                                <h3 class="font-extrabold text-base text-slate-800 group-hover:text-emerald-700 transition line-clamp-1">${gameEscapeHtml(g.title)}</h3>
+                                <p class="text-xs text-slate-500 mt-1 line-clamp-2">${gameEscapeHtml(g.prompt || 'Selesaikan tantangan untuk mendapatkan XP.')}</p>
                             </div>
 
                             <div class="space-y-3 pt-3 border-t border-slate-100 text-xs">
@@ -967,13 +996,14 @@ export function renderTreasureMapComponent(mode, options = {}) {
     let compassHtml = '';
     let svgBackgroundContent = '';
 
-    if (theme === 'custom' && mode.customMapImage) {
+    if (theme === 'custom' && gameSafeImageUrl(mode.customMapImage)) {
         // --- THEME: CUSTOM UPLOADED IMAGE ---
+        const safeMapImage = gameSafeImageUrl(mode.customMapImage);
         containerBorder = 'border-4 border-slate-700 shadow-2xl';
         trailStroke = '#f59e0b';
         trailShadow = '#0f172a';
         svgBackgroundContent = `
-            <image href="${mode.customMapImage}" x="0" y="0" width="1000" height="650" preserveAspectRatio="xMidYMid slice" />
+            <image href="${gameEscapeAttr(safeMapImage)}" x="0" y="0" width="1000" height="650" preserveAspectRatio="xMidYMid slice" />
             <rect width="1000" height="650" fill="black" opacity="0.15" />
         `;
     } else if (theme === 'galaxy') {
@@ -1271,7 +1301,7 @@ export function renderTreasureMapComponent(mode, options = {}) {
 
                                 <!-- Tooltip / Badge Info Card -->
                                 <div class="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 whitespace-nowrap bg-slate-950/95 text-white p-2.5 rounded-xl text-[11px] shadow-2xl border border-amber-500/40 pointer-events-none transition z-40 text-center">
-                                    <strong class="text-amber-400 block font-extrabold">${loc.name || `Lokasi #${idx + 1}`}</strong>
+                                    <strong class="text-amber-400 block font-extrabold">${gameEscapeHtml(loc.name || `Lokasi #${idx + 1}`)}</strong>
                                     <span class="text-slate-300 text-[10px] block">Game: ${assignedGame.title}</span>
                                     <span class="text-[9px] text-emerald-400 font-bold block mt-0.5">🖱️ Tahan untuk Seret / Klik untuk Atur Game</span>
                                 </div>
@@ -1634,7 +1664,7 @@ window.openManageAdventureRoadmapModal = function(modeId) {
                                                     ${isFirst ? '<span class="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">🚩 Mulai</span>' : ''}
                                                     ${isLast ? '<span class="text-[10px] font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-full">❌ Puncak Harta Karun</span>' : ''}
                                                 </div>
-                                                <h5 class="font-extrabold text-slate-800 text-sm mt-0.5">${loc.name || `Lokasi ${idx + 1}`}</h5>
+                                                <h5 class="font-extrabold text-slate-800 text-sm mt-0.5">${gameEscapeHtml(loc.name || `Lokasi ${idx + 1}`)}</h5>
                                                 <p class="text-xs text-slate-500">Game: <strong class="text-indigo-700 font-bold">${assignedGame.title}</strong> (X: ${loc.x}%, Y: ${loc.y}%)</p>
                                             </div>
                                         </div>
@@ -1694,8 +1724,8 @@ window.setAdventureMapTheme = async function(modeId, theme) {
 window.handleUploadCustomMapImage = function(modeId, inputElement) {
     if (!inputElement || !inputElement.files || !inputElement.files[0]) return;
     const file = inputElement.files[0];
-    if (!file.type.startsWith('image/')) {
-        showToast("Harap pilih file gambar (JPG, PNG, WebP).", "error");
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(String(file.type || '').toLowerCase())) {
+        showToast("Harap pilih file gambar JPG, PNG, atau WebP.", "error");
         return;
     }
 
@@ -1798,7 +1828,7 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
 
     // Keep deep copy in temp editing state
     window._tempEditingGame = JSON.parse(JSON.stringify(game));
-    window._customIconBase64 = loc.icon && (loc.icon.startsWith('data:') || loc.icon.startsWith('http')) ? loc.icon : '';
+    window._customIconBase64 = gameSafeImageUrl(loc.icon);
 
     const isCustomIcon = !!window._customIconBase64;
     const presetIconOptions = [
@@ -1850,7 +1880,7 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
 
                         <div>
                             <label class="block font-bold text-slate-800 mb-1">Nama Titik Lokasi <span class="text-rose-500">*</span></label>
-                            <input type="text" id="loc-name" value="${loc.name}" required placeholder="Contoh: Hutan Kosakata TIK" oninput="if(document.getElementById('game-title')){document.getElementById('game-title').value = 'Game ' + this.value}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 font-bold">
+                            <input type="text" id="loc-name" value="${gameEscapeAttr(loc.name)}" required placeholder="Contoh: Hutan Kosakata TIK" oninput="if(document.getElementById('game-title')){document.getElementById('game-title').value = 'Game ' + this.value}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 font-bold">
                         </div>
 
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1863,7 +1893,7 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
                             </div>
                             <div class="flex items-center gap-2 pt-5">
                                 <div id="custom-icon-preview-container" class="${isCustomIcon ? '' : 'hidden'} shrink-0">
-                                    ${isCustomIcon ? `<img src="${window._customIconBase64}" class="w-10 h-10 rounded-xl border border-amber-300 object-cover shadow-sm" />` : ''}
+                                    ${isCustomIcon ? `<img src="${gameEscapeAttr(window._customIconBase64)}" class="w-10 h-10 rounded-xl border border-amber-300 object-cover shadow-sm" />` : ''}
                                 </div>
                                 <div id="custom-icon-upload-div" class="${isCustomIcon ? '' : 'hidden'} flex-1">
                                     <input type="file" id="custom-icon-file" accept="image/*" onchange="window.uploadCustomIconImage(this)" class="w-full text-[10px] text-slate-500 file:mr-2 file:py-1 file:px-2.5 file:rounded-xl file:border-0 file:text-[10px] file:font-bold file:bg-amber-100 file:text-amber-700 hover:file:bg-amber-200 cursor-pointer" />
@@ -1903,7 +1933,7 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
 
                         <div>
                             <label class="block font-bold text-slate-800 mb-1">Deskripsi / Petunjuk Penjelajah</label>
-                            <textarea id="loc-desc" rows="2" placeholder="Petunjuk khusus atau pesan rintangan bagi siswa ketika mengklik lokasi ini..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white">${loc.desc || ''}</textarea>
+                            <textarea id="loc-desc" rows="2" placeholder="Petunjuk khusus atau pesan rintangan bagi siswa ketika mengklik lokasi ini..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white">${gameEscapeHtml(loc.desc || '')}</textarea>
                         </div>
                     </div>
 
@@ -1952,13 +1982,25 @@ window.handleLocIconChange = function(val) {
 window.uploadCustomIconImage = function(input) {
     if (input.files && input.files[0]) {
         const file = input.files[0];
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(String(file.type || '').toLowerCase())) {
+            showToast('Ikon harus JPG, PNG, atau WebP.', 'error');
+            input.value = '';
+            return;
+        }
         const reader = new FileReader();
         reader.onload = function(e) {
             const base64 = e.target.result;
             window._customIconBase64 = base64;
             const previewDiv = document.getElementById('custom-icon-preview-container');
             if (previewDiv) {
-                previewDiv.innerHTML = `<img src="${base64}" class="w-10 h-10 rounded-xl border border-amber-300 object-cover shadow-sm animate-pulse" />`;
+                const safe = gameSafeImageUrl(base64);
+                previewDiv.replaceChildren();
+                if (safe) {
+                    const img = document.createElement('img');
+                    img.src = safe;
+                    img.className = 'w-10 h-10 rounded-xl border border-amber-300 object-cover shadow-sm animate-pulse';
+                    previewDiv.appendChild(img);
+                }
             }
         };
         reader.readAsDataURL(file);
@@ -1989,7 +2031,7 @@ window.renderLocGameFields = function() {
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                     <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Judul Game <span class="text-rose-500">*</span></label>
-                    <input type="text" id="game-title" value="${game.title || ''}" required placeholder="Contoh: Game Tebak Hardware" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:bg-white text-xs">
+                    <input type="text" id="game-title" value="${gameEscapeAttr(game.title || '')}" required placeholder="Contoh: Game Tebak Hardware" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:bg-white text-xs">
                 </div>
                 <div>
                     <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Jenis Game <span class="text-rose-500">*</span></label>
@@ -2020,7 +2062,7 @@ window.renderLocGameFields = function() {
 
             <div>
                 <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Instruksi / Soal Utama Game <span class="text-rose-500">*</span></label>
-                <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:bg-white text-xs">${game.prompt || ''}</textarea>
+                <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:bg-white text-xs">${gameEscapeHtml(game.prompt || '')}</textarea>
             </div>
 
             <!-- Dynamic Question Content Area -->
@@ -2516,7 +2558,7 @@ window.openAddFloorModal = function(modeId, floorIndex = null) {
                         <label class="block font-bold text-white mb-1">Pilih Game Edukasi Terhubung <span class="text-rose-500">*</span></label>
                         <select id="flr-game" class="w-full px-3 py-2.5 bg-slate-800 border border-slate-700 rounded-xl focus:bg-slate-950 font-bold text-white">
                             ${games.map(g => `
-                                <option value="${g.id}" ${flr.gameId === g.id ? 'selected' : ''}>[${g.gameType}] ${g.title}</option>
+                                <option value="${g.id}" ${flr.gameId === g.id ? 'selected' : ''}>[${g.gameType}] ${gameEscapeHtml(g.title)}</option>
                             `).join('')}
                         </select>
                     </div>
@@ -2725,7 +2767,7 @@ window.toggleGameStatus = async function(gameId) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(game)
         });
-        showToast(`Status game ${game.title} diubah menjadi ${game.status === 'active' ? 'Aktif' : 'Nonaktif'}.`, 'success');
+        showToast(`Status game ${gameEscapeHtml(game.title)} diubah menjadi ${game.status === 'active' ? 'Aktif' : 'Nonaktif'}.`, 'success');
         renderGameAdminModule(document.getElementById('view-container'));
     } catch (err) {
         showToast("Gagal memperbarui status game", "error");
@@ -2823,7 +2865,7 @@ window.openGameMetadataModal = function(existingGame = null) {
 
                     <div class="space-y-1">
                         <label class="block font-bold text-slate-700 uppercase">Judul Permainan <span class="text-rose-500">*</span></label>
-                        <input type="text" id="edit-game-title" required value="${g.title || ''}" placeholder="Contoh: Teka-Teki Silang Komputer Dasar" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                        <input type="text" id="edit-game-title" required value="${gameEscapeAttr(g.title || '')}" placeholder="Contoh: Teka-Teki Silang Komputer Dasar" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -3043,7 +3085,7 @@ window.openGameContentEditorModal = function(gameId) {
                                 </span>
                                 <span class="text-xs text-slate-400 font-semibold">${game.subjectId || 'Umum'} • ${game.classId || 'Semua Kelas'}</span>
                             </div>
-                            <h3 class="font-extrabold text-base text-white mt-0.5">${game.title}</h3>
+                            <h3 class="font-extrabold text-base text-white mt-0.5">${gameEscapeHtml(game.title)}</h3>
                         </div>
                     </div>
                     <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="text-slate-400 hover:text-white p-2 text-lg">
@@ -3066,7 +3108,7 @@ window.openGameContentEditorModal = function(gameId) {
                     <!-- Common Prompt Field -->
                     <div class="space-y-1">
                         <label class="block font-bold text-slate-700 uppercase">Instruksi / Soal Utama Game <span class="text-rose-500">*</span></label>
-                        <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">${game.prompt || ''}</textarea>
+                        <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">${gameEscapeHtml(game.prompt || '')}</textarea>
                     </div>
 
                     <!-- Dynamic Editor Content Container -->
@@ -3328,9 +3370,9 @@ function renderSpecializedGameEditor(game) {
                                 <i class="fa-solid fa-trash-can mr-1"></i> Hapus Gambar
                             </button>
                         </div>
-                        <input type="hidden" id="edit-content-image" value="${game.imageUrl || ''}">
+                        <input type="hidden" id="edit-content-image" value="${gameEscapeAttr(gameSafeImageUrl(game.imageUrl))}">
                         <div class="mt-2">
-                            <img id="tg-img-preview" src="${game.imageUrl || ''}" class="${game.imageUrl ? 'w-48 h-36 object-cover rounded-2xl border-2 border-blue-300 shadow-md' : 'hidden'}">
+                            <img id="tg-img-preview" src="${gameEscapeAttr(gameSafeImageUrl(game.imageUrl))}" class="${game.imageUrl ? 'w-48 h-36 object-cover rounded-2xl border-2 border-blue-300 shadow-md' : 'hidden'}">
                         </div>
                     </div>
 
@@ -3422,8 +3464,8 @@ function renderSpecializedGameEditor(game) {
                             Hapus
                         </button>
                     </div>
-                    <input type="hidden" id="edit-content-image" value="${game.imageUrl || ''}">
-                    <img id="gen-img-preview" src="${game.imageUrl || ''}" class="${game.imageUrl ? 'w-32 h-24 object-cover rounded-xl border border-emerald-300 mt-1' : 'hidden'}">
+                    <input type="hidden" id="edit-content-image" value="${gameEscapeAttr(gameSafeImageUrl(game.imageUrl))}">
+                    <img id="gen-img-preview" src="${gameEscapeAttr(gameSafeImageUrl(game.imageUrl))}" class="${game.imageUrl ? 'w-32 h-24 object-cover rounded-xl border border-emerald-300 mt-1' : 'hidden'}">
                 </div>
 
                 <div class="space-y-1 sm:col-span-2">
@@ -3831,8 +3873,8 @@ function renderStudentKatalogTab(games) {
                                 ${isDone ? '<span class="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-black uppercase">🏆 Quest Selesai</span>' : '<span class="px-2.5 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold uppercase">Belum Selesai</span>'}
                             </div>
 
-                            <h3 class="font-extrabold text-lg text-slate-850 group-hover:text-indigo-600 transition leading-snug">${g.title}</h3>
-                            <p class="text-xs text-slate-500 line-clamp-2">${g.prompt || 'Selesaikan permainan ini untuk menguji pengetahuanmu.'}</p>
+                            <h3 class="font-extrabold text-lg text-slate-850 group-hover:text-indigo-600 transition leading-snug">${gameEscapeHtml(g.title)}</h3>
+                            <p class="text-xs text-slate-500 line-clamp-2">${gameEscapeHtml(g.prompt || 'Selesaikan permainan ini untuk menguji pengetahuanmu.')}</p>
                         </div>
 
                         <div class="pt-4 border-t border-slate-100 flex items-center justify-between">
@@ -4209,7 +4251,7 @@ window.launchInteractiveGameModal = function(gameId, isPreview = false, modeOpti
                             <i class="fa-solid fa-gamepad"></i>
                         </div>
                         <div>
-                            <h3 class="font-extrabold text-sm sm:text-base leading-snug line-clamp-1">${game.title}</h3>
+                            <h3 class="font-extrabold text-sm sm:text-base leading-snug line-clamp-1">${gameEscapeHtml(game.title)}</h3>
                             <span class="text-[10px] text-amber-400 font-bold uppercase tracking-wider mr-2">+${game.rewardXp || 100} XP</span>
                         </div>
                     </div>
@@ -4284,8 +4326,8 @@ function renderGameEngineUI(game) {
                     <span class="text-[10px] font-extrabold text-emerald-800 uppercase tracking-wider bg-emerald-200/70 px-3 py-1 rounded-full inline-block">
                         <i class="fa-solid fa-lightbulb mr-1"></i> Soal Tantangan
                     </span>
-                    <p class="text-sm font-extrabold text-slate-800 leading-relaxed">${game.prompt || 'Selesaikan kata yang tepat.'}</p>
-                    ${game.imageUrl ? `<img src="${game.imageUrl}" class="w-52 h-36 object-cover rounded-2xl border-2 border-emerald-300 mx-auto mt-3 shadow-sm">` : ''}
+                    <p class="text-sm font-extrabold text-slate-800 leading-relaxed">${gameEscapeHtml(game.prompt || 'Selesaikan kata yang tepat.')}</p>
+                    ${gameSafeImageUrl(game.imageUrl) ? `<img src="${gameEscapeAttr(gameSafeImageUrl(game.imageUrl))}" class="w-52 h-36 object-cover rounded-2xl border-2 border-emerald-300 mx-auto mt-3 shadow-sm">` : ''}
                     
                     ${game.hints && game.hints.length > 0 ? `
                         <div class="pt-2">
@@ -4293,7 +4335,7 @@ function renderGameEngineUI(game) {
                                 <i class="fa-solid fa-key text-amber-500"></i> Lihat Clue / Petunjuk
                             </button>
                             <div id="hint-box-display" class="hidden mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 font-semibold text-center">
-                                ${game.hints.join(' • ')}
+                                ${game.hints.map(h => gameEscapeHtml(h)).join(' • ')}
                             </div>
                         </div>
                     ` : ''}
@@ -4363,7 +4405,7 @@ function renderGameEngineUI(game) {
                     <span class="text-[10px] font-extrabold text-violet-800 uppercase tracking-wider bg-violet-200/60 px-3 py-1 rounded-full inline-block">
                         🔀 Susun Huruf
                     </span>
-                    <p class="text-sm font-extrabold text-slate-800">${game.prompt || 'Susun huruf-huruf di bawah ini menjadi kata yang benar!'}</p>
+                    <p class="text-sm font-extrabold text-slate-800">${gameEscapeHtml(game.prompt || 'Susun huruf-huruf di bawah ini menjadi kata yang benar!')}</p>
                 </div>
 
                 <!-- Answer Slots -->
@@ -4399,7 +4441,7 @@ function renderGameEngineUI(game) {
                     <span class="text-xs font-extrabold text-sky-800 uppercase tracking-wider bg-sky-100 px-3 py-1 rounded-full">
                         🎯 Pernyataan Evaluasi
                     </span>
-                    <p class="text-base font-extrabold text-slate-800 leading-relaxed">${game.prompt}</p>
+                    <p class="text-base font-extrabold text-slate-800 leading-relaxed">${gameEscapeHtml(game.prompt)}</p>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
@@ -4448,8 +4490,8 @@ function renderGameEngineUI(game) {
                     <span class="text-xs font-extrabold text-emerald-800 uppercase tracking-wider bg-emerald-200/60 px-3 py-1 rounded-full">
                         🧩 Soal Permainan
                     </span>
-                    <p class="text-sm font-extrabold text-slate-800">${game.prompt || 'Selesaikan permainan ini!'}</p>
-                    ${game.imageUrl ? `<img src="${game.imageUrl}" class="w-48 h-32 object-cover rounded-xl border border-slate-200 mx-auto mt-2">` : ''}
+                    <p class="text-sm font-extrabold text-slate-800">${gameEscapeHtml(game.prompt || 'Selesaikan permainan ini!')}</p>
+                    ${gameSafeImageUrl(game.imageUrl) ? `<img src="${gameEscapeAttr(gameSafeImageUrl(game.imageUrl))}" class="w-48 h-32 object-cover rounded-xl border border-slate-200 mx-auto mt-2">` : ''}
                 </div>
 
                 <div class="space-y-3">
@@ -5358,7 +5400,7 @@ window.renderTebakGambarLayout = function() {
                     <span class="text-[10px] uppercase tracking-wider font-extrabold bg-white/20 px-2.5 py-0.5 rounded-full inline-block mb-1">
                         🖼️ Tebak Gambar Progresif
                     </span>
-                    <h3 class="text-sm font-black">${game.title || 'Tebak Gambar'}</h3>
+                    <h3 class="text-sm font-black">${gameEscapeHtml(game.title || 'Tebak Gambar')}</h3>
                 </div>
                 <div class="text-right">
                     <span class="text-[10px] text-emerald-100 font-bold block">Potensi Nilai/XP</span>
@@ -5371,7 +5413,7 @@ window.renderTebakGambarLayout = function() {
             <!-- Image with 4 Quadrant Cover Overlays -->
             <div class="relative w-full aspect-square max-w-[300px] mx-auto rounded-3xl overflow-hidden border-4 border-slate-800 shadow-xl bg-slate-900">
                 ${game.imageUrl ? `
-                    <img src="${game.imageUrl}" class="w-full h-full object-cover">
+                    <img src="${gameEscapeAttr(gameSafeImageUrl(game.imageUrl))}" class="w-full h-full object-cover">
                 ` : `
                     <div class="w-full h-full flex items-center justify-center text-slate-500 font-bold text-xs p-4 text-center">
                         (Gambar tidak tersedia)
@@ -5929,8 +5971,8 @@ window.renderMemoryMatchLayout = function() {
                     <span class="text-[10px] uppercase font-black bg-white/20 px-2.5 py-0.5 rounded-full tracking-wider inline-block mb-1">
                         🧠 Memory Match (Kartu Memori)
                     </span>
-                    <h3 class="text-sm font-black text-amber-200">${game.title || 'Cocokkan Kartu Memori'}</h3>
-                    <p class="text-xs text-pink-100 font-medium mt-0.5">${game.prompt || 'Balikkan 2 kartu untuk menemukan pasangan istilah dan definisi!'}</p>
+                    <h3 class="text-sm font-black text-amber-200">${gameEscapeHtml(game.title || 'Cocokkan Kartu Memori')}</h3>
+                    <p class="text-xs text-pink-100 font-medium mt-0.5">${gameEscapeHtml(game.prompt || 'Balikkan 2 kartu untuk menemukan pasangan istilah dan definisi!')}</p>
                 </div>
                 <div class="text-right space-y-1">
                     <span class="text-[10px] text-pink-200 font-bold block uppercase">Pasangan</span>
@@ -6057,7 +6099,7 @@ window.renderImagePuzzleEngineUI = function(game) {
     const container = document.getElementById('game-session-body');
     if (!container) return;
 
-    const imageUrl = game.imageUrl || 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=800&q=80';
+    const imageUrl = gameSafeImageUrl(game.imageUrl) || 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=800&q=80';
 
     // Shuffle 9 tiles (0..8)
     let board = [0, 1, 2, 3, 4, 5, 6, 7, 8].sort(() => Math.random() - 0.5);
@@ -6100,18 +6142,18 @@ window.renderImagePuzzleLayout = function() {
                             Langkah: ${moves}x
                         </span>
                     </div>
-                    <h3 class="text-sm font-black text-white">${game.title || 'Susun Gambar Utuh'}</h3>
+                    <h3 class="text-sm font-black text-white">${gameEscapeHtml(game.title || 'Susun Gambar Utuh')}</h3>
                     <p class="text-[11px] text-slate-300 font-medium leading-tight">
-                        ${game.prompt || 'Klik 1 bagian gambar lalu klik bagian lain untuk bertukar posisi!'}
+                        ${gameEscapeHtml(game.prompt || 'Klik 1 bagian gambar lalu klik bagian lain untuk bertukar posisi!')}
                     </p>
                 </div>
 
                 <!-- Acuan Gambar Utuh Kecil di Pojok Atas -->
-                <div class="flex flex-col items-center shrink-0 bg-slate-950/80 p-2 rounded-2xl border border-lime-400/50 shadow-inner group cursor-pointer" onclick="showReferenceImageModal('${imageUrl}')" title="Klik untuk memperbesar acuan gambar">
+                <div class="flex flex-col items-center shrink-0 bg-slate-950/80 p-2 rounded-2xl border border-lime-400/50 shadow-inner group cursor-pointer" onclick="showReferenceImageModal(decodeURIComponent('${gameEncodedArg(imageUrl)}'))" title="Klik untuk memperbesar acuan gambar">
                     <span class="text-[8px] font-extrabold text-lime-300 uppercase tracking-widest mb-1 block">
                         🔍 Acuan Gambar
                     </span>
-                    <img src="${imageUrl}" class="w-14 h-14 object-cover rounded-xl border border-lime-400 shadow-sm group-hover:scale-105 transition-transform">
+                    <img src="${gameEscapeAttr(imageUrl)}" class="w-14 h-14 object-cover rounded-xl border border-lime-400 shadow-sm group-hover:scale-105 transition-transform">
                 </div>
             </div>
 
@@ -6123,7 +6165,7 @@ window.renderImagePuzzleLayout = function() {
                         ? '<span class="text-amber-700 font-black">Bagian dipilih! Klik bagian lain untuk menukarnya.</span>' 
                         : 'Klik salah satu bagian gambar untuk mulai menukar.'}
                 </span>
-                <button type="button" onclick="showReferenceImageModal('${imageUrl}')" class="text-[10px] bg-lime-600 hover:bg-lime-700 text-white px-2.5 py-1 rounded-lg font-black transition cursor-pointer">
+                <button type="button" onclick="showReferenceImageModal(decodeURIComponent('${gameEncodedArg(imageUrl)}'))" class="text-[10px] bg-lime-600 hover:bg-lime-700 text-white px-2.5 py-1 rounded-lg font-black transition cursor-pointer">
                     Lihat Acuan
                 </button>
             </div>
@@ -6148,7 +6190,7 @@ window.renderImagePuzzleLayout = function() {
                         }
 
                         return `
-                            <button type="button" onclick="handleImagePuzzleTileClick(${slotIdx})" class="aspect-square w-full rounded-2xl relative overflow-hidden transition-all duration-200 border-2 ${borderStyle} cursor-pointer active:scale-95 group shadow-md" style="background-image: url('${imageUrl}'); background-size: 300% 300%; background-position: ${bgX}% ${bgY}%;">
+                            <button type="button" onclick="handleImagePuzzleTileClick(${slotIdx})" class="aspect-square w-full rounded-2xl relative overflow-hidden transition-all duration-200 border-2 ${borderStyle} cursor-pointer active:scale-95 group shadow-md" style="background-image: url('${gameEscapeAttr(imageUrl)}'); background-size: 300% 300%; background-position: ${bgX}% ${bgY}%;">
                                 ${isSelected ? `
                                     <span class="absolute inset-0 bg-amber-500/20 flex items-center justify-center">
                                         <span class="bg-amber-400 text-slate-950 text-[9px] font-black px-2 py-0.5 rounded-full shadow-md uppercase tracking-wider">
@@ -6806,7 +6848,7 @@ window.renderGameMonitoringDashboard = async function() {
                     <i class="fa-solid fa-gamepad text-emerald-400 text-xs"></i>
                     <select onchange="appState.gameMonitoringGameId = this.value; renderGameMonitoringDashboard();" class="bg-transparent text-xs font-bold text-slate-200 focus:outline-none cursor-pointer">
                         <option value="all" class="bg-slate-900 text-white">🎮 Semua Game</option>
-                        ${games.map(g => `<option value="${g.id}" ${String(appState.gameMonitoringGameId) === String(g.id) ? 'selected' : ''} class="bg-slate-900 text-white">${g.title}</option>`).join('')}
+                        ${games.map(g => `<option value="${g.id}" ${String(appState.gameMonitoringGameId) === String(g.id) ? 'selected' : ''} class="bg-slate-900 text-white">${gameEscapeHtml(g.title)}</option>`).join('')}
                     </select>
                 </div>
 
@@ -6898,9 +6940,9 @@ window.renderGameMonitoringDashboard = async function() {
                                     ` : `
                                         <div class="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-900">
                                             <div class="w-14 h-14 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center text-slate-300 text-xl font-black uppercase mb-2 shadow">
-                                                ${st.name ? st.name.charAt(0) : '?'}
+                                                ${gameEscapeHtml(st.name ? st.name.charAt(0) : '?')}
                                             </div>
-                                            <span class="text-xs text-slate-300 font-bold">${st.name}</span>
+                                            <span class="text-xs text-slate-300 font-bold">${gameEscapeHtml(st.name)}</span>
                                             <span class="text-[10px] text-slate-500 mt-1 bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700">Foto Absensi Siswa</span>
                                         </div>
                                     `}
@@ -6914,8 +6956,8 @@ window.renderGameMonitoringDashboard = async function() {
                                 <!-- Top Bar: Student Name, NIS, & Online Badges -->
                                 <div class="flex justify-between items-start gap-2">
                                     <div class="bg-slate-950/90 backdrop-blur-md px-3 py-1.5 rounded-2xl border border-white/10 shadow-md max-w-[65%]">
-                                        <span class="text-xs text-white font-black block truncate" title="${st.name}">${st.name}</span>
-                                        <span class="text-[10px] text-slate-400 font-mono block truncate">${st.className || 'Kelas'} &middot; NIS: ${st.nis || '-'}</span>
+                                        <span class="text-xs text-white font-black block truncate" title="${gameEscapeHtml(st.name)}">${gameEscapeHtml(st.name)}</span>
+                                        <span class="text-[10px] text-slate-400 font-mono block truncate">${gameEscapeHtml(st.className || 'Kelas')} &middot; NIS: ${gameEscapeHtml(st.nis || '-')}</span>
                                     </div>
 
                                     <!-- Status Badges -->
@@ -6972,7 +7014,7 @@ window.renderGameMonitoringDashboard = async function() {
                                     <!-- Action Buttons -->
                                     <div class="flex gap-1.5 pt-0.5">
                                         <!-- Send Message Button -->
-                                        <button type="button" title="Kirim Pesan Langsung ke Siswa" onclick="event.stopPropagation(); openSendGameStudentMessageModal('${st.id}', '${st.name.replace(/'/g, "\\'")}')" class="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow flex items-center justify-center cursor-pointer transition">
+                                        <button type="button" title="Kirim Pesan Langsung ke Siswa" onclick="event.stopPropagation(); openSendGameStudentMessageModal(decodeURIComponent('${gameEncodedArg(st.id)}'), decodeURIComponent('${gameEncodedArg(st.name)}'))" class="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow flex items-center justify-center cursor-pointer transition">
                                             <i class="fa-solid fa-comment-dots"></i>
                                         </button>
 
@@ -6982,7 +7024,7 @@ window.renderGameMonitoringDashboard = async function() {
                                         </button>
 
                                         <!-- Reset / Kesempatan Ulang Game -->
-                                        <button type="button" title="Reset Sesi Game Siswa" onclick="event.stopPropagation(); confirmResetStudentGameSession('${st.id}', '${st.name.replace(/'/g, "\\'")}')" class="flex-1 py-1.5 bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white rounded-xl text-xs font-bold border border-slate-700 shadow flex items-center justify-center cursor-pointer transition">
+                                        <button type="button" title="Reset Sesi Game Siswa" onclick="event.stopPropagation(); confirmResetStudentGameSession(decodeURIComponent('${gameEncodedArg(st.id)}'), decodeURIComponent('${gameEncodedArg(st.name)}'))" class="flex-1 py-1.5 bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white rounded-xl text-xs font-bold border border-slate-700 shadow flex items-center justify-center cursor-pointer transition">
                                             <i class="fa-solid fa-rotate-left"></i>
                                         </button>
                                     </div>
@@ -7198,8 +7240,8 @@ function _executeFocusGameStudentLivecam(studentId) {
                             👤
                         </div>
                         <div>
-                            <h4 class="font-black text-sm text-white">${st.name}</h4>
-                            <p class="text-xs text-slate-400 font-mono">${st.className || 'Kelas'} &middot; NIS: ${st.nis || '-'}</p>
+                            <h4 class="font-black text-sm text-white">${gameEscapeHtml(st.name)}</h4>
+                            <p class="text-xs text-slate-400 font-mono">${gameEscapeHtml(st.className || 'Kelas')} &middot; NIS: ${gameEscapeHtml(st.nis || '-')}</p>
                         </div>
                     </div>
                     <button type="button" onclick="document.getElementById('focus-game-livecam-modal').remove()" class="text-slate-400 hover:text-white p-2 text-lg">
@@ -7232,7 +7274,7 @@ function _executeFocusGameStudentLivecam(studentId) {
                 </div>
 
                 <div class="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-end gap-2">
-                    <button type="button" onclick="openSendGameStudentMessageModal('${st.id}', '${st.name.replace(/'/g, "\\'")}')" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl shadow transition cursor-pointer flex items-center gap-1.5">
+                    <button type="button" onclick="openSendGameStudentMessageModal(decodeURIComponent('${gameEncodedArg(st.id)}'), decodeURIComponent('${gameEncodedArg(st.name)}'))" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl shadow transition cursor-pointer flex items-center gap-1.5">
                         <i class="fa-solid fa-comment-dots text-xs"></i>
                         <span>Kirim Pesan</span>
                     </button>
