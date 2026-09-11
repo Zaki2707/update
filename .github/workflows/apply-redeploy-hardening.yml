@@ -56,8 +56,12 @@ jobs:
             const newDelta = `  assert.match(server, /queueDelta\\('activeExamSessions', legacyKey, null\\)/);\n  assert.match(server, /await saveDeltaBatchDb\\(deltaWrites\\)/);`;
             const badMonitorRegex = `  assert.match(server, /Guru hanya dapat memonitor ujian mata pelajaran/bank soal yang diampu/);`;
             const goodMonitorAssertion = `  assert.equal(server.includes('Guru hanya dapat memonitor ujian mata pelajaran/bank soal yang diampu'), true);`;
-            if (!s.includes(oldDelta) || !s.includes(badMonitorRegex)) throw new Error('Legacy regression assertion anchor missing');
-            s = s.replace(oldDelta, newDelta).replace(badMonitorRegex, goodMonitorAssertion);
+            const badLkpdRegex = `  assert.match(lkpdModule, /fetch('/api/lkpds')/);`;
+            const goodLkpdAssertion = `  assert.equal(lkpdModule.includes("fetch('/api/lkpds')"), true);`;
+            if (!s.includes(oldDelta) || !s.includes(badMonitorRegex) || !s.includes(badLkpdRegex)) throw new Error('Legacy regression assertion anchor missing');
+            s = s.replace(oldDelta, newDelta)
+                 .replace(badMonitorRegex, goodMonitorAssertion)
+                 .replace(badLkpdRegex, goodLkpdAssertion);
             fs.writeFileSync(p, s);
           }
           NODE
@@ -99,15 +103,35 @@ jobs:
           retention-days: 1
 
       - name: TypeScript check
-        run: npm run lint
-
-      - name: Production build
+        id: typescript_check
         shell: bash
         run: |
+          set -o pipefail
+          npm run lint 2>&1 | tee typescript-check.log
+
+      - name: Upload TypeScript diagnostics
+        if: failure() && steps.typescript_check.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: redeploy-hardening-typescript
+          path: typescript-check.log
+          retention-days: 1
+
+      - name: Production build
+        id: production_build
+        shell: bash
+        run: |
+          set -o pipefail
           rm -rf dist
-          npm run build
-          test -f dist/server.cjs
-          git diff --check
+          (npm run build && test -f dist/server.cjs && git diff --check) 2>&1 | tee production-build.log
+
+      - name: Upload production build diagnostics
+        if: failure() && steps.production_build.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: redeploy-hardening-build
+          path: production-build.log
+          retention-days: 1
 
       - name: Commit hardened source and remove runner
         shell: bash
