@@ -9,6 +9,35 @@
 // ============================================================================
 const DEFAULT_SEED_LKPDS = [];
 
+function lkpdEscapeHtml(value) {
+    if (window.escapeHtml) return window.escapeHtml(value);
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+}
+
+function lkpdEscapeAttr(value) {
+    return lkpdEscapeHtml(value);
+}
+
+function lkpdEncodedArg(value) {
+    return encodeURIComponent(String(value ?? ''));
+}
+
+function lkpdSafeImageSrc(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (window.isSafeDisplayImageUrl && window.isSafeDisplayImageUrl(raw)) return raw;
+    if (/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=\r\n]+$/i.test(raw)) return raw;
+    if (/^\/api\/photos\/[A-Za-z0-9._-]+$/.test(raw)) return raw;
+    try {
+        const url = new URL(raw, window.location.origin);
+        return (url.protocol === 'https:' || url.protocol === 'http:') ? raw : '';
+    } catch (_) {
+        return '';
+    }
+}
+
 window.getLkpdStorageKey = function() {
     const appState = window.appState || {};
     const activeMId = (appState.currentUser && (appState.currentUser.madrasahId || appState.currentUser.madrasahSlug)) || window.__activeTenant?.id || window.__activeTenant?.slug || 'default';
@@ -413,7 +442,7 @@ function renderLkpdCanvasComponent(lkpd, options = {}) {
                             <div style="left: ${mk.x}%; top: ${mk.y}%; transform: translate(-50%, -50%);" class="absolute group z-30" onclick="event.stopPropagation();">
                                 <button type="button" onclick="${clickAction}" id="pin-btn-${mk.id}" data-number="${number}" class="relative flex flex-col items-center justify-center cursor-pointer transition transform hover:scale-110 active:scale-95">
                                     <div class="${ansStyle.classes}" style="${ansStyle.style}">
-                                        ${answerText}
+                                        ${lkpdEscapeHtml(answerText)}
                                     </div>
                                     <span class="absolute -top-4 px-1.5 py-0.5 bg-slate-900 text-white font-black text-[7px] rounded border border-white/20 shadow-sm">${number}</span>
                                 </button>
@@ -574,10 +603,10 @@ window.renderLkpdCardsView = function(container) {
                                     <div class="flex items-center justify-between gap-2">
                                         <div class="flex items-center gap-1.5 flex-wrap">
                                             <span class="px-2.5 py-1 bg-indigo-50 text-indigo-700 font-extrabold text-[10px] rounded-xl border border-indigo-200/60">
-                                                <i class="fa-solid fa-book-open mr-1"></i>${lk.subjectName || lk.subjectId || 'Umum'}
+                                                <i class="fa-solid fa-book-open mr-1"></i>${lkpdEscapeHtml(lk.subjectName || lk.subjectId || 'Umum')}
                                             </span>
                                             <span class="px-2.5 py-1 bg-amber-50 text-amber-800 font-extrabold text-[10px] rounded-xl border border-amber-200/60">
-                                                <i class="fa-solid fa-users mr-1"></i>${lk.className || lk.classId || 'Semua Kelas'}
+                                                <i class="fa-solid fa-users mr-1"></i>${lkpdEscapeHtml(lk.className || lk.classId || 'Semua Kelas')}
                                             </span>
                                         </div>
                                         <span class="px-2 py-0.5 bg-emerald-100 text-emerald-800 font-black text-[10px] rounded-full">
@@ -587,14 +616,14 @@ window.renderLkpdCardsView = function(container) {
 
                                     <!-- Title & Description -->
                                     <div>
-                                        <h4 class="font-black text-slate-800 text-base group-hover:text-emerald-700 transition line-clamp-1">${lk.title}</h4>
-                                        <p class="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">${lk.description || 'Lembar kerja interaktif berbasis penanda gambar.'}</p>
+                                        <h4 class="font-black text-slate-800 text-base group-hover:text-emerald-700 transition line-clamp-1">${lkpdEscapeHtml(lk.title)}</h4>
+                                        <p class="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">${lkpdEscapeHtml(lk.description || 'Lembar kerja interaktif berbasis penanda gambar.')}</p>
                                     </div>
 
                                     <!-- Visual Preview Thumbnail -->
                                     <div class="h-32 rounded-2xl bg-slate-900 overflow-hidden relative border border-slate-200 shadow-inner flex items-center justify-center cursor-pointer" onclick="openManageLkpdModal('${lk.id}')" title="Klik untuk mengelola lembar kerja">
-                                        ${lk.customImage ? `
-                                            <img src="${lk.customImage}" alt="Custom LKPD" class="w-full h-full object-cover" />
+                                        ${lkpdSafeImageSrc(lk.customImage) ? `
+                                            <img src="${lkpdEscapeAttr(lkpdSafeImageSrc(lk.customImage))}" alt="Custom LKPD" class="w-full h-full object-cover" />
                                         ` : `
                                             <div class="w-full h-full opacity-75 scale-75 transform origin-center">
                                                 <svg viewBox="0 0 1000 650" class="w-full h-full">
@@ -700,7 +729,7 @@ window.openCreateLkpdModal = function(lkpdId = null) {
                                 ${subjects.map(s => {
                                     const sName = s.name || s.title || s;
                                     const isSel = lkpd && (lkpd.subjectName === sName || lkpd.subjectId === s.id);
-                                    return `<option value="${sName}" ${isSel ? 'selected' : ''}>${sName}</option>`;
+                                    return `<option value="${lkpdEscapeAttr(sName)}" ${isSel ? 'selected' : ''}>${lkpdEscapeHtml(sName)}</option>`;
                                 }).join('')}
                                 <option value="IPA / Biologi" ${lkpd && lkpd.subjectName === 'IPA / Biologi' ? 'selected' : ''}>IPA / Biologi</option>
                                 <option value="Informatika / TIK" ${lkpd && lkpd.subjectName === 'Informatika / TIK' ? 'selected' : ''}>Informatika / TIK</option>
@@ -719,14 +748,14 @@ window.openCreateLkpdModal = function(lkpdId = null) {
                                 const cId = c.id || c.name;
                                 const cName = c.name || c.className;
                                 const isSel = lkpd && (lkpd.classId === cId || lkpd.className === cName);
-                                return `<option value="${cId}::${cName}" ${isSel ? 'selected' : ''}>${cName}</option>`;
+                                return `<option value="${lkpdEscapeAttr(cId)}::${lkpdEscapeAttr(cName)}" ${isSel ? 'selected' : ''}>${lkpdEscapeHtml(cName)}</option>`;
                             }).join('')}
                         </select>
                     </div>
 
                     <div>
                         <label class="block font-extrabold text-slate-700 mb-1.5">3. Nama LKPD <span class="text-rose-500">*</span></label>
-                        <input type="text" id="lkpd-form-title" required value="${lkpd ? lkpd.title : ''}" placeholder="Contoh: LKPD 1 - Struktur Sel & Organel Tumbuhan" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                        <input type="text" id="lkpd-form-title" required value="${lkpdEscapeAttr(lkpd ? lkpd.title : '')}" placeholder="Contoh: LKPD 1 - Struktur Sel & Organel Tumbuhan" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
                     </div>
 
                     <div>
@@ -742,7 +771,7 @@ window.openCreateLkpdModal = function(lkpdId = null) {
 
                     <div>
                         <label class="block font-extrabold text-slate-700 mb-1.5">5. Tanggal Pelaksanaan <span class="text-rose-500">*</span></label>
-                        <input type="date" id="lkpd-form-date" required value="${lkpd && lkpd.date ? lkpd.date : ''}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                        <input type="date" id="lkpd-form-date" required value="${lkpdEscapeAttr(lkpd && lkpd.date ? lkpd.date : '')}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
                     </div>
 
                     <div class="bg-indigo-50/50 p-4 rounded-3xl border border-indigo-100 space-y-4">
@@ -817,7 +846,7 @@ window.openCreateLkpdModal = function(lkpdId = null) {
 
                     <div>
                         <label class="block font-extrabold text-slate-700 mb-1.5">6. Petunjuk Pengerjaan untuk Siswa</label>
-                        <textarea id="lkpd-form-desc" rows="2" placeholder="Tuliskan petunjuk pengerjaan lembar kerja..." class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-slate-700 focus:ring-2 focus:ring-emerald-500 focus:outline-none">${lkpd ? (lkpd.description || '') : ''}</textarea>
+                        <textarea id="lkpd-form-desc" rows="2" placeholder="Tuliskan petunjuk pengerjaan lembar kerja..." class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-slate-700 focus:ring-2 focus:ring-emerald-500 focus:outline-none">${lkpdEscapeHtml(lkpd ? (lkpd.description || '') : '')}</textarea>
                     </div>
 
                     <div class="bg-slate-50 p-3.5 rounded-2xl border border-slate-200/60 space-y-2.5">
@@ -1220,8 +1249,8 @@ window.openManageLkpdModal = function(lkpdId) {
                                                         ${mk.responseType === 'essay' ? 'Uraian' : 'Isian Singkat'}
                                                     </span>
                                                 </div>
-                                                <h5 class="font-extrabold text-slate-800 text-xs">${mk.question || `Pertanyaan untuk nomor #${num}`}</h5>
-                                                <p class="text-[11px] text-slate-500"><strong class="text-emerald-700">Kunci Guru:</strong> ${mk.answerKey || '-'}</p>
+                                                <h5 class="font-extrabold text-slate-800 text-xs">${lkpdEscapeHtml(mk.question || `Pertanyaan untuk nomor #${num}`)}</h5>
+                                                <p class="text-[11px] text-slate-500"><strong class="text-emerald-700">Kunci Guru:</strong> ${lkpdEscapeHtml(mk.answerKey || '-')}</p>
                                             </div>
                                         </div>
 
@@ -1421,12 +1450,12 @@ window.openEditMarkerModal = function(lkpdId, markerId) {
 
                     <div>
                         <label class="block mb-1">Pertanyaan / Instruksi untuk Nomor Ini <span class="text-rose-500">*</span></label>
-                        <textarea id="mk-q" rows="3" required class="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl">${marker.question || ''}</textarea>
+                        <textarea id="mk-q" rows="3" required class="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl">${lkpdEscapeHtml(marker.question || '')}</textarea>
                     </div>
 
                     <div>
                         <label class="block mb-1">Kunci Jawaban Guru / Rubrik Penskoran</label>
-                        <textarea id="mk-ans" rows="2" placeholder="Contoh: Mitokondria (penghasil energi ATP)" class="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl">${marker.answerKey || ''}</textarea>
+                        <textarea id="mk-ans" rows="2" placeholder="Contoh: Mitokondria (penghasil energi ATP)" class="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl">${lkpdEscapeHtml(marker.answerKey || '')}</textarea>
                     </div>
 
                     <div class="grid grid-cols-2 gap-3">
@@ -3573,7 +3602,7 @@ window.openGradeLkpdSubmissionModal = function(lkpdId, studentId) {
 
                                         <div class="p-2.5 bg-emerald-50/80 rounded-xl border border-emerald-200/80">
                                             <span class="block text-[10px] font-extrabold text-emerald-800 uppercase">Kunci Jawaban Guru:</span>
-                                            <p class="text-xs text-emerald-950 font-medium">${mk.answerKey || '-'}</p>
+                                            <p class="text-xs text-emerald-950 font-medium">${lkpdEscapeHtml(mk.answerKey || '-')}</p>
                                         </div>
 
                                         <div class="p-2.5 bg-white rounded-xl border border-slate-200">
