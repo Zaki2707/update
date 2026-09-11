@@ -3676,20 +3676,20 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     questions: filteredQuestions,
     schedules: filteredSchedules,
     savedRosters: Array.isArray(savedRosters) ? filterByMadrasah(savedRosters, req) : savedRosters,
-    timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : timeSlots,
-    kbmDuration,
+    timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : [],
+    kbmDuration: tenantConfigValue(kbmDuration, req, 40, 'kbmDuration'),
     exams: filteredExams,
     lkpdList: filteredLkpds,
     rooms: filteredRooms,
     journals: filteredJournals,
-    gradeCategories: Array.isArray(gradeCategories) ? filterByMadrasah(gradeCategories, req) : gradeCategories,
+    gradeCategories: tenantConfigValue(gradeCategories, req, [], 'gradeCategories'),
     calendarEvents: filterByMadrasah(calendarEvents || [], req),
     generatedExams: filteredGeneratedExams,
     settings: sanitizedSettings,
     lessonPlans: filteredLessonPlans,
     grades: filteredGrades,
     teacherAttendance: isStudent ? [] : filterByMadrasah(teacherAttendance || [], req),
-    customGradeColumns: isStudent ? {} : customGradeColumns,
+    customGradeColumns: isStudent ? {} : tenantConfigValue(customGradeColumns, req, {}, 'customGradeColumns'),
     childguardRules: isStudent ? [] : childguardRules,
     childguardLogs: isStudent ? [] : (isBosUser ? childguardLogs : filterStudentLinkedListForRequest(childguardLogs, req)),
     childguardLocations: isStudent ? {} : (isBosUser ? childguardLocations : filterStudentKeyedObjectForRequest(childguardLocations, req)),
@@ -9633,6 +9633,33 @@ function canonicalRealtimeTenant(rawTenant: any): string {
   return String(matched?.id || raw);
 }
 
+function tenantConfigValue(source: any, req: any, fallback: any, kind: string): any {
+  if (!isOnlineMode) return source === undefined || source === null ? fallback : source;
+  const tenant = canonicalRealtimeTenant(getRequestMadrasahId(req) || (req as any)?.user?.madrasahId || (req as any)?.user?.madrasahSlug || 'default');
+  if (source && typeof source === 'object' && !Array.isArray(source) &&
+      source.__tenantScopedConfigV1 === kind && source.values && typeof source.values === 'object') {
+    return Object.prototype.hasOwnProperty.call(source.values, tenant) ? source.values[tenant] : fallback;
+  }
+  return source === undefined || source === null ? fallback : source;
+}
+
+function setTenantConfigValue(source: any, req: any, value: any, fallback: any, kind: string): any {
+  if (!isOnlineMode) return value;
+  const tenant = canonicalRealtimeTenant(getRequestMadrasahId(req) || (req as any)?.user?.madrasahId || (req as any)?.user?.madrasahSlug || 'default');
+  let values: Record<string, any> = {};
+  if (source && typeof source === 'object' && !Array.isArray(source) &&
+      source.__tenantScopedConfigV1 === kind && source.values && typeof source.values === 'object') {
+    values = { ...source.values };
+  } else {
+    const legacy = source === undefined || source === null ? fallback : source;
+    const tenantIds = new Set<string>(['default']);
+    for (const m of (madrasahs || [])) tenantIds.add(canonicalRealtimeTenant(m?.id || m?.slug || 'default'));
+    for (const id of tenantIds) values[id] = legacy;
+  }
+  values[tenant] = value;
+  return { __tenantScopedConfigV1: kind, values };
+}
+
 function signalingRequestTenant(req: any, user: any): string {
   return canonicalRealtimeTenant(getRequestMadrasahId(req) || user?.madrasahId || user?.madrasahSlug || 'default');
 }
@@ -9976,39 +10003,52 @@ app.post("/api/grades", requireAuth, requireRole(['teacher', 'guru', 'admin', 'b
 
 // Time Slots API for Roster
 app.get("/api/time-slots", requireAuth, (req, res) => {
-  res.json({ success: true, timeSlots: timeSlots || [], kbmDuration: kbmDuration || 40 });
+  res.json({
+    success: true,
+    timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : [],
+    kbmDuration: tenantConfigValue(kbmDuration, req, 40, 'kbmDuration')
+  });
 });
 
 app.post("/api/time-slots", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { timeSlots: newSlots, kbmDuration: newKbm } = req.body;
   if (Array.isArray(newSlots)) {
-    timeSlots = newSlots;
+    timeSlots = mergeTenantListData(timeSlots, newSlots, req);
     await saveData('timeSlots', timeSlots);
   }
   if (newKbm !== undefined) {
-    kbmDuration = Number(newKbm) || 40;
+    const parsed = Number(newKbm);
+    const nextKbm = Number.isFinite(parsed) && parsed > 0 ? parsed : 40;
+    kbmDuration = setTenantConfigValue(kbmDuration, req, nextKbm, 40, 'kbmDuration');
     await saveData('kbmDuration', kbmDuration);
   }
-  res.json({ success: true, timeSlots, kbmDuration });
+  res.json({
+    success: true,
+    timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : [],
+    kbmDuration: tenantConfigValue(kbmDuration, req, 40, 'kbmDuration')
+  });
 });
 
 // Grade Categories API
 app.get("/api/grade-categories", requireAuth, (req, res) => {
-  res.json({ success: true, gradeCategories: gradeCategories || [] });
+  res.json({ success: true, gradeCategories: tenantConfigValue(gradeCategories, req, [], 'gradeCategories') });
 });
 
 app.post("/api/grade-categories", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { gradeCategories: newCats, category } = req.body;
+  let tenantCategories = tenantConfigValue(gradeCategories, req, [], 'gradeCategories');
+  tenantCategories = Array.isArray(tenantCategories) ? [...tenantCategories] : [];
   if (Array.isArray(newCats)) {
-    gradeCategories = newCats;
-    await saveData('gradeCategories', gradeCategories);
+    tenantCategories = Array.from(new Set(newCats.map((c: any) => String(c).trim()).filter(Boolean)));
   } else if (category && typeof category === 'string') {
-    if (!gradeCategories.includes(category)) {
-      gradeCategories.push(category);
-      await saveData('gradeCategories', gradeCategories);
+    const cleanCategory = String(category).trim();
+    if (cleanCategory && !tenantCategories.some((c: any) => String(c).toLowerCase() === cleanCategory.toLowerCase())) {
+      tenantCategories.push(cleanCategory);
     }
   }
-  res.json({ success: true, gradeCategories });
+  gradeCategories = setTenantConfigValue(gradeCategories, req, tenantCategories, [], 'gradeCategories');
+  await saveData('gradeCategories', gradeCategories);
+  res.json({ success: true, gradeCategories: tenantCategories });
 });
 
 app.post("/api/grade-categories/rename", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
@@ -10020,24 +10060,15 @@ app.post("/api/grade-categories/rename", requireAuth, requireRole(['teacher', 'g
   const oldLower = String(oldCategory).trim().toLowerCase();
   const newTrim = String(newCategory).trim();
 
-  // 1. Update gradeCategories
-  if (Array.isArray(gradeCategories)) {
-    gradeCategories = gradeCategories.map(c => {
-      const cStr = typeof c === 'string' ? c : (c.name || '');
-      if (cStr.trim().toLowerCase() === oldLower) {
-        return typeof c === 'string' ? newTrim : { ...c, name: newTrim };
-      }
-      return c;
-    });
-    // Remove duplicates
-    const uniqueCats: string[] = [];
-    gradeCategories.forEach(c => {
-      const name = typeof c === 'string' ? c : c.name;
-      if (name && !uniqueCats.includes(name)) uniqueCats.push(name);
-    });
-    gradeCategories = uniqueCats;
-    await saveData('gradeCategories', gradeCategories);
-  }
+  // 1. Update gradeCategories for this tenant only.
+  let tenantCategories = tenantConfigValue(gradeCategories, req, [], 'gradeCategories');
+  tenantCategories = Array.isArray(tenantCategories) ? tenantCategories : [];
+  tenantCategories = Array.from(new Set(tenantCategories.map((c: any) => {
+    const cStr = typeof c === 'string' ? c : (c?.name || '');
+    return cStr.trim().toLowerCase() === oldLower ? newTrim : cStr;
+  }).filter(Boolean)));
+  gradeCategories = setTenantConfigValue(gradeCategories, req, tenantCategories, [], 'gradeCategories');
+  await saveData('gradeCategories', gradeCategories);
 
   // 2. Update grades
   let updatedCount = 0;
@@ -10053,21 +10084,21 @@ app.post("/api/grade-categories/rename", requireAuth, requireRole(['teacher', 'g
     }
   }
 
-  res.json({ success: true, oldCategory, newCategory: newTrim, updatedCount, gradeCategories });
+  res.json({ success: true, oldCategory, newCategory: newTrim, updatedCount, gradeCategories: tenantCategories });
 });
 
 app.delete("/api/grade-categories/:name", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { name } = req.params;
   const catLower = String(name).trim().toLowerCase();
 
-  // 1. Remove from gradeCategories
-  if (Array.isArray(gradeCategories)) {
-    gradeCategories = gradeCategories.filter(c => {
-      const cStr = typeof c === 'string' ? c : (c.name || '');
-      return cStr.trim().toLowerCase() !== catLower;
-    });
-    await saveData('gradeCategories', gradeCategories);
-  }
+  // 1. Remove from this tenant's gradeCategories only.
+  let tenantCategories = tenantConfigValue(gradeCategories, req, [], 'gradeCategories');
+  tenantCategories = (Array.isArray(tenantCategories) ? tenantCategories : []).filter((c: any) => {
+    const cStr = typeof c === 'string' ? c : (c?.name || '');
+    return cStr.trim().toLowerCase() !== catLower;
+  });
+  gradeCategories = setTenantConfigValue(gradeCategories, req, tenantCategories, [], 'gradeCategories');
+  await saveData('gradeCategories', gradeCategories);
 
   // 2. Remove all matching grade records from grades
   let deletedCount = 0;
@@ -10080,23 +10111,33 @@ app.delete("/api/grade-categories/:name", requireAuth, requireRole(['teacher', '
     }
   }
 
-  res.json({ success: true, deletedCategory: name, deletedGradesCount: deletedCount, gradeCategories, categories: gradeCategories });
+  res.json({ success: true, deletedCategory: name, deletedGradesCount: deletedCount, gradeCategories: tenantCategories, categories: tenantCategories });
 });
 
 // 11. System Settings Location API
 app.get("/api/system-settings/location", (req, res) => {
-  res.json({ success: true, settings: schoolLocationSettings });
+  res.json({
+    success: true,
+    settings: tenantConfigValue(schoolLocationSettings, req, { schoolLatitude: -6.2000, schoolLongitude: 106.8166, geofenceRadius: 100 }, 'schoolLocationSettings')
+  });
 });
 
 app.put("/api/system-settings/location", async (req, res) => {
   const { schoolLatitude, schoolLongitude, geofenceRadius } = req.body;
-  schoolLocationSettings = {
+  const nextSettings = {
     schoolLatitude: Number(schoolLatitude),
     schoolLongitude: Number(schoolLongitude),
     geofenceRadius: Number(geofenceRadius) || 100
   };
+  schoolLocationSettings = setTenantConfigValue(
+    schoolLocationSettings,
+    req,
+    nextSettings,
+    { schoolLatitude: -6.2000, schoolLongitude: 106.8166, geofenceRadius: 100 },
+    'schoolLocationSettings'
+  );
   await saveData('schoolLocationSettings', schoolLocationSettings);
-  res.json({ success: true, settings: schoolLocationSettings });
+  res.json({ success: true, settings: nextSettings });
 });
 
 function getExamQuestionsServer(ex: any) {
@@ -14231,8 +14272,8 @@ app.get("/api/system/backup", (req, res) => {
     subjects: filterByMadrasah(subjects, req),
     schedules: filterByMadrasah(schedules, req),
     savedRosters: Array.isArray(savedRosters) ? filterByMadrasah(savedRosters, req) : savedRosters,
-    timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : timeSlots,
-    kbmDuration,
+    timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : [],
+    kbmDuration: tenantConfigValue(kbmDuration, req, 40, 'kbmDuration'),
     attendance: filterByMadrasah(attendance, req),
     teacherAttendance: filterByMadrasah(teacherAttendance, req),
     questionBankGroups: filterByMadrasah(questionBankGroups, req),
@@ -14240,12 +14281,13 @@ app.get("/api/system/backup", (req, res) => {
     exams: filterByMadrasah(exams, req),
     rooms: filterByMadrasah(rooms, req),
     journals: filterByMadrasah(journals, req),
-    gradeCategories: Array.isArray(gradeCategories) ? filterByMadrasah(gradeCategories, req) : gradeCategories,
+    gradeCategories: tenantConfigValue(gradeCategories, req, [], 'gradeCategories'),
     generatedExams: filterByMadrasah(generatedExams, req),
     lessonPlans: filterByMadrasah(lessonPlans, req),
     grades: filterByMadrasah(grades, req),
     settings: sanitizeSettingsForClient(appSettings),
-    schoolLocationSettings
+    schoolLocationSettings: tenantConfigValue(schoolLocationSettings, req, { schoolLatitude: -6.2000, schoolLongitude: 106.8166, geofenceRadius: 100 }, 'schoolLocationSettings'),
+    customGradeColumns: tenantConfigValue(customGradeColumns, req, {}, 'customGradeColumns')
   };
   res.setHeader("Content-Disposition", `attachment; filename=Backup_Data_${new Date().toISOString().slice(0, 10)}.json`);
   res.setHeader("Content-Type", "application/json");
@@ -15322,14 +15364,28 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     else if (key === 'schedules') { schedules = mergeTenantListData(schedules, data, req); await saveData('schedules', schedules); }
     else if (key === 'savedRosters') { savedRosters = mergeTenantListData(savedRosters, data, req); await saveData('savedRosters', savedRosters); }
     else if (key === 'timeSlots') { timeSlots = mergeTenantListData(timeSlots, data, req); await saveData('timeSlots', timeSlots); }
-    else if (key === 'kbmDuration') { kbmDuration = data; await saveData('kbmDuration', kbmDuration); }
+    else if (key === 'kbmDuration') {
+      const parsed = Number(data);
+      kbmDuration = setTenantConfigValue(kbmDuration, req, Number.isFinite(parsed) && parsed > 0 ? parsed : 40, 40, 'kbmDuration');
+      await saveData('kbmDuration', kbmDuration);
+    }
     else if (key === 'questionBankGroups') { questionBankGroups = mergeTenantListData(questionBankGroups, data, req); await saveData('questionBankGroups', questionBankGroups); }
     else if (key === 'questionBank' || key === 'questions') { questions = mergeTenantListData(questions, data, req); await saveData('questions', questions); }
     else if (key === 'exams') { exams = mergeTenantListData(exams, data, req); await saveData('exams', exams); }
     else if (key === 'lkpdList') { lkpdList = mergeLkpdListDataSmart(lkpdList, data, req); await saveData('lkpdList', lkpdList); }
     else if (key === 'rooms') { rooms = mergeTenantListData(rooms, data, req); await saveData('rooms', rooms); }
     else if (key === 'journals') { journals = mergeTenantListData(journals, data, req); await saveData('journals', journals); }
-    else if (key === 'gradeCategories') { gradeCategories = mergeTenantListData(gradeCategories, data, req); await saveData('gradeCategories', gradeCategories); }
+    else if (key === 'gradeCategories') {
+      if (!Array.isArray(data)) return res.status(400).json({ success: false, message: 'gradeCategories harus berupa array.' });
+      const cleanCategories = Array.from(new Set(data.map((c: any) => String(c).trim()).filter(Boolean)));
+      gradeCategories = setTenantConfigValue(gradeCategories, req, cleanCategories, [], 'gradeCategories');
+      await saveData('gradeCategories', gradeCategories);
+    }
+    else if (key === 'customGradeColumns') {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return res.status(400).json({ success: false, message: 'customGradeColumns harus berupa object.' });
+      customGradeColumns = setTenantConfigValue(customGradeColumns, req, data, {}, 'customGradeColumns');
+      await saveData('customGradeColumns', customGradeColumns);
+    }
     else if (key === 'calendarEvents') { calendarEvents = mergeTenantListData(calendarEvents, data, req); await saveData('calendarEvents', calendarEvents); }
     else if (key === 'generatedExams') { generatedExams = mergeTenantListData(generatedExams, data, req); await saveData('generatedExams', generatedExams); }
     else if (key === 'lessonPlans') { lessonPlans = mergeTenantListData(lessonPlans, data, req); await saveData('lessonPlans', lessonPlans); }
@@ -15347,7 +15403,17 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       appSettings = { ...appSettings, ...safeSettings };
       await saveData('settings', appSettings);
     }
-    else if (key === 'schoolLocations' || key === 'schoolLocationSettings') { schoolLocationSettings = data; await saveData('schoolLocationSettings', schoolLocationSettings); }
+    else if (key === 'schoolLocations' || key === 'schoolLocationSettings') {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return res.status(400).json({ success: false, message: 'schoolLocationSettings harus berupa object.' });
+      schoolLocationSettings = setTenantConfigValue(
+        schoolLocationSettings,
+        req,
+        data,
+        { schoolLatitude: -6.2000, schoolLongitude: 106.8166, geofenceRadius: 100 },
+        'schoolLocationSettings'
+      );
+      await saveData('schoolLocationSettings', schoolLocationSettings);
+    }
     else if (key === 'childguardStatus') {
       if (typeof data === 'object' && data !== null) {
         if (isOnlineMode && isStudentSyncRole) {
