@@ -4158,9 +4158,13 @@ app.post("/api/games/:id/submit", async (req, res) => {
     }
 
     const rewardXp = isCorrect ? (game.rewardXp || 100) : 0;
-    let student = students.find((s: any) => String(s.id) === effectiveStudentId || String(s.nis) === effectiveStudentId);
-    if (student && !isBossRole && !isItemForCurrentMadrasah(student, req)) {
-      return res.status(403).json({ success: false, message: "Siswa bukan milik madrasah Anda." });
+    const studentResolution = findStudentForRequest(req, effectiveStudentId);
+    if (studentResolution.ambiguous) {
+      return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant." });
+    }
+    const student = studentResolution.student;
+    if (!student && !isPreview) {
+      return res.status(404).json({ success: false, message: "Siswa tidak ditemukan pada tenant yang diizinkan." });
     }
 
     let newTotalXp = 0;
@@ -4276,8 +4280,10 @@ app.post("/api/game/active-sessions", (req: any, res) => {
     const studentId = self ? String(authUser?.id || '') : requested;
     const sessionData = req.body?.sessionData;
     if (self && requested && requested !== studentId) return res.status(403).json({ success: false, message: "Siswa hanya dapat memperbarui sesi miliknya." });
-    const target = (students || []).find((x: any) => String(x.id) === studentId);
-    if (target && role !== 'bos' && role !== 'superadmin' && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa bukan milik madrasah Anda." });
+    const targetResolution = findStudentForRequest(req, studentId);
+    if (targetResolution.ambiguous) return res.status(409).json({ success: false, message: "ID siswa ambigu lintas tenant." });
+    const target = targetResolution.student;
+    if (!target) return res.status(404).json({ success: false, message: "Siswa tidak ditemukan pada tenant yang diizinkan." });
     if (studentId) {
       const storageKey = gameStudentStorageKey(req, studentId);
       if (sessionData === null) {
@@ -4327,23 +4333,25 @@ app.get("/api/game/messages", (req: any, res) => {
 
 app.post("/api/game/messages", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   try {
-    const { senderName, message, type } = req.body;
+    const authUser = req.user || getAuthUser(req);
+    const message = String(req.body?.message || '').trim();
+    const rawType = String(req.body?.type || 'direct').toLowerCase();
+    const type = ['direct', 'info', 'warning', 'success', 'error'].includes(rawType) ? rawType : 'direct';
     const recipientId = req.body.recipientId || req.body.studentId || 'BROADCAST';
     if (recipientId !== 'BROADCAST') {
-      const target = (students || []).find((x: any) => String(x.id) === String(recipientId));
-      const role = String((req.user || getAuthUser(req))?.role || '').toLowerCase();
-      if (!target) return res.status(404).json({ success: false, message: "Siswa penerima tidak ditemukan." });
-      if (role !== 'bos' && role !== 'superadmin' && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa penerima bukan milik madrasah Anda." });
+      const targetResolution = findStudentForRequest(req, recipientId);
+      if (targetResolution.ambiguous) return res.status(409).json({ success: false, message: "ID siswa penerima ambigu lintas tenant." });
+      if (!targetResolution.student) return res.status(404).json({ success: false, message: "Siswa penerima tidak ditemukan." });
     }
-    if (!message) {
-      return res.status(400).json({ success: false, message: "Pesan tidak boleh kosong" });
+    if (!message || message.length > 2000) {
+      return res.status(400).json({ success: false, message: "Pesan harus berisi 1-2000 karakter." });
     }
     const msgObj = {
-      id: 'GMSG_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+      id: 'GMSG_' + Date.now() + '_' + crypto.randomBytes(5).toString('hex'),
       recipientId: recipientId || 'BROADCAST',
-      senderName: senderName || 'Guru / Admin Game',
-      message: String(message),
-      type: type || 'direct',
+      senderName: String(authUser?.name || authUser?.username || 'Guru / Admin Game').slice(0, 120),
+      message,
+      type,
       timestamp: Date.now()
     };
 
