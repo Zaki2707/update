@@ -5187,6 +5187,15 @@ function sanitizeMadrasahAdminView(m: any) {
   return safe;
 }
 
+function sanitizeMadrasahMemberView(m: any) {
+  const publicView = sanitizeMadrasahPublic(m);
+  if (!publicView) return null;
+  return {
+    ...publicView,
+    cbtTokenBalance: Number(m?.cbtTokenBalance || 0)
+  };
+}
+
 // Multi-Tenant & Bos Token Endpoints
 app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
@@ -5206,7 +5215,7 @@ app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   );
   return res.json({
     success: true,
-    madrasahs: ownMadrasahs.map(sanitizeMadrasahAdminView).filter(Boolean)
+    madrasahs: ownMadrasahs.map(sanitizeMadrasahMemberView).filter(Boolean)
   });
 });
 
@@ -5306,7 +5315,7 @@ app.post("/api/cbt-token-price", requireAuth, requireRole(['bos', 'superadmin'])
   });
 });
 
-app.get("/api/token-requests", requireAuth, (req: any, res) => {
+app.get("/api/token-requests", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   const authUser = req.user;
   const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
   const { madrasahId } = req.query;
