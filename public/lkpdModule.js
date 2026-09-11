@@ -1037,15 +1037,30 @@ window.deleteLkpd = async function(lkpdId) {
         const idx = lkpds.findIndex(l => l.id === lkpdId);
         if (idx === -1) return;
         const oldImage = lkpds[idx]?.customImage;
-        lkpds.splice(idx, 1);
-        await saveLkpdState();
-        // Release only after the LKPD list is durably updated. The server refuses
-        // deletion if the same asset is still referenced elsewhere.
-        await releaseManagedLkpdImage(oldImage);
-        showToast("Kartu LKPD dan aset gambar yang tidak lagi dipakai telah dihapus.", "success");
-        const container = document.getElementById('view-container');
-        if (container && typeof window.renderAssessmentModule === 'function') {
-            window.renderAssessmentModule(container, 'lkpd');
+
+        try {
+            const response = await fetch('/api/lkpds/' + encodeURIComponent(lkpdId), { method: 'DELETE' });
+            const result = await response.json().catch(() => ({ success: false }));
+            if (!response.ok || !result.success) {
+                showToast(result.message || 'Gagal menghapus LKPD dari server.', 'error');
+                return;
+            }
+
+            if (Array.isArray(result.lkpdList)) {
+                window.appState.lkpdList = result.lkpdList;
+            } else {
+                lkpds.splice(idx, 1);
+            }
+
+            await releaseManagedLkpdImage(oldImage);
+            showToast("Kartu LKPD dan aset gambar yang tidak lagi dipakai telah dihapus.", "success");
+            const container = document.getElementById('view-container');
+            if (container && typeof window.renderAssessmentModule === 'function') {
+                window.renderAssessmentModule(container, 'lkpd');
+            }
+        } catch (err) {
+            console.error('[deleteLkpd Error]:', err);
+            showToast('Gagal menghapus LKPD karena koneksi ke server bermasalah.', 'error');
         }
     };
 
@@ -2337,14 +2352,19 @@ window.__onLkpdMonitoringEvent = function(payload) {
     if (!appState.studentOutOfTab) appState.studentOutOfTab = {};
     if (!appState.blockedStudents) appState.blockedStudents = {};
     if (!appState.runtimeLivecamFrames) appState.runtimeLivecamFrames = {};
-    appState.activeExamSessions[sessionKey] = {
-        ...(appState.activeExamSessions[sessionKey] || {}),
-        studentId: String(payload.studentId),
-        lkpdId: String(payload.lkpdId),
-        answeredCount: Number(payload.answeredCount || 0),
-        totalQuestions: Number(payload.totalQuestions || 0),
-        lastSeenAt: Number(payload.lastSeenAt || Date.now())
-    };
+    if (payload.active === false) {
+        delete appState.activeExamSessions[sessionKey];
+        delete appState.runtimeLivecamFrames[sessionKey];
+    } else {
+        appState.activeExamSessions[sessionKey] = {
+            ...(appState.activeExamSessions[sessionKey] || {}),
+            studentId: String(payload.studentId),
+            lkpdId: String(payload.lkpdId),
+            answeredCount: Number(payload.answeredCount || 0),
+            totalQuestions: Number(payload.totalQuestions || 0),
+            lastSeenAt: Number(payload.lastSeenAt || Date.now())
+        };
+    }
     appState.studentTabSwitches[sessionKey] = Number(payload.tabSwitches || 0);
     appState.studentOutOfTab[sessionKey] = payload.outOfTab === true;
     appState.blockedStudents[sessionKey] = payload.blocked === true;
@@ -2388,7 +2408,9 @@ window.renderLkpdMonitoringSection = function(container, lkpdId) {
     const activeSessions = appState.activeExamSessions || {};
     const actuallyActiveCount = lkpdStudents.filter(st => {
         const sessionKey = st.id + '_' + (activeLkpd ? activeLkpd.id : '');
-        return !!activeSessions[sessionKey] && !submissions.find(s => s.studentId === st.id);
+        const session = activeSessions[sessionKey];
+        const lastSeenAt = Number(session?.lastSeenAt || 0) || Date.parse(session?.lastActiveAt || session?.startedAt || '') || 0;
+        return !!session && lastSeenAt > 0 && (Date.now() - lastSeenAt < 30000) && !submissions.find(s => s.studentId === st.id);
     }).length;
 
     // Initialize or read current livecam mode
@@ -2471,7 +2493,8 @@ window.renderLkpdMonitoringSection = function(container, lkpdId) {
                         // Active session details
                         const sessionKey = st.id + '_' + activeLkpd.id;
                         const sess = appState.activeExamSessions && appState.activeExamSessions[sessionKey];
-                        const isOnline = !!sess;
+                        const lastSeenAt = Number(sess?.lastSeenAt || 0) || Date.parse(sess?.lastActiveAt || sess?.startedAt || '') || 0;
+                        const isOnline = !!sess && lastSeenAt > 0 && (Date.now() - lastSeenAt < 30000);
 
                         const answeredCount = sub 
                             ? Object.values(sub.answers || {}).filter(v => String(v).trim().length > 0).length 
