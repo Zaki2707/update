@@ -6949,9 +6949,42 @@ app.get("/api/attendance", requireAuth, async (req: any, res) => {
   res.json({ success: true, attendance: list });
 });
 
-app.post("/api/attendance", requireAuth, async (req, res) => {
-  let { studentId, classId, date, status, location, photo, note, subjectId } = req.body;
-  if (photo && photo.startsWith("data:image/")) {
+app.post("/api/attendance", requireAuth, async (req: any, res) => {
+  let { studentId, classId, date, status, location, photo, note, subjectId } = req.body || {};
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const isRegularStudent = role === 'student' || role === 'siswa';
+  const isClassLeader = role === 'class_leader' || role === 'ketua_kelas';
+  const isBoss = role === 'bos' || role === 'superadmin';
+
+  if (isRegularStudent) studentId = String(authUser?.id || '');
+  const targetStudent = (students || []).find((st: any) => String(st.id) === String(studentId));
+  if (!targetStudent) return res.status(404).json({ success: false, message: 'Siswa tidak ditemukan.' });
+  if (!isBoss && !isItemForCurrentMadrasah(targetStudent, req)) {
+    return res.status(403).json({ success: false, message: 'Siswa bukan milik madrasah Anda.' });
+  }
+
+  if (isRegularStudent) {
+    classId = targetStudent.classId || targetStudent.class_id || '';
+    date = getJakartaTodayDateStr();
+    status = 'HADIR';
+    note = '';
+  } else if (isClassLeader) {
+    const leader = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
+    if (!leader || !isItemForCurrentMadrasah(leader, req)) {
+      return res.status(403).json({ success: false, message: 'Data ketua kelas tidak valid.' });
+    }
+    const leaderClass = String(leader.classId || leader.class_id || '');
+    const targetClass = String(targetStudent.classId || targetStudent.class_id || '');
+    if (!leaderClass || leaderClass !== targetClass) {
+      return res.status(403).json({ success: false, message: 'Ketua kelas hanya dapat mengelola absensi siswa di kelasnya sendiri.' });
+    }
+    classId = targetClass;
+    date = getJakartaTodayDateStr();
+    if (String(targetStudent.id) !== String(authUser?.id || '')) note = 'Ketua Kelas';
+  }
+
+  if (photo && typeof photo === 'string' && photo.startsWith("data:image/")) {
     photo = await saveBase64ToFirestore(photo);
   }
   const today = date || getJakartaTodayDateStr();
@@ -7050,6 +7083,16 @@ app.post("/api/attendance/bulk", requireAuth, requireRole(['teacher', 'guru', 'a
   }
 
   try {
+    const authUser = (req as any).user || getAuthUser(req);
+    const role = String(authUser?.role || '').toLowerCase();
+    const isBoss = role === 'bos' || role === 'superadmin';
+    for (const item of items) {
+      const targetStudent = (students || []).find((st: any) => String(st.id) === String(item?.studentId));
+      if (!targetStudent) return res.status(404).json({ success: false, message: 'Siswa pada payload absensi tidak ditemukan.' });
+      if (!isBoss && !isItemForCurrentMadrasah(targetStudent, req)) {
+        return res.status(403).json({ success: false, message: 'Payload absensi memuat siswa dari madrasah lain.' });
+      }
+    }
     await updateStoreKeyWithLock('attendance', (currentVal) => {
       const attList = Array.isArray(currentVal) ? currentVal : [];
 
@@ -7113,9 +7156,9 @@ app.post("/api/attendance/reset", requireAuth, requireRole(['admin', 'bos', 'sup
       const attList = Array.isArray(currentVal) ? currentVal : [];
       const studentIdSet = new Set(studentIds.map(id => String(id).toLowerCase().trim()));
       
-      // Expand target student set with any matching student details from global students list
+      // Expand aliases only from the authenticated tenant.
       if (Array.isArray(students)) {
-        for (const st of students) {
+        for (const st of filterByMadrasah(students, req)) {
           const stId = String(st.id || '').toLowerCase().trim();
           const stNis = String(st.nis || '').toLowerCase().trim();
           const stName = String(st.name || '').toLowerCase().trim();
@@ -7130,6 +7173,7 @@ app.post("/api/attendance/reset", requireAuth, requireRole(['admin', 'bos', 'sup
       }
 
       const filtered = attList.filter(a => {
+        if (!isItemForCurrentMadrasah(a, req)) return true;
         const itemDate = String(a.date).substring(0, 10);
         if (itemDate !== dateStr) return true;
         
@@ -7343,18 +7387,25 @@ app.post("/api/teacher-attendance/update", requireAuth, requireRole(['admin', 'b
   const { teacherId, date, status, type } = req.body;
   const dateStr = String(date).substring(0, 10);
   const attType = type || 'MASUK';
+  const authUser = (req as any).user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const targetTeacher = (teachers || []).find((t: any) => String(t.id) === String(teacherId));
+  if (!targetTeacher) return res.status(404).json({ success: false, message: 'Guru tidak ditemukan.' });
+  if (role !== 'bos' && role !== 'superadmin' && !isItemForCurrentMadrasah(targetTeacher, req)) {
+    return res.status(403).json({ success: false, message: 'Guru bukan milik madrasah Anda.' });
+  }
 
   try {
     await updateStoreKeyWithLock('teacherAttendance', (currentVal) => {
       let list = Array.isArray(currentVal) ? currentVal : [];
       if (status === 'BELUM PRESENSI') {
-        list = list.filter(a => !(String(a.teacherId) === String(teacherId) && String(a.date).substring(0, 10) === dateStr && (a.type || 'MASUK') === attType));
+        list = list.filter(a => !(isItemForCurrentMadrasah(a, req) && String(a.teacherId) === String(teacherId) && String(a.date).substring(0, 10) === dateStr && (a.type || 'MASUK') === attType));
       } else {
-        const existing = list.find(a => String(a.teacherId) === String(teacherId) && String(a.date).substring(0, 10) === dateStr && (a.type || 'MASUK') === attType);
+        const existing = list.find(a => isItemForCurrentMadrasah(a, req) && String(a.teacherId) === String(teacherId) && String(a.date).substring(0, 10) === dateStr && (a.type || 'MASUK') === attType);
         if (existing) {
           existing.status = status;
         } else {
-          list.push({
+          list.push(tagNewRecord({
             id: 'TATT_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
             teacherId: teacherId,
             date: dateStr,
@@ -7363,7 +7414,7 @@ app.post("/api/teacher-attendance/update", requireAuth, requireRole(['admin', 'b
             location: 'Input Admin',
             photo: '',
             createdAt: new Date().toISOString()
-          });
+          }, req));
         }
       }
       return list;
