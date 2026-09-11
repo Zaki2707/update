@@ -2473,7 +2473,7 @@ app.use((req: any, res, next) => {
   }
 
   const contextTenant = canonicalRealtimeTenant(
-    getRequestMadrasahId(req) || authUser.madrasahId || authUser.madrasahSlug || 'default'
+    getRequestMadrasahId(req) || authUser.madrasahId || (authUser as any).madrasahSlug || 'default'
   );
   requestRealtimeContext.run({ tenantId: contextTenant, role }, next);
 });
@@ -8373,7 +8373,7 @@ function parseExamStateKeyForRequest(req: any, key: string): { studentId: string
     }
   }
 
-  const tenantStudentSet = new Set(tenantStudents);
+  const tenantStudentSet = new Set<string>(tenantStudents);
   const orderedExamIds = [...tenantExams].sort((a: string, b: string) => b.length - a.length);
   for (const parsedExamId of orderedExamIds) {
     const prefix = parsedExamId + '_';
