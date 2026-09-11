@@ -5718,8 +5718,10 @@ app.post("/api/madrasahs/:id/update-tokens", requireAuth, requireRole(['bos', 's
   return withTokenLedger(async () => {
     const { id } = req.params;
     const { newBalance, deltaTokens } = req.body;
-    const targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
-    if (!targetM) return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+    const targetIndex = madrasahs.findIndex(m => String(m.id) === String(id) || String(m.slug) === String(id));
+    if (targetIndex < 0) return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+    const nextMadrasahs = madrasahs.map((item: any) => ({ ...item }));
+    const targetM = nextMadrasahs[targetIndex];
 
     if (newBalance !== undefined) {
       const parsed = Number(newBalance);
@@ -5738,7 +5740,7 @@ app.post("/api/madrasahs/:id/update-tokens", requireAuth, requireRole(['bos', 's
     }
     delete targetM.tokenSignatureInvalid;
     targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance || 0);
-    await saveData('madrasahs', madrasahs, true);
+    await saveData('madrasahs', nextMadrasahs, true);
     return res.json({
       success: true,
       madrasah: sanitizeMadrasahAdminView(targetM),
@@ -5969,11 +5971,13 @@ app.post("/api/deduct-cbt-token", requireAuth, requireRole(['teacher', 'guru', '
           message: "Saldo Token Ujian Anda (Guru) habis (0 Token). Harap lakukan isi ulang token menggunakan Kode Aktivasi Token dari Bos Platform."
         });
       }
-      tch.cbtTokenBalance = Number(tch.cbtTokenBalance || 0) - 1;
-      await saveData('teachers', teachers, true);
+      const teacherIndex = teachers.indexOf(tch);
+      const nextTeachers = teachers.map((item: any) => ({ ...item }));
+      nextTeachers[teacherIndex].cbtTokenBalance = Number(nextTeachers[teacherIndex].cbtTokenBalance || 0) - 1;
+      await saveData('teachers', nextTeachers, true);
       return res.json({
         success: true,
-        remainingTokens: tch.cbtTokenBalance,
+        remainingTokens: nextTeachers[teacherIndex].cbtTokenBalance,
         isTeacher: true,
         message: "1 Token Ujian Guru berhasil digunakan."
       });
@@ -6002,13 +6006,16 @@ app.post("/api/deduct-cbt-token", requireAuth, requireRole(['teacher', 'guru', '
       });
     }
 
-    targetM.cbtTokenBalance = Number(targetM.cbtTokenBalance || 0) - 1;
-    delete targetM.tokenSignatureInvalid;
-    targetM.tokenSignature = calculateTokenSignature(targetM.id, targetM.cbtTokenBalance);
-    await saveData('madrasahs', madrasahs, true);
+    const targetIndex = madrasahs.indexOf(targetM);
+    const nextMadrasahs = madrasahs.map((item: any) => ({ ...item }));
+    const nextTarget = nextMadrasahs[targetIndex];
+    nextTarget.cbtTokenBalance = Number(nextTarget.cbtTokenBalance || 0) - 1;
+    delete nextTarget.tokenSignatureInvalid;
+    nextTarget.tokenSignature = calculateTokenSignature(nextTarget.id, nextTarget.cbtTokenBalance);
+    await saveData('madrasahs', nextMadrasahs, true);
     return res.json({
       success: true,
-      remainingTokens: targetM.cbtTokenBalance,
+      remainingTokens: nextTarget.cbtTokenBalance,
       message: "1 Token Ujian berhasil digunakan."
     });
   });
@@ -6026,40 +6033,45 @@ app.put("/api/teachers/:id/tokens", requireAuth, requireRole(['bos', 'superadmin
       return res.status(candidates.length > 1 ? 409 : 404).json({ success: false, message: candidates.length > 1 ? "ID guru ambigu lintas tenant." : "Guru tidak ditemukan." });
     }
     const teacher = candidates[0];
+    const teacherIndex = teachers.indexOf(teacher);
+    const nextTeachers = teachers.map((item: any) => ({ ...item }));
+    const nextTeacher = nextTeachers[teacherIndex];
 
     if (cbtTokenBalance !== undefined) {
       const parsed = Number(cbtTokenBalance);
       if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100000000) {
         return res.status(400).json({ success: false, message: "Saldo token guru tidak valid." });
       }
-      teacher.cbtTokenBalance = Math.floor(parsed);
+      nextTeacher.cbtTokenBalance = Math.floor(parsed);
     } else if (deltaTokens !== undefined) {
       const delta = Number(deltaTokens);
       if (!Number.isFinite(delta) || Math.abs(delta) > 100000000) {
         return res.status(400).json({ success: false, message: "Perubahan token guru tidak valid." });
       }
-      teacher.cbtTokenBalance = Math.max(0, Number(teacher.cbtTokenBalance || 0) + Math.trunc(delta));
+      nextTeacher.cbtTokenBalance = Math.max(0, Number(nextTeacher.cbtTokenBalance || 0) + Math.trunc(delta));
     } else {
       return res.status(400).json({ success: false, message: "Saldo atau perubahan token wajib diisi." });
     }
 
-    await saveData('teachers', teachers, true);
+    await saveData('teachers', nextTeachers, true);
     return res.json({
       success: true,
-      cbtTokenBalance: teacher.cbtTokenBalance,
-      message: `Saldo Token Guru ${teacher.name} diperbarui menjadi ${teacher.cbtTokenBalance} Token.`
+      cbtTokenBalance: nextTeacher.cbtTokenBalance,
+      message: `Saldo Token Guru ${nextTeacher.name} diperbarui menjadi ${nextTeacher.cbtTokenBalance} Token.`
     });
   });
 });
 
 app.post("/api/madrasahs/:id/toggle-status", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  const targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
-  if (!targetM) {
+  const targetIndex = madrasahs.findIndex(m => String(m.id) === String(id) || String(m.slug) === String(id));
+  if (targetIndex < 0) {
     return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
   }
+  const nextMadrasahs = madrasahs.map((item: any) => ({ ...item }));
+  const targetM = nextMadrasahs[targetIndex];
   targetM.isActive = targetM.isActive === false ? true : false;
-  await saveData('madrasahs', madrasahs, true);
+  await saveData('madrasahs', nextMadrasahs, true);
   return res.json({
     success: true,
     madrasah: sanitizeMadrasahAdminView(targetM),
@@ -6072,8 +6084,10 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
   return withTokenLedger(async () => {
     const { id } = req.params;
     const { name, level, adminName, adminUser, adminPass, phone, cbtTokenBalance, isActive } = req.body;
-    const targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
-    if (!targetM) return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+    const targetIndex = madrasahs.findIndex(m => String(m.id) === String(id) || String(m.slug) === String(id));
+    if (targetIndex < 0) return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+    const nextMadrasahs = madrasahs.map((item: any) => ({ ...item }));
+    const targetM = nextMadrasahs[targetIndex];
 
     if (name) targetM.name = String(name).trim().slice(0, 120);
     if (level) targetM.level = String(level).trim().slice(0, 20);
@@ -6106,7 +6120,7 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
     }
     if (isActive !== undefined) targetM.isActive = Boolean(isActive);
 
-    await saveData('madrasahs', madrasahs, true);
+    await saveData('madrasahs', nextMadrasahs, true);
     return res.json({
       success: true,
       madrasah: sanitizeMadrasahAdminView(targetM),
