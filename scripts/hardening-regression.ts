@@ -104,6 +104,10 @@ function testServerGuards() {
   }
   assert.match(server, /ID ujian ambigu lintas tenant\. Pilih madrasah target terlebih dahulu\./);
   assert.match(server, /ID LKPD ambigu lintas tenant\. Pilih madrasah target terlebih dahulu\./);
+  assert.match(server, /TEACHER_SELF_UPDATE_SCOPE/);
+  assert.match(server, /SUBJECT_RENAME_CASCADE/);
+  assert.match(fs.readFileSync('src/cbtModules.js', 'utf8'), /QUESTION_BANK_LOAD_GUARD/);
+  assert.match(fs.readFileSync('src/modulAjarModule.js', 'utf8'), /IMPORT_GROUP_SERVER_AUTHORITATIVE/);
   assert.match(server, /=== examTenant/);
   assert.match(server, /=== lkpdTenant/);
   assert.equal(server.includes("const store = readLocalStore();\n    let lkpdList = store.lkpdList || [];"), false);
