@@ -1264,10 +1264,19 @@ function applyLoginCustomization() {
 
     const renderLogoContent = (container) => {
         if (!container) return;
-        if (currentSchoolLogo.startsWith('data:image/') || currentSchoolLogo.startsWith('http://') || currentSchoolLogo.startsWith('https://')) {
-            container.innerHTML = `<img src="${currentSchoolLogo}" class="w-full h-full object-cover" referrerPolicy="no-referrer" alt="Logo">`;
+        container.replaceChildren();
+        if (isSafeDisplayImageUrl(currentSchoolLogo)) {
+            const img = document.createElement('img');
+            img.src = currentSchoolLogo;
+            img.className = 'w-full h-full object-cover';
+            img.referrerPolicy = 'no-referrer';
+            img.alt = 'Logo';
+            container.appendChild(img);
         } else {
-            container.innerHTML = `<i class="fa-solid ${currentSchoolLogo}"></i>`;
+            const icon = document.createElement('i');
+            icon.classList.add('fa-solid');
+            icon.classList.add(/^fa-[a-z0-9-]+$/i.test(String(currentSchoolLogo)) ? String(currentSchoolLogo) : 'fa-mosque');
+            container.appendChild(icon);
         }
 
         // Apply background color
