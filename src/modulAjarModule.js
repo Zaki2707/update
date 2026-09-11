@@ -4,8 +4,14 @@ window.isSameSubject = function(subA, subB, subjects) {
     if (!subA || !subB) return false;
     const strA = String(subA).trim();
     const strB = String(subB).trim();
+    if (!strA || !strB) return false;
     if (strA === strB) return true;
     if (strA.toLowerCase() === strB.toLowerCase()) return true;
+
+    const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normA = normalize(strA);
+    const normB = normalize(strB);
+    if (normA && normB && normA === normB) return true;
 
     const subjectsList = Array.isArray(subjects) && subjects.length > 0 ? subjects : (appState.subjects || []);
     if (!subjectsList || subjectsList.length === 0) return false;
@@ -13,30 +19,37 @@ window.isSameSubject = function(subA, subB, subjects) {
     const objA = subjectsList.find(s => 
         String(s.id).trim() === strA || 
         String(s.name).trim().toLowerCase() === strA.toLowerCase() ||
-        (s.code && String(s.code).trim().toLowerCase() === strA.toLowerCase())
+        (s.code && String(s.code).trim().toLowerCase() === strA.toLowerCase()) ||
+        (normA && normalize(s.name) === normA) ||
+        (normA && normalize(s.code) === normA)
     );
 
     const objB = subjectsList.find(s => 
         String(s.id).trim() === strB || 
         String(s.name).trim().toLowerCase() === strB.toLowerCase() ||
-        (s.code && String(s.code).trim().toLowerCase() === strB.toLowerCase())
+        (s.code && String(s.code).trim().toLowerCase() === strB.toLowerCase()) ||
+        (normB && normalize(s.name) === normB) ||
+        (normB && normalize(s.code) === normB)
     );
 
     if (objA && objB) {
-        return String(objA.id).trim() === String(objB.id).trim() ||
-               String(objA.name).trim().toLowerCase() === String(objB.name).trim().toLowerCase();
+        return String(objA.id).trim() === String(objB.id).trim();
     }
 
     if (objA) {
         return String(objA.id).trim() === strB ||
                String(objA.name).trim().toLowerCase() === strB.toLowerCase() ||
-               (objA.code && String(objA.code).trim().toLowerCase() === strB.toLowerCase());
+               (objA.code && String(objA.code).trim().toLowerCase() === strB.toLowerCase()) ||
+               (normB && normalize(objA.name) === normB) ||
+               (normB && normalize(objA.code) === normB);
     }
 
     if (objB) {
         return String(objB.id).trim() === strA ||
                String(objB.name).trim().toLowerCase() === strA.toLowerCase() ||
-               (objB.code && String(objB.code).trim().toLowerCase() === strA.toLowerCase());
+               (objB.code && String(objB.code).trim().toLowerCase() === strA.toLowerCase()) ||
+               (normA && normalize(objB.name) === normA) ||
+               (normA && normalize(objB.code) === normA);
     }
 
     return false;
@@ -530,24 +543,34 @@ function renderModulCardHtml(lp, selectedSubjectId) {
 }
 
 function renderModulAjarSimpanView(selectedSubjectId) {
-    if (!appState.importGroups) {
-        appState.importGroups = [];
-        try {
-            appState.importGroups = JSON.parse(localStorage.getItem('madrasah_import_groups')) || [];
-        } catch(e) {}
+    if (!appState.importGroups || appState.importGroups.length === 0) {
+        if (!appState.importGroups) {
+            try {
+                appState.importGroups = JSON.parse(localStorage.getItem('madrasah_import_groups')) || [];
+            } catch(e) { appState.importGroups = []; }
+        }
         fetch('/api/import-groups')
             .then(r => r.json())
             .then(res => {
-                if (res.success && Array.isArray(res.data)) {
+                if (res.success && Array.isArray(res.data) && res.data.length > 0) {
                     appState.importGroups = res.data;
-                    localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
+                    try {
+                        localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
+                    } catch(e) {}
+                    const c = document.getElementById('view-container');
+                    if (c && (appState.currentView === 'modul-ajar' || appState.currentRoute === 'modul-ajar')) {
+                        renderModulAjarModule(c);
+                    }
                 }
             })
             .catch(e => {});
     }
 
     const subjectPlansSimpan = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, selectedSubjectId, appState.subjects));
-    const subjectGroups = (appState.importGroups || []).filter(g => isSameSubject(g.subjectId, selectedSubjectId, appState.subjects));
+    const subjectGroups = (appState.importGroups || []).filter(g => {
+        if (!g) return false;
+        return isSameSubject(g.subjectId, selectedSubjectId, appState.subjects);
+    });
 
     // Separate into grouped vs ungrouped
     const groupedPlans = {};
@@ -749,8 +772,30 @@ function renderModulAjarModule(container) {
             .catch(err => console.error('Gagal mengambil modul ajar:', err));
     }
 
+    // Load import groups if not already loaded
+    if (!appState.importGroups) {
+        appState.importGroups = [];
+        try {
+            appState.importGroups = JSON.parse(localStorage.getItem('madrasah_import_groups')) || [];
+        } catch(e) {}
+        fetch('/api/import-groups')
+            .then(r => r.json())
+            .then(res => {
+                if (res.success && Array.isArray(res.data)) {
+                    appState.importGroups = res.data;
+                    try {
+                        localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
+                    } catch(e) {}
+                    if (appState.currentView === 'modul-ajar' || appState.currentRoute === 'modul-ajar') {
+                        renderModulAjarModule(container);
+                    }
+                }
+            })
+            .catch(err => console.error('Gagal mengambil kelompok modul:', err));
+    }
+
     const selectedSubjectId = appState.selectedModulAjarSubjectId || '';
-    const selectedSubject = appState.subjects ? appState.subjects.find(s => String(s.id) === String(selectedSubjectId)) : null;
+    const selectedSubject = appState.subjects ? appState.subjects.find(s => String(s.id) === String(selectedSubjectId) || isSameSubject(s.id, selectedSubjectId, appState.subjects)) : null;
     const searchQuery = appState.modulAjarSearchQuery || '';
 
     let contentHtml = '';

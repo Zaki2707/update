@@ -2476,7 +2476,16 @@ function renderExamModalForm(editId = null, eventId = null) {
     if (!modal) return;
     const subjects = appState.subjects || [];
     const classes = appState.classes || [];
-    const questionBankGroups = appState.questionBankGroups || [];
+    let questionBankGroups = Array.isArray(appState.questionBankGroups) ? [...appState.questionBankGroups] : [];
+    if (questionBankGroups.length === 0 && Array.isArray(appState.questionBank)) {
+        const uniqueCodes = Array.from(new Set(appState.questionBank.map(q => q && q.code).filter(Boolean)));
+        uniqueCodes.forEach(c => {
+            questionBankGroups.push({ code: c, subjectId: '', classId: '' });
+        });
+    }
+    if (questionBankGroups.length === 0 && typeof window.loadQuestionBankFromServer === 'function') {
+        window.loadQuestionBankFromServer();
+    }
     
     let ex = null;
     if (editId) {
@@ -2529,7 +2538,11 @@ function renderExamModalForm(editId = null, eventId = null) {
                         <div>
                             <label class="block text-xs uppercase text-slate-500 mb-1">Kode Bank Soal</label>
                             <select id="ex-bank-code" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" required>
-                                ${questionBankGroups.map(bg => `<option value="${bg.code}" ${ex && ex.bankCode === bg.code ? 'selected' : ''}>${bg.code} (${bg.code})</option>`).join('')}
+                                ${questionBankGroups.length === 0 ? '<option value="">Belum ada kode bank soal</option>' : questionBankGroups.map(bg => {
+                                    const subObj = subjects.find(s => String(s.id) === String(bg.subjectId));
+                                    const label = subObj ? `${bg.code} (${subObj.name})` : bg.code;
+                                    return `<option value="${bg.code}" ${ex && ex.bankCode === bg.code ? 'selected' : ''}>${label}</option>`;
+                                }).join('')}
                             </select>
                         </div>
                         <div>

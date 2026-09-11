@@ -3433,6 +3433,10 @@ async function loadDataFromServer() {
                 }
             }
             if (res.lessonPlans) appState.lessonPlans = res.lessonPlans;
+            if (res.importGroups && Array.isArray(res.importGroups)) {
+                appState.importGroups = res.importGroups;
+                safeSetLocalStorage('madrasah_import_groups', appState.importGroups);
+            }
             if (res.grades) {
                 appState.grades = res.grades;
                 safeSetLocalStorage('madrasah_grades', appState.grades);

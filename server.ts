@@ -3741,6 +3741,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
   let filteredJournals = journals;
   let filteredLessonPlans = lessonPlans;
   let filteredGeneratedExams = generatedExams;
+  let filteredImportGroups = importGroups || [];
 
   if (mId && mId !== 'default' && mId !== 'BOSS') {
     const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
@@ -3771,6 +3772,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     filteredJournals = journals.filter(matchesFilter);
     filteredLessonPlans = lessonPlans.filter(matchesFilter);
     filteredGeneratedExams = generatedExams.filter(matchesFilter);
+    filteredImportGroups = (importGroups || []).filter(matchesFilter);
   } else {
     const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
     const defId = defaultM ? defaultM.id : 'default';
@@ -3797,6 +3799,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     filteredJournals = journals.filter(defaultFilter);
     filteredLessonPlans = lessonPlans.filter(defaultFilter);
     filteredGeneratedExams = generatedExams.filter(defaultFilter);
+    filteredImportGroups = (importGroups || []).filter(defaultFilter);
   }
 
   const sortedStudents = [...filteredStudents].sort((a: any, b: any) => {
@@ -3884,6 +3887,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     generatedExams: filteredGeneratedExams,
     settings: sanitizedSettings,
     lessonPlans: filteredLessonPlans,
+    importGroups: isStudent ? [] : filteredImportGroups,
     grades: filteredGrades,
     teacherAttendance: isStudent ? [] : filterByMadrasah(teacherAttendance || [], req),
     customGradeColumns: isStudent ? {} : tenantConfigValue(customGradeColumns, req, {}, 'customGradeColumns'),
@@ -7420,15 +7424,77 @@ app.get("/api/subjects", requireAuth, (req, res) => {
 });
 
 app.post("/api/subjects", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
-  const { code, name } = req.body;
-  if (!code || !name) {
+  const { id, code, name } = req.body;
+  const cleanCode = String(code || '').trim();
+  const cleanName = String(name || '').trim();
+  if (!cleanCode || !cleanName) {
     return res.status(400).json({ success: false, message: "Kode dan Nama mapel wajib diisi." });
   }
+
+  const currentMadrasahSubs = filterByMadrasah(subjects, req);
+  const targetId = id ? String(id).trim() : null;
+
+  // Check duplicate code or name in same madrasah (excluding self if editing)
+  const duplicate = currentMadrasahSubs.find((s: any) => 
+    (!targetId || String(s.id) !== targetId) && 
+    (String(s.name || '').trim().toLowerCase() === cleanName.toLowerCase() ||
+     String(s.code || '').trim().toLowerCase() === cleanCode.toLowerCase())
+  );
+
+  if (duplicate) {
+    return res.status(400).json({ 
+      success: false, 
+      message: `Mata pelajaran dengan Nama "${cleanName}" atau Kode "${cleanCode}" sudah terdaftar (Kunci ID: ${duplicate.id}). Gunakan nama/kode yang unik.` 
+    });
+  }
+
+  if (targetId) {
+    const idx = subjects.findIndex((s: any) => String(s.id) === targetId && isItemForCurrentMadrasah(s, req));
+    if (idx !== -1) {
+      subjects[idx] = { ...subjects[idx], code: cleanCode, name: cleanName };
+      await saveData('subjects', subjects);
+      return res.json({ success: true, subject: subjects[idx], message: "Mata pelajaran berhasil diperbarui." });
+    }
+  }
+
   const newId = nextPrefixedNumericId(subjects, "S");
-  const newSub = tagNewRecord({ id: newId, code, name }, req);
+  const newSub = tagNewRecord({ id: newId, code: cleanCode, name: cleanName }, req);
   subjects.push(newSub);
   await saveData('subjects', subjects);
-  res.json({ success: true, subject: newSub });
+  res.json({ success: true, subject: newSub, message: "Mata pelajaran berhasil ditambahkan." });
+});
+
+app.put("/api/subjects/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+  const { id } = req.params;
+  const { code, name } = req.body;
+  const cleanCode = String(code || '').trim();
+  const cleanName = String(name || '').trim();
+  if (!cleanCode || !cleanName) {
+    return res.status(400).json({ success: false, message: "Kode dan Nama mapel wajib diisi." });
+  }
+
+  const currentMadrasahSubs = filterByMadrasah(subjects, req);
+  const duplicate = currentMadrasahSubs.find((s: any) => 
+    String(s.id) !== String(id) && 
+    (String(s.name || '').trim().toLowerCase() === cleanName.toLowerCase() ||
+     String(s.code || '').trim().toLowerCase() === cleanCode.toLowerCase())
+  );
+
+  if (duplicate) {
+    return res.status(400).json({ 
+      success: false, 
+      message: `Mata pelajaran dengan Nama "${cleanName}" atau Kode "${cleanCode}" sudah terdaftar (Kunci ID: ${duplicate.id}). Gunakan nama/kode yang unik.` 
+    });
+  }
+
+  const idx = subjects.findIndex((s: any) => String(s.id) === String(id) && isItemForCurrentMadrasah(s, req));
+  if (idx === -1) {
+    return res.status(404).json({ success: false, message: "Mata pelajaran tidak ditemukan." });
+  }
+
+  subjects[idx] = { ...subjects[idx], code: cleanCode, name: cleanName };
+  await saveData('subjects', subjects);
+  res.json({ success: true, subject: subjects[idx], message: "Mata pelajaran berhasil diperbarui." });
 });
 
 app.delete("/api/subjects/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {

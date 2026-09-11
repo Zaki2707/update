@@ -2272,15 +2272,23 @@ function renderScheduleModule(container) {
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                     ${subjects.map(s => `
-                        <div class="flex justify-between items-center p-3.5 bg-slate-50 border border-slate-150 rounded-2xl text-xs hover:border-teal-300 transition">
-                            <div>
-                                <span class="font-extrabold text-slate-800 block">${s.name}</span>
-                                <span class="text-[10px] font-mono text-teal-700 font-bold bg-teal-50 px-2 py-0.5 rounded-md inline-block mt-0.5 border border-teal-200">Kode: ${s.code || '-'}</span>
+                        <div class="flex justify-between items-center p-3.5 bg-slate-50 border border-slate-150 rounded-2xl text-xs hover:border-teal-300 transition shadow-sm">
+                            <div class="min-w-0 pr-2">
+                                <div class="flex items-center gap-1.5 flex-wrap">
+                                    <span class="font-extrabold text-slate-800 truncate">${escapeHtml(s.name)}</span>
+                                    <span class="text-[9px] font-mono font-bold bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">ID: ${escapeHtml(s.id)}</span>
+                                </div>
+                                <span class="text-[10px] font-mono text-teal-700 font-bold bg-teal-50 px-2 py-0.5 rounded-md inline-block mt-1 border border-teal-200">Kode: ${escapeHtml(s.code || '-')}</span>
                             </div>
                             ${!isTeacher ? `
-                            <button type="button" onclick="deleteSubject('${s.id}')" class="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition" title="Hapus Mapel">
-                                <i class="fa-solid fa-trash-can"></i>
-                            </button>
+                            <div class="flex items-center space-x-1 shrink-0">
+                                <button type="button" onclick="openSubjectModal('${s.id}')" class="p-2 text-teal-600 hover:text-teal-800 hover:bg-teal-50 rounded-xl transition cursor-pointer" title="Edit Mapel">
+                                    <i class="fa-solid fa-pen text-xs pointer-events-none"></i>
+                                </button>
+                                <button type="button" onclick="deleteSubject('${s.id}')" class="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition cursor-pointer" title="Hapus Mapel">
+                                    <i class="fa-solid fa-trash-can text-xs pointer-events-none"></i>
+                                </button>
+                            </div>
                             ` : ''}
                         </div>
                     `).join('') || `<p class="col-span-full p-4 text-center text-xs text-slate-400">Belum ada data mata pelajaran.</p>`}
@@ -3547,40 +3555,74 @@ function deleteSavedRoster(rosterId) {
 }
 
 
-function openSubjectModal() {
+function openSubjectModal(subjectId = null) {
     const modal = document.getElementById('modal-container');
+    const existing = subjectId && appState.subjects ? appState.subjects.find(s => String(s.id) === String(subjectId)) : null;
+    const isEdit = !!existing;
+
     modal.innerHTML = `
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
-            <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-4">
-                <div class="flex justify-between items-center"><h3 class="font-bold">Tambah Mapel</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>
-                <form onsubmit="saveSubject(event)" class="space-y-3">
-                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Kode</label><input type="text" id="sub-code" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" placeholder="Contoh: FQ"></div>
-                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Nama Mapel</label><input type="text" id="sub-name" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" placeholder="Contoh: Fikih"></div>
-                    <div class="flex justify-end pt-2"><button type="submit" class="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-semibold">Simpan</button></div>
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-fade-in" onclick="if(event.target === this) closeModal();">
+            <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 sm:p-7 space-y-4" onclick="event.stopPropagation()">
+                <div class="flex justify-between items-center pb-2 border-b border-slate-100">
+                    <div class="flex items-center space-x-2.5 text-teal-600">
+                        <div class="w-9 h-9 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center font-bold">
+                            <i class="fa-solid ${isEdit ? 'fa-pen-to-square' : 'fa-book'}"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-extrabold text-slate-800 text-base">${isEdit ? 'Edit Mata Pelajaran' : 'Tambah Mapel Baru'}</h3>
+                            <p class="text-[11px] text-slate-400 font-medium">${isEdit ? `Kunci ID Unik: <span class="font-mono font-bold text-teal-700">${escapeHtml(existing.id)}</span>` : 'Mata pelajaran baru madrasah'}</p>
+                        </div>
+                    </div>
+                    <button type="button" onclick="closeModal()" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition cursor-pointer">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <form onsubmit="saveSubject(event, '${isEdit ? existing.id : ''}')" class="space-y-3.5">
+                    ${isEdit ? `<input type="hidden" id="sub-id" value="${escapeHtml(existing.id)}">` : ''}
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Kode Mapel <span class="text-rose-500">*</span></label>
+                        <input type="text" id="sub-code" required value="${isEdit ? escapeHtml(existing.code || '') : ''}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs sm:text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500 uppercase" placeholder="Contoh: FQ, B.ARAB, MTK">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Nama Mata Pelajaran <span class="text-rose-500">*</span></label>
+                        <input type="text" id="sub-name" required value="${isEdit ? escapeHtml(existing.name || '') : ''}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs sm:text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500" placeholder="Contoh: Fikih, Bahasa Arab, Matematika">
+                    </div>
+                    <div class="flex justify-end items-center space-x-2 pt-3 border-t border-slate-100">
+                        <button type="button" onclick="closeModal()" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer">Batal</button>
+                        <button type="submit" class="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-md transition flex items-center space-x-1.5 cursor-pointer">
+                            <i class="fa-solid fa-floppy-disk"></i>
+                            <span>${isEdit ? 'Simpan Perubahan' : 'Simpan Mapel'}</span>
+                        </button>
+                    </div>
                 </form>
             </div>
         </div>
     `;
 }
 
-async function saveSubject(e) {
+async function saveSubject(e, editId = '') {
     e.preventDefault();
     const code = document.getElementById('sub-code').value.trim();
     const name = document.getElementById('sub-name').value.trim();
+    const idInput = document.getElementById('sub-id');
+    const id = idInput ? idInput.value.trim() : (editId || null);
 
     try {
-        const response = await fetch('/api/subjects', {
-            method: 'POST',
+        const url = id ? `/api/subjects/${id}` : '/api/subjects';
+        const method = id ? 'PUT' : 'POST';
+        const response = await fetch(url, {
+            method: method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code, name })
+            body: JSON.stringify({ id, code, name })
         });
         const data = await response.json();
         if (!response.ok || !data.success) throw new Error(data.message || 'Gagal menyimpan mapel.');
 
         await loadSubjectsFromServer();
         closeModal();
-        showToast('Mata pelajaran berhasil disimpan!', 'success');
-        renderScheduleModule(document.getElementById('view-container'));
+        showToast(data.message || (id ? 'Mata pelajaran berhasil diperbarui!' : 'Mata pelajaran berhasil ditambahkan!'), 'success');
+        const container = document.getElementById('view-container');
+        if (container) renderScheduleModule(container);
     } catch (err) {
         showToast(err.message, 'error');
     }
