@@ -20,6 +20,33 @@ const syncStateStart = server.indexOf('app.post("/api/sync-state"');
 const syncStateEnd = server.indexOf('// Real-time Event Stream', syncStateStart);
 const syncStateRoute = syncStateStart >= 0 ? server.slice(syncStateStart, syncStateEnd > syncStateStart ? syncStateEnd : undefined) : '';
 const gameSubmitRouteCount = (server.match(/app\.post\("\/api\/games\/:id\/submit"/g) || []).length;
+const protectedAiPostRoutes = [
+  '/api/gemini/generate-questions',
+  '/api/gemini/generate-enrichment',
+  '/api/gemini/generate-modul',
+  '/api/gemini/generate-modul-all',
+  '/api/modul/parse-document',
+  '/api/modul/import-ai-structure',
+  '/api/gemini/generate-modul2-general',
+  '/api/gemini/generate-modul2-bab',
+  '/api/gemini/generate-ppt',
+  '/api/gemini/generate-poster',
+  '/api/gemini/generate-kbc-document',
+  '/api/gemini/generate-soal-kisi',
+  '/api/gemini/generate-rpp',
+  '/api/gemini/generate-device'
+];
+const aiRoutesAreStaffOnly = protectedAiPostRoutes.every((route) =>
+  server.includes(`app.post("${route}", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin'])`)
+);
+const obsoleteRootScripts = [
+  'apply_changes.cjs', 'check-base64-endpoints.js', 'ensure_all_records_tagged_and_saved.cjs',
+  'fix-server-base64.js', 'fix-server-manual.js', 'fix-sync-state-base64.js', 'fix-sync-state.js',
+  'fix-try.js', 'fix-try2.js', 'generate_offline_update.cjs', 'generate_offline_zip.js',
+  'patch_absen.cjs', 'replace_modal.cjs', 'replace_modal.js', 'rewrite_modal.cjs',
+  'seed_both_x4_and_xi11.cjs', 'seed_xi11_sync.cjs', 'simple_zip.cjs',
+  'unify_attendance.cjs', 'zip_update.cjs'
+];
 
 const checks = [
   ['JWT query bearer removed', !server.includes('req.query.token')],
@@ -114,6 +141,11 @@ const checks = [
   ['Time slots and KBM are tenant scoped', server.includes('timeSlots = mergeTenantListData(timeSlots, newSlots, req)') && server.includes("tenantConfigValue(kbmDuration, req, 40, 'kbmDuration')")],
   ['Grade categories and custom columns are tenant scoped', server.includes("setTenantConfigValue(gradeCategories, req") && server.includes("setTenantConfigValue(customGradeColumns, req") && app.includes("endpoint = '/api/custom-grade-columns'")],
   ['Chunk restore is bound to owner and tenant', server.includes('session.owner !== owner || session.tenant !== tenant') && server.includes('15 * 60 * 1000')],
+  ['AI and document generation routes are staff-only', aiRoutesAreStaffOnly],
+  ['Auto-correction resolves exam and LKPD inside tenant', server.includes('ID ujian ambigu lintas tenant. Pilih madrasah target terlebih dahulu.') && server.includes('ID LKPD ambigu lintas tenant. Pilih madrasah target terlebih dahulu.') && server.includes('canonicalRealtimeTenant(st?.madrasahId || st?.madrasahSlug || \'default\') === examTenant') && server.includes('canonicalRealtimeTenant(s?.madrasahId || s?.madrasahSlug || \'default\') === lkpdTenant')],
+  ['LKPD auto-correction uses authoritative in-memory state', !server.includes('const store = readLocalStore();\n    let lkpdList = store.lkpdList || [];') && server.includes("await saveData('lkpdList', lkpdList);")],
+  ['Static SVG placeholder is sandboxed', server.includes("Content-Security-Policy', \"default-src 'none'; style-src 'none'; script-src 'none'; sandbox\"") && server.includes("X-Content-Type-Options', 'nosniff'")],
+  ['Obsolete patch and seed scripts are not tracked', obsoleteRootScripts.every((name) => !trackedFiles.has(name))],
 ];
 
 let failed = false;
