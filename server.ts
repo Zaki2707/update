@@ -44,6 +44,11 @@ const storageMode: 'online' | 'offline' =
 const isOfflineMode = storageMode === 'offline';
 const isOnlineMode = storageMode === 'online';
 
+function safeServerError(error: any, fallback = 'Terjadi kesalahan server.') {
+  const detail = error?.message || (error ? String(error) : '');
+  return isOnlineMode ? fallback : (detail || fallback);
+}
+
 console.log(`[Runtime] ${isTrustedCloudRunRuntime ? 'TRUSTED_CLOUD_RUN' : 'LOCAL'} runtime; storage=${storageMode.toUpperCase()}${requestedAppMode ? ' (APP_MODE)' : ' (auto)'}.`);
 console.log(`[Storage] ${isOnlineMode ? 'Cloud SQL + Cloudinary are authoritative' : 'PostgreSQL/local_store.json + uploads are authoritative; Cloudinary is optional backup'}.`);
 
@@ -761,20 +766,59 @@ async function repairMissingCloudinaryPhotos(): Promise<{
   };
 }
 
+const SAFE_RASTER_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const MAX_MANAGED_IMAGE_BYTES = 10 * 1024 * 1024;
+
+function sniffSafeRasterMime(buffer: Buffer): string | null {
+  if (buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return 'image/jpeg';
+  if (buffer.length >= 8 &&
+      buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 &&
+      buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) return 'image/png';
+  if (buffer.length >= 12 &&
+      buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function parseSafeRasterDataUrl(value: string): { mime: string; buffer: Buffer } | null {
+  const match = String(value || '').match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=\r\n]+)$/i);
+  if (!match) return null;
+  const declaredMime = match[1].toLowerCase();
+  if (!SAFE_RASTER_MIME.has(declaredMime)) return null;
+  const buffer = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+  if (!buffer.length || buffer.length > MAX_MANAGED_IMAGE_BYTES) return null;
+  const actualMime = sniffSafeRasterMime(buffer);
+  if (!actualMime || actualMime !== declaredMime) return null;
+  return { mime: actualMime, buffer };
+}
+
+function isSafeManagedPhotoId(value: any): boolean {
+  const id = String(value || '');
+  return id.length > 0 && id.length <= 160 && /^[A-Za-z0-9._-]+$/.test(id) && path.basename(id) === id;
+}
+
+function isTrustedCloudinaryImageUrl(value: any): boolean {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'https:' && url.hostname === 'res.cloudinary.com';
+  } catch {
+    return false;
+  }
+}
+
 async function saveBase64ToFirestore(base64Str: string): Promise<string> {
   if (!base64Str || !base64Str.startsWith("data:image/")) return base64Str;
 
-  const photoId = `img_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const parsedImage = parseSafeRasterDataUrl(base64Str);
+  if (!parsedImage) {
+    throw new Error('Format foto tidak valid. Gunakan JPEG, PNG, atau WebP maksimal 10 MB.');
+  }
+  const photoId = `img_${Date.now()}_${crypto.randomBytes(12).toString('hex')}`;
 
   if (isOfflineMode) {
     try {
       if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-      const matches = base64Str.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-      if (matches && matches.length === 3) {
-        fs.writeFileSync(path.join(uploadsDir, photoId), Buffer.from(matches[2], 'base64'));
-      } else {
-        fs.writeFileSync(path.join(uploadsDir, photoId), base64Str);
-      }
+      fs.writeFileSync(path.join(uploadsDir, photoId), parsedImage.buffer);
     } catch (err) {
       console.error('[Photo Storage] Failed to save offline photo to uploads/:', err);
       throw new Error('Foto gagal disimpan ke penyimpanan lokal.');
@@ -1759,6 +1803,11 @@ const dbWriteTimeouts = new Map<string, NodeJS.Timeout>();
 const lastDbWriteTimes = new Map<string, number>();
 const dbWriteQueue = new KeyedSerialQueue();
 const storeMutationQueue = new KeyedSerialQueue();
+const tokenLedgerQueue = new KeyedSerialQueue();
+
+function withTokenLedger<T>(task: () => Promise<T> | T): Promise<T> {
+  return tokenLedgerQueue.run('global-token-ledger', task);
+}
 
 async function writeKeyToPostgresDirectUnlocked(key: string) {
   if (dbWriteTimeouts.has(key)) {
@@ -2471,6 +2520,10 @@ app.use((req: any, res, next) => {
   if (p === '/api/boss/generate-activation-key') {
     if (!enforceApiRateLimit(req, res, `activation:${authUser.id}`, 60, 60 * 1000)) return;
   }
+  if (p.startsWith('/api/gemini/') || p.startsWith('/api/modul/')) {
+    const aiLimit = isOnlineMode ? 120 : 1200;
+    if (!enforceApiRateLimit(req, res, `ai:${authUser.id}`, aiLimit, 10 * 60 * 1000)) return;
+  }
 
   const contextTenant = canonicalRealtimeTenant(
     getRequestMadrasahId(req) || authUser.madrasahId || (authUser as any).madrasahSlug || 'default'
@@ -2487,7 +2540,9 @@ app.get('/api/realtime-token', (req: any, res) => {
 
 if (isOfflineMode) app.use('/uploads', express.static(uploadsDir));
 
-app.get("/update_offline.zip", (req, res) => {
+app.get("/update_offline.zip", requireAuth, requireRole(['admin', 'bos', 'superadmin']), (req, res) => {
+  if (isOnlineMode) return res.status(404).send("Not found");
+  res.setHeader('Cache-Control', 'no-store');
   const filePath = path.join(process.cwd(), "update_offline.zip");
   if (fs.existsSync(filePath)) {
     res.setHeader("Content-Disposition", "attachment; filename=update_offline.zip");
@@ -2499,44 +2554,43 @@ app.get("/update_offline.zip", (req, res) => {
 });
 
 app.get("/api/photos/:id", async (req, res) => {
-  const photoId = req.params.id;
-  const localFile = path.join(uploadsDir, photoId);
+  const photoId = String(req.params.id || '');
+  if (!isSafeManagedPhotoId(photoId)) {
+    return res.status(400).json({ success: false, message: 'ID foto tidak valid.' });
+  }
+  const uploadsRoot = path.resolve(uploadsDir);
+  const localFile = path.resolve(uploadsRoot, photoId);
+  if (localFile !== path.join(uploadsRoot, photoId) || !localFile.startsWith(uploadsRoot + path.sep)) {
+    return res.status(400).json({ success: false, message: 'ID foto tidak valid.' });
+  }
 
-  // OFFLINE source of truth: local PC uploads/.
+  // OFFLINE source of truth: local PC uploads/. Only known raster formats are served.
   if (isOfflineMode && fs.existsSync(localFile)) {
     try {
       const fileBuf = fs.readFileSync(localFile);
-      const strHeader = fileBuf.subarray(0, 50).toString('utf8');
-      if (strHeader.startsWith('data:image/')) {
-        const fullStr = fileBuf.toString('utf8');
-        const matches = fullStr.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-        if (matches && matches.length === 3) {
-          res.setHeader('Content-Type', matches[1]);
-          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-          return res.send(Buffer.from(matches[2], 'base64'));
-        }
+      const mime = sniffSafeRasterMime(fileBuf);
+      if (mime) {
+        res.setHeader('Content-Type', mime);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.send(fileBuf);
       }
-      if (fileBuf[0] === 0xFF && fileBuf[1] === 0xD8) res.setHeader('Content-Type', 'image/jpeg');
-      else if (fileBuf[0] === 0x89 && fileBuf[1] === 0x50 && fileBuf[2] === 0x4E && fileBuf[3] === 0x47) res.setHeader('Content-Type', 'image/png');
-      else if (fileBuf[0] === 0x52 && fileBuf[1] === 0x49 && fileBuf[2] === 0x46 && fileBuf[3] === 0x46) res.setHeader('Content-Type', 'image/webp');
-      else res.setHeader('Content-Type', 'image/jpeg');
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      return res.send(fileBuf);
+      console.warn(`[Photo Storage] Refusing unknown/non-raster local asset: ${photoId}`);
     } catch (_) {}
   }
 
-  // Optional legacy Firestore fallback, used only if a Firestore connection is explicitly enabled.
+  // Optional legacy Firestore fallback. Never serve arbitrary text/SVG from the app origin.
   if (isOfflineMode && db) {
     try {
       const snap = await getDoc(doc(db, 'photos', photoId));
       if (snap.exists()) {
-        const data = snap.data().data;
-        const matches = data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-        if (!matches || matches.length !== 3) return res.send(data);
-        const buffer = Buffer.from(matches[2], 'base64');
-        res.setHeader('Content-Type', matches[1]);
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        return res.send(buffer);
+        const parsed = parseSafeRasterDataUrl(String(snap.data().data || ''));
+        if (parsed) {
+          res.setHeader('Content-Type', parsed.mime);
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          return res.send(parsed.buffer);
+        }
       }
     } catch (err: any) {
       console.warn(`[Photo Storage] Firestore fallback read error for ${photoId}:`, err?.message || err);
@@ -2567,9 +2621,14 @@ app.get("/api/photos/:id", async (req, res) => {
     }
   }
 
-  if (cUrl) {
+  if (cUrl && isTrustedCloudinaryImageUrl(cUrl)) {
     res.setHeader('Cache-Control', 'public, max-age=86400');
     return res.redirect(302, cUrl);
+  }
+  if (cUrl) {
+    delete photoCloudinaryMap[photoId];
+    delete photoCloudinaryMap[normalizedId];
+    delete photoCloudinaryMap[`madrasah_photos/${normalizedId}`];
   }
 
   const svgPlaceholder = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#f1f5f9"/><path d="M50 42a12 12 0 1 0 0-24 12 12 0 0 0 0 24zm0 8c-16 0-28 10-28 22v2h56v-2c0-12-12-22-28-22z" fill="#cbd5e1"/></svg>`;
@@ -3969,7 +4028,7 @@ app.post("/api/games", async (req: any, res) => {
     await saveData("eduGames", eduGames);
     res.json({ success: true, game: tagged });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Gagal menyimpan game" });
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal menyimpan game") });
   }
 });
 
@@ -4001,7 +4060,7 @@ app.put("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 
     await saveData("eduGames", eduGames);
     res.json({ success: true, game: eduGames[idx] });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Gagal memperbarui game" });
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal memperbarui game") });
   }
 });
 
@@ -4021,7 +4080,7 @@ app.delete("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     await saveData("eduGames", eduGames);
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Gagal menghapus game" });
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal menghapus game") });
   }
 });
 
@@ -4136,7 +4195,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
       dailyStreak
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Gagal memproses jawaban" });
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal memproses jawaban") });
   }
 });
 
@@ -4220,7 +4279,7 @@ app.post("/api/game/active-sessions", (req: any, res) => {
     }
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -4286,7 +4345,7 @@ app.post("/api/game/messages", requireAuth, requireRole(['teacher', 'guru', 'adm
 
     res.json({ success: true, message: msgObj });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -4305,7 +4364,7 @@ app.post("/api/game/messages/dismiss", (req: any, res) => {
     }
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -4474,7 +4533,7 @@ app.post("/api/cloudinary/sync", async (req, res) => {
       result
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || String(err) });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -4492,7 +4551,7 @@ app.post("/api/cloudinary/repair-missing", requireAuth, requireRole(['admin', 'b
     console.error('[Cloudinary Repair Endpoint] Failed:', err?.message || err);
     return res.status(500).json({
       success: false,
-      message: err?.message || 'Gagal memeriksa dan memperbaiki foto Cloudinary.'
+      message: safeServerError(err, 'Gagal memeriksa dan memperbaiki foto Cloudinary.')
     });
   }
 });
@@ -5129,7 +5188,23 @@ app.post("/api/register-madrasah", async (req, res) => {
   if (!name || !slug || !adminName || !adminUser || !adminPass) {
     return res.status(400).json({ success: false, message: "Semua data pendaftaran wajib diisi." });
   }
-  const cleanSlug = String(slug).toLowerCase().trim().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+  const rawName = String(name || '').trim();
+  const rawAdminName = String(adminName || '').trim();
+  const rawAdminUser = String(adminUser || '').trim();
+  const rawAdminPass = String(adminPass || '');
+  if (rawName.length < 2 || rawName.length > 120 || rawAdminName.length < 2 || rawAdminName.length > 120) {
+    return res.status(400).json({ success: false, message: "Nama madrasah/admin tidak valid." });
+  }
+  if (!/^[A-Za-z0-9._-]{3,64}$/.test(rawAdminUser)) {
+    return res.status(400).json({ success: false, message: "Username admin harus 3-64 karakter (huruf, angka, titik, garis bawah, atau tanda minus)." });
+  }
+  if (rawAdminPass.length < 8 || rawAdminPass.length > 128) {
+    return res.status(400).json({ success: false, message: "Password admin harus 8-128 karakter." });
+  }
+  const cleanSlug = String(slug).toLowerCase().trim().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  if (cleanSlug.length < 3 || cleanSlug.length > 64) {
+    return res.status(400).json({ success: false, message: "Slug URL harus 3-64 karakter." });
+  }
   const RESERVED_SLUGS = ['api', 'admin', 'login', 'cbt', 'boss-panel', 'boss', 'vendor', 'src', 'public', 'dist', 'node_modules', 'm', 'settings', 'absensi', 'chat'];
   if (RESERVED_SLUGS.includes(cleanSlug)) {
     return res.status(400).json({ success: false, message: "Slug URL tersebut digunakan oleh sistem. Silakan pilih slug lain." });
@@ -5137,15 +5212,15 @@ app.post("/api/register-madrasah", async (req, res) => {
   if (madrasahs.some(m => String(m.slug).toLowerCase() === cleanSlug)) {
     return res.status(400).json({ success: false, message: "Slug URL madrasah sudah terdaftar oleh sekolah lain." });
   }
-  const newMadrasahId = 'MDR_' + Date.now();
+  const newMadrasahId = 'MDR_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex');
   const newMadrasah = {
     id: newMadrasahId,
-    name: String(name).trim(),
+    name: rawName,
     slug: cleanSlug,
-    level: level || 'MA',
-    adminName: String(adminName).trim(),
-    adminUser: String(adminUser).trim(),
-    adminPass: hashPassword(String(adminPass).trim()),
+    level: String(level || 'MA').trim().slice(0, 20),
+    adminName: rawAdminName,
+    adminUser: rawAdminUser,
+    adminPass: hashPassword(rawAdminPass),
     phone: String(phone || '').trim(),
     cbtTokenBalance: 1, // Free welcome token
     tokenSignature: calculateTokenSignature(newMadrasahId, 1),
@@ -5385,7 +5460,7 @@ app.post("/api/boss/generate-activation-key", requireAuth, requireRole(['bos', '
     return res.json({ success: true, activationKey, signatureVersion: 'RSA2' });
   } catch (err: any) {
     console.error("Failed to generate activation key:", err);
-    return res.status(500).json({ success: false, message: "Gagal menghasilkan kunci: " + err.message });
+    return res.status(500).json({ success: false, message: safeServerError(err, "Gagal menghasilkan kunci aktivasi.") });
   }
 });
 
@@ -5518,7 +5593,7 @@ app.post("/api/madrasah/activate-offline-tokens", requireAuth, requireRole(['tea
     });
   } catch (err: any) {
     console.error("Failed to verify activation key:", err);
-    return res.status(500).json({ success: false, message: "Terjadi kesalahan sistem saat verifikasi: " + err.message });
+    return res.status(500).json({ success: false, message: safeServerError(err, "Terjadi kesalahan saat verifikasi aktivasi.") });
   }
 });
 
@@ -7373,7 +7448,7 @@ app.post("/api/attendance", requireAuth, async (req: any, res) => {
 
     res.json({ success: true, attendance: resultItem, updated: isUpdated });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: safeServerError(error) });
   }
 });
 
@@ -7437,7 +7512,7 @@ app.post("/api/attendance/bulk", requireAuth, requireRole(['teacher', 'guru', 'a
 
     res.json({ success: true, count: items.length });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: safeServerError(error) });
   }
 });
 
@@ -7489,7 +7564,7 @@ app.post("/api/attendance/reset", requireAuth, requireRole(['admin', 'bos', 'sup
     });
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -7590,7 +7665,7 @@ app.post("/api/attendance/clear-all", requireAuth, requireRole(['admin', 'bos', 
 
     res.json({ success: true, message: `Pembersihan berhasil! ${deletedAttendanceCount} data absensi lama dan ${deletedPhotosCount} foto sampah (absensi & profil) dihapus.` });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -7676,7 +7751,7 @@ app.post("/api/teacher-attendance", async (req: any, res) => {
 
     res.json({ success: true, teacherAttendance: resultItem });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: safeServerError(error) });
   }
 });
 
@@ -7715,7 +7790,7 @@ app.post("/api/teacher-attendance/update", requireAuth, requireRole(['admin', 'b
     });
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -8041,7 +8116,7 @@ app.post("/api/admin/cleanup-photos", requireAuth, requireRole(['admin', 'bos', 
     });
   } catch (err: any) {
     console.error('[Smart Cleanup] Failed:', err?.message || err);
-    return res.status(500).json({ success: false, message: err?.message || 'Pembersihan Cloudinary gagal.' });
+    return res.status(500).json({ success: false, message: safeServerError(err, 'Pembersihan Cloudinary gagal.') });
   }
 });
 
@@ -8055,7 +8130,7 @@ app.post("/api/admin/cleanup-teacher-photos", requireAuth, requireRole(['admin',
     });
   } catch (err: any) {
     console.error('[Teacher Smart Cleanup] Failed:', err?.message || err);
-    return res.status(500).json({ success: false, message: err?.message || 'Pembersihan foto guru gagal.' });
+    return res.status(500).json({ success: false, message: safeServerError(err, 'Pembersihan foto guru gagal.') });
   }
 });
 
@@ -8090,7 +8165,7 @@ app.post('/api/lkpd-assets/upload', requireAuth, requireRole(['teacher', 'guru',
     const ref = await saveBase64ToFirestore(dataUrl);
     return res.json({ success: true, ref });
   } catch (err: any) {
-    return res.status(500).json({ success: false, message: err?.message || 'Gagal mengunggah gambar LKPD.' });
+    return res.status(500).json({ success: false, message: safeServerError(err, 'Gagal mengunggah gambar LKPD.') });
   }
 });
 
@@ -8099,7 +8174,7 @@ app.post('/api/lkpd-assets/release', requireAuth, requireRole(['teacher', 'guru'
     const result = await releaseManagedPhotoRefs([req.body?.ref]);
     return res.json({ success: true, ...result });
   } catch (err: any) {
-    return res.status(500).json({ success: false, message: err?.message || 'Gagal melepas aset LKPD.' });
+    return res.status(500).json({ success: false, message: safeServerError(err, 'Gagal melepas aset LKPD.') });
   }
 });
 
@@ -8110,7 +8185,7 @@ app.post('/api/theme-assets/upload', requireAuth, requireRole(['admin', 'bos', '
     const ref = await saveBase64ToFirestore(dataUrl);
     return res.json({ success: true, ref });
   } catch (err: any) {
-    return res.status(500).json({ success: false, message: err?.message || 'Gagal mengunggah aset tema.' });
+    return res.status(500).json({ success: false, message: safeServerError(err, 'Gagal mengunggah aset tema.') });
   }
 });
 
@@ -8120,7 +8195,7 @@ app.post('/api/theme-assets/release', requireAuth, requireRole(['admin', 'bos', 
     const result = await releaseManagedPhotoRefs(refs);
     return res.json({ success: true, ...result });
   } catch (err: any) {
-    return res.status(500).json({ success: false, message: err?.message || 'Gagal melepas aset tema.' });
+    return res.status(500).json({ success: false, message: safeServerError(err, 'Gagal melepas aset tema.') });
   }
 });
 
@@ -9215,7 +9290,11 @@ app.post("/api/exam/student-state", requireAuth, async (req, res) => {
 
   // 3. Handle livecam snapshot frame
   if (livecamFrame) {
-    studentLivecamFrames[key] = String(livecamFrame);
+    const frameText = String(livecamFrame);
+    if (Buffer.byteLength(frameText, 'utf8') > 2 * 1024 * 1024) {
+      return res.status(413).json({ success: false, message: "Frame livecam terlalu besar." });
+    }
+    studentLivecamFrames[key] = frameText;
     broadcastStateUpdate('studentLivecamFrames');
   }
 
@@ -9976,6 +10055,9 @@ app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
   const user = req.user || getAuthUser(req);
   const recipientId = String(req.body?.recipientId || ''), signal = req.body?.signal;
   if (!user || !recipientId || signal === undefined) return res.status(400).json({ success: false, message: "Invalid signaling payload" });
+  let signalSize = 0;
+  try { signalSize = Buffer.byteLength(JSON.stringify(signal), 'utf8'); } catch (_) { signalSize = Number.MAX_SAFE_INTEGER; }
+  if (signalSize > 256 * 1024) return res.status(413).json({ success: false, message: "Payload signaling terlalu besar." });
   const role = String(user.role || '').toLowerCase(), student = isStudentAuthRole(role), boss = role === 'bos' || role === 'superadmin';
   if (!student && !isStaffAuthRole(role)) return res.status(403).json({ success: false, message: "Akses signaling ditolak." });
 
@@ -10077,7 +10159,7 @@ app.post("/api/exam/livekit-token", requireAuth, async (req: any, res) => {
     at.addGrant({ room: physicalRoomName, roomJoin: true, canPublish: student, canSubscribe: staff });
     res.setHeader('Cache-Control', 'no-store');
     res.json({ success: true, token: await at.toJwt(), serverUrl: serverUrl || "ws://localhost:7880", roomName: physicalRoomName });
-  } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err: any) { res.status(500).json({ success: false, message: safeServerError(err) }); }
 });
 
 // 10. Chats API
@@ -10121,7 +10203,7 @@ app.post("/api/chats", requireAuth, async (req: any, res) => {
     if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, data: newChat });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -10140,7 +10222,7 @@ app.delete("/api/chats/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, deleted });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -10164,7 +10246,7 @@ app.post("/api/chats/clear", async (req: any, res) => {
     if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -10195,7 +10277,7 @@ app.put("/api/chats/read", requireAuth, async (req: any, res) => {
     if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, updated });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -10231,7 +10313,7 @@ app.post("/api/chats/broadcast-apk", requireAuth, requireRole(['admin', 'bos', '
     if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, count: newChats.length });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -11291,7 +11373,7 @@ Jawaban: ${studentAnswer || "(Tidak menjawab)"}`;
     });
   } catch (error: any) {
     console.error("[Auto Koreksi Error]:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: safeServerError(error) });
   }
 });
 
@@ -11479,7 +11561,7 @@ Jawaban Siswa: ${studentAns || "(Tidak menjawab)"}
 
   } catch (error: any) {
     console.error("[Auto Koreksi LKPD Error]:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: safeServerError(error) });
   }
 });
 
@@ -12275,7 +12357,7 @@ app.post("/api/modul/parse-document", async (req, res) => {
     });
   } catch (error: any) {
     console.error("Document parse error:", error);
-    res.status(500).json({ success: false, message: "Gagal membaca dokumen: " + (error.message || "Unknown error") });
+    res.status(500).json({ success: false, message: safeServerError(error, "Gagal membaca dokumen.") });
   }
 });
 
@@ -12411,7 +12493,7 @@ KEMBALIKAN HANYA OBJEK JSON MURNI DENGAN STRUKTUR:
     });
   } catch (error: any) {
     console.error("Modul import AI error:", error);
-    res.status(500).json({ success: false, message: "Gagal memproses struktur modul: " + (error.message || "Unknown error") });
+    res.status(500).json({ success: false, message: safeServerError(error, "Gagal memproses struktur modul.") });
   }
 });
 
@@ -15465,8 +15547,8 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     const role = String(authUser?.role || '').toLowerCase();
     const syncKey = String(key);
     const isStudentSyncRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
-    const onlineStudentSyncKeys = new Set(['attendance', 'lkpdList', 'childguardStatus']);
-    const onlineStaffSyncKeys = new Set([
+    const studentSyncKeys = new Set(['attendance', 'lkpdList', 'childguardStatus']);
+    const staffSyncKeys = new Set([
       'teachers', 'students', 'classes', 'subjects', 'attendance', 'teacherAttendance',
       'schedules', 'savedRosters', 'timeSlots', 'kbmDuration', 'questionBankGroups',
       'questionBank', 'questions', 'exams', 'lkpdList', 'rooms', 'journals',
@@ -15474,16 +15556,14 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       'lessonPlans', 'grades', 'gameModes', 'classGrades', 'childguardStatus',
       'settings', 'schoolLocations', 'schoolLocationSettings'
     ]);
-    if (isOnlineMode) {
-      if (isStudentSyncRole && !onlineStudentSyncKeys.has(syncKey)) {
-        return res.status(403).json({ success: false, message: 'Siswa tidak diizinkan menyinkronkan state tersebut.' });
-      }
-      if (!isStudentSyncRole && (!staffRoles.has(role) || !onlineStaffSyncKeys.has(syncKey))) {
-        return res.status(403).json({ success: false, message: 'State sinkronisasi tidak diizinkan.' });
-      }
-      if ((syncKey === 'settings' || syncKey === 'schoolLocations' || syncKey === 'schoolLocationSettings') && !adminRoles.has(role)) {
-        return res.status(403).json({ success: false, message: 'Pengaturan sistem hanya dapat diubah administrator.' });
-      }
+    if (isStudentSyncRole && !studentSyncKeys.has(syncKey)) {
+      return res.status(403).json({ success: false, message: 'Siswa tidak diizinkan menyinkronkan state tersebut.' });
+    }
+    if (!isStudentSyncRole && (!staffRoles.has(role) || !staffSyncKeys.has(syncKey))) {
+      return res.status(403).json({ success: false, message: 'State sinkronisasi tidak diizinkan.' });
+    }
+    if ((syncKey === 'settings' || syncKey === 'schoolLocations' || syncKey === 'schoolLocationSettings') && !adminRoles.has(role)) {
+      return res.status(403).json({ success: false, message: 'Pengaturan sistem hanya dapat diubah administrator.' });
     }
     key = syncKey;
     const tenantMasterKeys = new Set(['teachers', 'students', 'classes', 'subjects']);
@@ -15703,7 +15783,7 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     }
     return res.json({ success: true, key });
   } catch (err: any) {
-    return res.status(500).json({ success: false, message: err.message });
+    return res.status(500).json({ success: false, message: safeServerError(err) });
   }
 });
 
@@ -15815,7 +15895,7 @@ async function startServer() {
   // High-performance WebSocket Signaling Server for WebRTC P2P
   try {
     const { WebSocketServer } = await import("ws");
-    const wss = new WebSocketServer({ server });
+    const wss = new WebSocketServer({ server, maxPayload: 256 * 1024, perMessageDeflate: false });
     const clients = wsClients;
 
     wss.on("connection", (ws: any) => {
