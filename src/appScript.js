@@ -1490,17 +1490,22 @@ async function waitForServerRuntimeReady(maxWaitMs = 45000) {
         while ((Date.now() - startedAt) < maxWaitMs) {
             attempt += 1;
             try {
-                const response = await fetch('/readyz', {
+                const response = await fetch('/api/health', {
                     cache: 'no-store',
                     headers: { 'Cache-Control': 'no-cache' }
                 });
                 const data = await response.json().catch(() => null);
-                if (response.ok && (!data || data.ready !== false)) {
+                if (response.ok && data && data.ready === true) {
                     runtimeReadinessConfirmed = true;
                     window.__onlineRuntimeReady = true;
                     updateInitialRuntimeStatus('Portal siap digunakan');
                     try { window.dispatchEvent(new CustomEvent('madrasah:runtime-ready')); } catch (_) {}
                     return true;
+                }
+                if (data && data.dbConnected === false) {
+                    updateInitialRuntimeStatus('Menghubungkan Cloud SQL...');
+                } else if (data && data.hydrated === false) {
+                    updateInitialRuntimeStatus('Memuat data Cloud SQL...');
                 }
             } catch (_) {}
 
