@@ -3197,6 +3197,11 @@ async function initializeOnlineRuntimeBeforeListen() {
         throw new Error('Cloud SQL terhubung tetapi hydration app_store belum selesai.');
       }
 
+      // Recover only legacy lesson-plan rows whose tenant ownership can be inferred
+      // unambiguously from the tenant-tagged subject master. Ambiguous rows remain
+      // untouched/hidden rather than risking cross-tenant disclosure.
+      await migrateLegacyLessonPlansTenantOwnership();
+
       await pool.query('SELECT 1');
       onlineRuntimeReady = true;
       onlineRuntimeReadyAt = new Date().toISOString();
@@ -6298,6 +6303,71 @@ function getRequestMadrasahId(req: any): string | null {
   if (headerVal) return String(headerVal);
   if (req.query.madrasahId) return String(req.query.madrasahId);
   return null;
+}
+
+function normalizeLegacyLessonPlanSubjectRef(value: any): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function inferLegacyLessonPlanTenant(item: any): { id: string; slug: string } | null {
+  if (!item || item.madrasahId || item.madrasahSlug) return null;
+
+  const refs = new Set(
+    [item.subjectId, item.subjectCode, item.subjectName, item.subject, item.mapel]
+      .map(normalizeLegacyLessonPlanSubjectRef)
+      .filter(Boolean)
+  );
+  if (refs.size === 0) return null;
+
+  const tenantMatches = new Map<string, { id: string; slug: string }>();
+  for (const subject of (subjects || [])) {
+    if (!subject) continue;
+    const subjectRefs = [
+      subject.id,
+      subject.code,
+      subject.name,
+      subject.subjectId,
+      subject.subjectCode
+    ].map(normalizeLegacyLessonPlanSubjectRef).filter(Boolean);
+    if (!subjectRefs.some((ref) => refs.has(ref))) continue;
+
+    const rawTenant = String(subject.madrasahId || subject.madrasahSlug || '').trim();
+    if (!rawTenant) continue;
+    const matchM = (madrasahs || []).find((m: any) =>
+      String(m?.id || '') === rawTenant || String(m?.slug || '') === rawTenant
+    );
+    const id = String(matchM?.id || subject.madrasahId || rawTenant).trim();
+    const slug = String(matchM?.slug || subject.madrasahSlug || rawTenant).trim();
+    if (!id && !slug) continue;
+    tenantMatches.set(`${id}::${slug}`, { id: id || slug, slug: slug || id });
+  }
+
+  return tenantMatches.size === 1 ? Array.from(tenantMatches.values())[0] : null;
+}
+
+async function migrateLegacyLessonPlansTenantOwnership(): Promise<number> {
+  if (!isOnlineMode || !Array.isArray(lessonPlans) || lessonPlans.length === 0) return 0;
+
+  let changed = 0;
+  const migrated = lessonPlans.map((item: any) => {
+    if (!item || item.madrasahId || item.madrasahSlug) return item;
+    const owner = inferLegacyLessonPlanTenant(item);
+    if (!owner) return item;
+    changed += 1;
+    return {
+      ...item,
+      madrasahId: owner.id,
+      madrasahSlug: owner.slug,
+      __legacyTenantRecoveredV1: true
+    };
+  });
+
+  if (changed > 0) {
+    lessonPlans = migrated;
+    await saveData('lessonPlans', lessonPlans);
+    console.log(`[LessonPlans] Recovered tenant ownership for ${changed} legacy module(s).`);
+  }
+  return changed;
 }
 
 function filterByMadrasah(list: any[], req: any): any[] {
@@ -13223,9 +13293,9 @@ app.get("/api/lesson-plans", (req, res) => {
   const filteredTenant = filterByMadrasah(lessonPlans, req);
   if (subjectId) {
     const filtered = filteredTenant.filter(lp => String(lp.subjectId) === String(subjectId));
-    return res.json({ success: true, data: filtered });
+    return res.json({ success: true, data: filtered, lessonPlans: filtered });
   }
-  res.json({ success: true, data: filteredTenant });
+  res.json({ success: true, data: filteredTenant, lessonPlans: filteredTenant });
 });
 
 app.post("/api/lesson-plans", async (req, res) => {
