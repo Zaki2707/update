@@ -3724,7 +3724,17 @@ async function checkDatabaseConnection() {
         }
     } catch (err) {
         if (statusResultEl) {
-            statusResultEl.innerHTML = `<div class="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs"><div class="font-bold mb-1">Gagal menghubungi server diagnostik</div><p class="text-slate-700">${err?.message || String(err)}</p></div>`;
+            statusResultEl.replaceChildren();
+            const box = document.createElement('div');
+            box.className = 'p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs';
+            const title = document.createElement('div');
+            title.className = 'font-bold mb-1';
+            title.textContent = 'Gagal menghubungi server diagnostik';
+            const detail = document.createElement('p');
+            detail.className = 'text-slate-700';
+            detail.textContent = String(err?.message || err || 'Kesalahan tidak diketahui');
+            box.append(title, detail);
+            statusResultEl.appendChild(box);
         }
     }
 }
