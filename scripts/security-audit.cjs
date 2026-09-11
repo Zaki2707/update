@@ -80,6 +80,8 @@ const checks = [
   ['Regular student IDs reject duplicates', server.includes('ID siswa sudah digunakan. Gunakan ID lain agar state CBT dan realtime tetap unik.')],
   ['Import groups are tenant scoped', server.includes("let list = filterByMadrasah(importGroups || [], req)") && server.includes("tagNewRecord(raw, req)") && server.includes("isItemForCurrentMadrasah(g, req)")],
   ['Teacher deletion is tenant scoped', server.includes('teacherCandidates.find((t: any) => isItemForCurrentMadrasah(t, req))') && server.includes("teachers = teachers.filter((t: any) => !(String(t.id) === String(id) && isItemForCurrentMadrasah(t, req)))")],
+  ['Legacy duplicate IDs resolve inside request tenant', server.includes('function resolveTenantItemIndexById(') && server.includes('ID guru ambigu lintas tenant') && server.includes('ID siswa ambigu lintas tenant') && server.includes('ID kelas ambigu lintas tenant') && server.includes('ID mata pelajaran ambigu lintas tenant')],
+  ['Student photo-history attendance cleanup is tenant scoped', server.includes('if (isItemForCurrentMadrasah(a, req) &&') && server.includes('a.photo === photoUrl')],
   ['Tenant configuration envelope exists', server.includes('function tenantConfigValue(') && server.includes('function setTenantConfigValue(') && server.includes('__tenantScopedConfigV1')],
   ['Geofence settings are tenant scoped', server.includes("tenantConfigValue(schoolLocationSettings, req") && server.includes("setTenantConfigValue(\n    schoolLocationSettings")],
   ['Time slots and KBM are tenant scoped', server.includes('timeSlots = mergeTenantListData(timeSlots, newSlots, req)') && server.includes("tenantConfigValue(kbmDuration, req, 40, 'kbmDuration')")],
