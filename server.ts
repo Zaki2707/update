@@ -3892,7 +3892,10 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     childguardLocations: isStudent ? {} : (isBosUser ? childguardLocations : filterStudentKeyedObjectForRequest(childguardLocations, req)),
     childguardStatus: isStudent
       ? Object.fromEntries(Object.entries(childguardStatus || {}).filter(([statusKey]) => {
-          const own = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
+          const ownCandidates = (students || []).filter((st: any) =>
+            String(st.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(st, req)
+          );
+          const own = ownCandidates.length === 1 ? ownCandidates[0] : null;
           return String(statusKey) === String(authUser?.id || '') || String(statusKey) === String(own?.nis || '');
         }))
       : (isBosUser ? childguardStatus : filterStudentKeyedObjectForRequest(childguardStatus, req)),
@@ -5131,11 +5134,22 @@ app.get("/api/token-balance", requireAuth, (req: any, res) => {
   const role = String(authUser?.role || '').toLowerCase().trim();
 
   if (role === 'teacher' || role === 'guru') {
-    const teacher = (teachers || []).find((t: any) =>
-      String(t.id) === String(authUser?.id || '') ||
-      (authUser?.username && String(t.username) === String(authUser.username))
+    let teacherCandidates = (teachers || []).filter((teacher: any) =>
+      String(teacher.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(teacher, req)
     );
-    if (!teacher) return res.status(404).json({ success: false, message: "Data guru tidak ditemukan." });
+    if (teacherCandidates.length !== 1 && authUser?.username) {
+      teacherCandidates = (teachers || []).filter((teacher: any) =>
+        String(teacher.username || '').toLowerCase() === String(authUser.username).toLowerCase() &&
+        isItemForCurrentMadrasah(teacher, req)
+      );
+    }
+    if (teacherCandidates.length !== 1) {
+      return res.status(teacherCandidates.length > 1 ? 409 : 404).json({
+        success: false,
+        message: teacherCandidates.length > 1 ? "Data guru ambigu pada tenant ini." : "Data guru tidak ditemukan."
+      });
+    }
+    const teacher = teacherCandidates[0];
     return res.json({ success: true, scope: 'teacher', balance: Number(teacher.cbtTokenBalance || 0) });
   }
 
@@ -5175,6 +5189,12 @@ function sanitizeMadrasahAdminView(m: any) {
   return safe;
 }
 
+function sanitizeMadrasahMemberView(m: any) {
+  const publicView = sanitizeMadrasahPublic(m);
+  if (!publicView) return null;
+  return { ...publicView, cbtTokenBalance: Number(m?.cbtTokenBalance || 0) };
+}
+
 // Multi-Tenant & Bos Token Endpoints
 app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
@@ -5194,7 +5214,7 @@ app.get("/api/madrasahs", requireAuth, (req: any, res) => {
   );
   return res.json({
     success: true,
-    madrasahs: ownMadrasahs.map(sanitizeMadrasahAdminView).filter(Boolean)
+    madrasahs: ownMadrasahs.map(sanitizeMadrasahMemberView).filter(Boolean)
   });
 });
 
@@ -5294,7 +5314,7 @@ app.post("/api/cbt-token-price", requireAuth, requireRole(['bos', 'superadmin'])
   });
 });
 
-app.get("/api/token-requests", requireAuth, (req: any, res) => {
+app.get("/api/token-requests", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   const authUser = req.user;
   const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
   const { madrasahId } = req.query;
@@ -6763,21 +6783,18 @@ app.post("/api/students/bulk-upload-photos", requireAuth, requireRole(['teacher'
     const itemNis = String(item.nis || '').trim();
     if (!itemNis || !item.photo) continue;
     
-    if (item.photo && item.photo.startsWith("data:image/")) {
-      item.photo = await saveBase64ToFirestore(item.photo);
-    }
-
-    const authUser = getAuthUser(req);
-    const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-    const idx = students.findIndex(s =>
-      (String(s.nis || '').trim() === itemNis || String(s.username || '').trim() === itemNis) &&
-      (isBos || isItemForCurrentMadrasah(s, req))
+    const matches = (students || []).filter((student: any) =>
+      (String(student.nis || '').trim() === itemNis || String(student.username || '').trim() === itemNis) &&
+      isItemForCurrentMadrasah(student, req)
     );
-    
-    if (idx >= 0) {
-      students[idx].photo = item.photo;
-      updatedCount++;
+    if (matches.length !== 1) continue;
+
+    let storedPhoto = item.photo;
+    if (storedPhoto && storedPhoto.startsWith("data:image/")) {
+      storedPhoto = await saveBase64ToFirestore(storedPhoto);
     }
+    matches[0].photo = storedPhoto;
+    updatedCount++;
   }
   
   if (updatedCount > 0) {
@@ -7463,7 +7480,10 @@ app.get("/api/attendance", requireAuth, async (req: any, res) => {
   if (role === 'student' || role === 'siswa') {
     list = list.filter((item: any) => String(item.studentId || '') === String(authUser.id));
   } else if (role === 'class_leader' || role === 'ketua_kelas') {
-    const selfStudent = (students || []).find((s: any) => String(s.id) === String(authUser.id));
+    const selfCandidates = (students || []).filter((student: any) =>
+      String(student.id) === String(authUser.id) && isItemForCurrentMadrasah(student, req)
+    );
+    const selfStudent = selfCandidates.length === 1 ? selfCandidates[0] : null;
     const classId = selfStudent?.classId || selfStudent?.class_id || authUser?.classId || '';
     list = list.filter((item: any) => String(item.classId || '') === String(classId));
   }
@@ -9896,27 +9916,25 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
   const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
   const userMadrasahId = getRequestMadrasahId(req);
 
-  const activeExam = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
-  if (!activeExam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan." });
-
-  if (!isBos && activeExam) {
-    const examMId = String(activeExam.madrasahId || 'default').trim();
-    if (examMId !== String(userMadrasahId).trim()) {
-      return res.status(403).json({ success: false, message: "Akses ditolak: Anda tidak memiliki wewenang memantau ujian dari madrasah lain." });
-    }
+  const examSource = getMemoryKeyValue('exams') || exams || [];
+  const resolvedExam = resolveTenantItemIndexById(examSource, eId, req);
+  if (resolvedExam.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant. Pilih tenant target secara eksplisit." });
   }
- 
+  const activeExam = resolvedExam.item;
+  if (!activeExam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan pada tenant yang diizinkan." });
+
+  const examTenant = canonicalRealtimeTenant(activeExam.madrasahId || activeExam.madrasahSlug || 'default');
   let studentList = getMemoryKeyValue('students') || students || [];
-  if (!isBos) {
-    studentList = studentList.filter((s: any) => String(s.madrasahId || 'default').trim() === String(userMadrasahId).trim());
-  }
+  studentList = studentList.filter((student: any) =>
+    canonicalRealtimeTenant(student.madrasahId || student.madrasahSlug || 'default') === examTenant
+  );
 
-  const activeExamInMem = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
- 
-  // Filter students by assigned classes if defined on the exam
   let targetStudents = studentList;
-  if (activeExamInMem && activeExamInMem.classes && activeExamInMem.classes.length > 0 && !activeExamInMem.classes.includes('ALL')) {
-    targetStudents = studentList.filter((s: any) => activeExamInMem.classes.includes(String(s.classId || s.className || s.class)));
+  if (activeExam.classes && activeExam.classes.length > 0 && !activeExam.classes.includes('ALL')) {
+    targetStudents = studentList.filter((student: any) =>
+      activeExam.classes.includes(String(student.classId || student.className || student.class))
+    );
   }
  
   const summary = targetStudents.map((st: any) => {
@@ -10354,8 +10372,15 @@ app.get("/api/exam/signaling", requireAuth, (req: any, res) => {
     if (requested !== 'admin') return res.status(403).json({ success: false, message: "Pengawas hanya dapat membaca antrean pengawas." });
     key = signalingAdminKey(req, user);
     if (senderId && !boss) {
-      const target = (students || []).find((x: any) => String(x.id) === senderId);
-      if (!target || !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Pengirim bukan siswa madrasah Anda." });
+      const targets = (students || []).filter((student: any) =>
+        String(student.id) === senderId && isItemForCurrentMadrasah(student, req)
+      );
+      if (targets.length !== 1) {
+        return res.status(targets.length > 1 ? 409 : 403).json({
+          success: false,
+          message: targets.length > 1 ? "ID pengirim ambigu pada tenant ini." : "Pengirim bukan siswa madrasah Anda."
+        });
+      }
     }
   } else return res.status(403).json({ success: false, message: "Akses signaling ditolak." });
 
@@ -16115,14 +16140,24 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     }
     else if (key === 'childguardStatus') {
       if (typeof data === 'object' && data !== null) {
-        if (isOnlineMode && isStudentSyncRole) {
-          const ownStudent = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
+        if (isStudentSyncRole) {
+          const ownCandidates = (students || []).filter((student: any) =>
+            String(student.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(student, req)
+          );
+          if (ownCandidates.length !== 1) {
+            return res.status(ownCandidates.length > 1 ? 409 : 403).json({
+              success: false,
+              message: ownCandidates.length > 1 ? 'Identitas siswa ambigu pada tenant ini.' : 'Identitas siswa tidak ditemukan pada tenant ini.'
+            });
+          }
+          const ownStudent = ownCandidates[0];
           const allowedKeys = new Set([String(authUser?.id || ''), String(ownStudent?.nis || '')].filter(Boolean));
           const suppliedKeys = Object.keys(data);
           if (suppliedKeys.some((statusKey: string) => !allowedKeys.has(String(statusKey)))) {
             return res.status(403).json({ success: false, message: 'Status ChildGuard hanya boleh untuk akun siswa sendiri.' });
           }
         }
+        const scopedStudents = filterByMadrasah(students || [], req);
         const now = Date.now();
         for (const [sKey, sStatus] of Object.entries(data)) {
           if (typeof sStatus === 'object' && sStatus !== null) {
@@ -16133,17 +16168,18 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
         childguardStatus = { ...(childguardStatus || {}), ...data };
         for (const [sKey, sStatus] of Object.entries(data)) {
           const cleanSKey = String(sKey).replace(/\D/g, '');
-          const matchedStudent = (students || []).find((s: any) => 
-            String(s.id) === String(sKey) || 
-            String(s.nis) === String(sKey) ||
-            (cleanSKey !== '' && String(s.id).replace(/\D/g, '') === cleanSKey) ||
-            (cleanSKey !== '' && String(s.nis).replace(/\D/g, '') === cleanSKey)
+          const matchedCandidates = scopedStudents.filter((student: any) =>
+            String(student.id) === String(sKey) ||
+            String(student.nis) === String(sKey) ||
+            (cleanSKey !== '' && String(student.id).replace(/\D/g, '') === cleanSKey) ||
+            (cleanSKey !== '' && String(student.nis).replace(/\D/g, '') === cleanSKey)
           );
+          const matchedStudent = matchedCandidates.length === 1 ? matchedCandidates[0] : null;
           if (matchedStudent) {
             if (matchedStudent.id) childguardStatus[String(matchedStudent.id)] = sStatus;
             if (matchedStudent.nis) childguardStatus[String(matchedStudent.nis)] = sStatus;
-          } else if (Array.isArray(students) && students.length === 1) {
-            const first = students[0];
+          } else if (scopedStudents.length === 1) {
+            const first = scopedStudents[0];
             if (first) {
               if (first.id) childguardStatus[String(first.id)] = sStatus;
               if (first.nis) childguardStatus[String(first.nis)] = sStatus;
