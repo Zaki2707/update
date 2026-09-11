@@ -3516,6 +3516,19 @@ function sanitizeSettingsForClient(settings: any) {
   return safe;
 }
 
+function sanitizeSettingsForPublic(settings: any) {
+  const safe: any = sanitizeSettingsForClient(settings) || {};
+  // These values are needed only after authentication for WebRTC/LiveKit or admin UI.
+  // Do not expose them from the public bootstrap endpoint.
+  for (const key of [
+    'adminUser',
+    'turnUrl', 'turnUsername', 'turnCredential',
+    'livekitUrl', 'livekitApiKey',
+    'cloudinaryApiKey', 'cloudinaryCloudName'
+  ]) delete safe[key];
+  return safe;
+}
+
 // Aggregated All Data endpoint for super fast loading
 app.get("/api/all-data", requireAuth, (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -14201,7 +14214,10 @@ app.delete("/api/generated-exams/:id", async (req, res) => {
 
 // Settings API
 app.get("/api/settings", (req, res) => {
-  const safeSettings = sanitizeSettingsForClient(appSettings);
+  const authenticatedUser = getAuthUser(req);
+  const safeSettings = authenticatedUser
+    ? sanitizeSettingsForClient(appSettings)
+    : sanitizeSettingsForPublic(appSettings);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ success: true, settings: safeSettings, isOfflineMode });
 });
