@@ -4,6 +4,10 @@ const { execFileSync } = require('child_process');
 const server = fs.readFileSync('server.ts', 'utf8');
 const app = fs.readFileSync('src/appScript.js', 'utf8');
 const assessment = fs.readFileSync('src/assessmentModule.js', 'utf8');
+const modules = fs.readFileSync('src/modulesScript.js', 'utf8');
+const adminModules = fs.readFileSync('src/adminModules.js', 'utf8');
+const settingsModule = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
+const chatModule = fs.readFileSync('src/chatModule.js', 'utf8');
 const gitignore = fs.readFileSync('.gitignore', 'utf8');
 const firestoreRules = fs.readFileSync('firestore.rules', 'utf8');
 const trackedFiles = new Set(execFileSync('git', ['ls-files'], { encoding: 'utf8' }).trim().split(/\r?\n/).filter(Boolean));
@@ -56,7 +60,18 @@ const checks = [
   ['Token-lock legacy key is environment-only', !server.includes('const LEGACY_TOKEN_LOCK_SECRET = "') && server.includes("readConfiguredSecret('TOKEN_LOCK_LEGACY_SECRET')")],
   ['Online runtime secrets fail closed', server.includes('Cloud/online deployments must never silently fall back') && server.includes("resolveRuntimeSecret('LOCAL_STORE_SECRET'") && server.includes("resolveRuntimeSecret('TOKEN_LOCK_SECRET'")],
   ['Online DB pull is Cloud SQL authoritative', dbPullRoute.includes('ONLINE_DB_PULL_CLOUD_SQL_ONLY') && dbPullRoute.indexOf('if (isOnlineMode)') >= 0 && dbPullRoute.indexOf('if (isOnlineMode)') < dbPullRoute.indexOf('tryLocalBackupRestore') && dbPullRoute.includes("mode: 'online-cloud-sql-authoritative'")],
-  ['Online sync-state uses explicit role allowlists', syncStateRoute.includes('onlineStudentSyncKeys') && syncStateRoute.includes('onlineStaffSyncKeys') && syncStateRoute.includes('State sinkronisasi tidak diizinkan.')],
+  ['Sync-state uses explicit role allowlists in all modes', syncStateRoute.includes('studentSyncKeys') && syncStateRoute.includes('staffSyncKeys') && syncStateRoute.includes('State sinkronisasi tidak diizinkan.')],
+  ['JWT is not persisted in localStorage', app.includes("const AUTH_SESSION_TOKEN_KEY = 'madrasah_auth_token'") && app.includes('sessionStorage.setItem(AUTH_SESSION_TOKEN_KEY') && !app.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser))") && !modules.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser))") && !adminModules.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser))") && !settingsModule.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser))")],
+  ['Student self-profile is identity scoped', server.includes('app.put("/api/student/profile", requireAuth, requireRole') && server.includes("String(item.id) === ownId && isItemForCurrentMadrasah(item, req)") && server.includes('Username sudah digunakan siswa lain.')],
+  ['Chat list is private for students', server.includes('String(c.senderId) === ownId || String(c.receiverId) === ownId')],
+  ['Chat HTML sinks escape user content', chatModule.includes('chatEscape(msg.text)') && chatModule.includes('isSafeChatAttachment')],
+  ['Photo endpoint blocks traversal and active image formats', server.includes('isSafeManagedPhotoId') && server.includes('parseSafeRasterDataUrl') && server.includes("SAFE_RASTER_MIME = new Set(['image/jpeg', 'image/png', 'image/webp'])") && server.includes('path.basename(id) === id')],
+  ['Token approval is terminal and serialized', server.includes('withTokenLedger(async () =>') && server.includes("String(reqItem.status || 'pending').toLowerCase() !== 'pending'") && server.includes('Permintaan top-up ini sudah diproses')],
+  ['Teacher token edits are BOSS-only', server.includes('app.put("/api/teachers/:id/tokens", requireAuth, requireRole([\'bos\', \'superadmin\'])')],
+  ['Offline activation is offline-only and replay-safe', server.includes('Kode aktivasi offline hanya dapat digunakan pada instalasi offline.') && server.includes('usedActivationKeys.includes(signature)') && server.includes('withTokenLedger(async () =>')],
+  ['CBT broadcast messages and violations are tenant namespaced', server.includes('function examBroadcastStateKey(') && server.includes('function resolveExamViolationLogKey(') && server.includes('normalizeExamMessageMapKeysForRequest') && !server.includes('examViolationLogs[eId].unshift')],
+  ['Signaling payloads are bounded', server.includes('signalSize > 256 * 1024') && server.includes('maxPayload: 256 * 1024') && server.includes('Frame livecam terlalu besar.')],
+  ['Offline update archive is authenticated and offline-only', server.includes('app.get("/update_offline.zip", requireAuth, requireRole') && server.includes('if (isOnlineMode) return res.status(404).send("Not found")')],
   ['Student attendance sync is identity scoped', syncStateRoute.includes('Siswa hanya dapat menyinkronkan absensi miliknya.') && syncStateRoute.includes('mergeTenantScopedSyncRecords')],
   ['Tenant settings sync is isolated from global protected settings', syncStateRoute.includes('sanitizeSettingsMutation(data, true)') && syncStateRoute.includes('__tenantScopedSettingsV1') && server.includes("'paymentAccounts', 'cbtTokenPrice'")],
   ['Generic settings PUT is BOSS-only', server.includes('app.put("/api/settings", requireAuth, requireRole([\'bos\', \'superadmin\'])')],
