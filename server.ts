@@ -5940,12 +5940,14 @@ app.put("/api/teachers/:id/tokens", requireAuth, requireRole(['bos', 'superadmin
 
 app.post("/api/madrasahs/:id/toggle-status", requireAuth, requireRole(['bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  const targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
-  if (!targetM) {
+  const targetIndex = madrasahs.findIndex(m => String(m.id) === String(id) || String(m.slug) === String(id));
+  if (targetIndex < 0) {
     return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
   }
+  const nextMadrasahs = madrasahs.map((item: any) => ({ ...item }));
+  const targetM = nextMadrasahs[targetIndex];
   targetM.isActive = targetM.isActive === false ? true : false;
-  await saveData('madrasahs', madrasahs, true);
+  await saveData('madrasahs', nextMadrasahs, true);
   return res.json({
     success: true,
     madrasah: sanitizeMadrasahAdminView(targetM),
@@ -5958,8 +5960,10 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
   return withTokenLedger(async () => {
     const { id } = req.params;
     const { name, level, adminName, adminUser, adminPass, phone, cbtTokenBalance, isActive } = req.body;
-    const targetM = madrasahs.find(m => String(m.id) === String(id) || String(m.slug) === String(id));
-    if (!targetM) return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+    const targetIndex = madrasahs.findIndex(m => String(m.id) === String(id) || String(m.slug) === String(id));
+    if (targetIndex < 0) return res.status(404).json({ success: false, message: "Madrasah tidak ditemukan." });
+    const nextMadrasahs = madrasahs.map((item: any) => ({ ...item }));
+    const targetM = nextMadrasahs[targetIndex];
 
     if (name) targetM.name = String(name).trim().slice(0, 120);
     if (level) targetM.level = String(level).trim().slice(0, 20);
@@ -5992,7 +5996,7 @@ app.post("/api/madrasahs/:id/update", requireAuth, requireRole(['bos', 'superadm
     }
     if (isActive !== undefined) targetM.isActive = Boolean(isActive);
 
-    await saveData('madrasahs', madrasahs, true);
+    await saveData('madrasahs', nextMadrasahs, true);
     return res.json({
       success: true,
       madrasah: sanitizeMadrasahAdminView(targetM),
