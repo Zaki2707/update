@@ -10001,6 +10001,14 @@ app.post("/api/grades", requireAuth, requireRole(['teacher', 'guru', 'admin', 'b
   res.json({ success: true, count: processed.length, grade: processed[0], grades: processed });
 });
 
+// Tenant-scoped custom grade columns. Mutations still flow through /api/sync-state.
+app.get("/api/custom-grade-columns", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
+  res.json({
+    success: true,
+    customGradeColumns: tenantConfigValue(customGradeColumns, req, {}, 'customGradeColumns')
+  });
+});
+
 // Time Slots API for Roster
 app.get("/api/time-slots", requireAuth, (req, res) => {
   res.json({
