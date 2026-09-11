@@ -2472,7 +2472,7 @@ app.use((req: any, res, next) => {
   }
 
   if (p === '/api/realtime-stream') {
-    const realtimeUser = verifyRealtimeToken(String(req.query?.rt || ''));
+    const realtimeUser = validateAuthSessionAgainstState(verifyRealtimeToken(String(req.query?.rt || '')));
     if (!realtimeUser) {
       return res.status(401).json({ success: false, message: 'Realtime access ticket tidak sah atau kedaluwarsa.' });
     }
@@ -2492,6 +2492,7 @@ app.use((req: any, res, next) => {
   }
 
   const adminOnly =
+    p === '/api/check-connection' ||
     p === '/api/db-status' ||
     p === '/api/db-pull-cloud' ||
     p === '/api/cloudinary/sync' ||
@@ -3381,7 +3382,9 @@ function verifyAuthToken(token: string): AuthSession | null {
   if (parts.length !== 3) return null;
   const [b64Header, b64Payload, signature] = parts;
   const expectedSig = crypto.createHmac("sha256", JWT_SECRET).update(`${b64Header}.${b64Payload}`).digest("base64url");
-  if (signature !== expectedSig) return null;
+  const sigBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSig);
+  if (sigBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(sigBuffer, expectedBuffer)) return null;
   try {
     const payload = JSON.parse(Buffer.from(b64Payload, "base64url").toString("utf-8"));
     if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
@@ -3479,18 +3482,96 @@ async function verifyPasswordAsync(plainText: string, hashedPassword: string): P
   if (derivedKey.length !== expectedBuffer.length) return false;
   return crypto.timingSafeEqual(derivedKey, expectedBuffer);
 }
+function normalizedAuthRole(value: any): string {
+  const role = String(value || '').toLowerCase().trim();
+  if (role === 'guru') return 'teacher';
+  if (role === 'siswa' || role === 'murid') return 'student';
+  if (role === 'ketua_kelas') return 'class_leader';
+  if (role === 'administrator') return 'admin';
+  if (role === 'superadmin') return 'bos';
+  return role;
+}
+
+function resolveSessionMadrasah(session: any): any | null {
+  const raw = String(session?.madrasahId || session?.madrasahSlug || 'default').trim();
+  let match = (madrasahs || []).find((m: any) =>
+    String(m.id) === raw || String(m.slug || '').toLowerCase() === raw.toLowerCase()
+  );
+  if (!match && raw === 'default') {
+    match = (madrasahs || []).find((m: any) => String(m.id) === 'default' || String(m.slug) === 'default') || (madrasahs || [])[0] || null;
+  }
+  return match || null;
+}
+
+function recordMatchesAuthTenant(record: any, session: any): boolean {
+  if (!record) return false;
+  const target = resolveSessionMadrasah(session);
+  const tokenRaw = String(session?.madrasahId || session?.madrasahSlug || 'default').trim();
+  const targetId = String(target?.id || tokenRaw || 'default');
+  const targetSlug = String(target?.slug || tokenRaw || 'default');
+  const recordId = String(record?.madrasahId || '').trim();
+  const recordSlug = String(record?.madrasahSlug || '').trim();
+
+  if (!recordId && !recordSlug) {
+    return tokenRaw === 'default' || targetId === 'default' || targetSlug === 'default';
+  }
+  return recordId === targetId || recordId === targetSlug || recordSlug === targetId || recordSlug === targetSlug;
+}
+
+function validateAuthSessionAgainstState(session: any): AuthSession | null {
+  if (!session || !session.id) return null;
+  const role = normalizedAuthRole(session.role);
+
+  if (role === 'bos') {
+    if (!isBossRuntimeEnabled() || String(session.id) !== 'BOSS') return null;
+    return session as AuthSession;
+  }
+
+  if (role === 'admin') {
+    const tenant = resolveSessionMadrasah(session);
+    if (!tenant || tenant.isActive === false) return null;
+    const id = String(session.id || '');
+    const registeredAdminId = 'ADMIN_' + String(tenant.id);
+    if (id !== 'ADMIN' && id !== registeredAdminId) return null;
+    return session as AuthSession;
+  }
+
+  if (role === 'teacher') {
+    const matches = (teachers || []).filter((t: any) =>
+      String(t.id) === String(session.id) && recordMatchesAuthTenant(t, session)
+    );
+    return matches.length === 1 ? session as AuthSession : null;
+  }
+
+  if (role === 'student' || role === 'class_leader') {
+    const matches = (students || []).filter((st: any) =>
+      String(st.id) === String(session.id) && recordMatchesAuthTenant(st, session)
+    );
+    if (matches.length !== 1) return null;
+    const currentRole = normalizedAuthRole(matches[0].role || 'student');
+    if (currentRole !== role) return null;
+    return session as AuthSession;
+  }
+
+  return null;
+}
+
+function verifyActiveAuthToken(token: string): AuthSession | null {
+  return validateAuthSessionAgainstState(verifyAuthToken(token));
+}
+
 function getAuthUser(req: any): AuthSession | null {
   // 1. Authorization: Bearer <token>
   const authHeader = req.headers?.authorization || req.headers?.Authorization;
   if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
-    const verified = verifyAuthToken(token);
+    const verified = verifyActiveAuthToken(token);
     if (verified) return verified;
   }
   // 2. x-auth-token header
   const xAuthToken = req.headers ? (req.headers['x-auth-token'] || req.headers['X-Auth-Token']) : null;
   if (xAuthToken && typeof xAuthToken === 'string') {
-    const verified = verifyAuthToken(xAuthToken.trim());
+    const verified = verifyActiveAuthToken(xAuthToken.trim());
     if (verified) return verified;
   }
   return null;
@@ -5129,11 +5210,14 @@ app.get("/api/token-balance", requireAuth, (req: any, res) => {
   const role = String(authUser?.role || '').toLowerCase().trim();
 
   if (role === 'teacher' || role === 'guru') {
-    const teacher = (teachers || []).find((t: any) =>
-      String(t.id) === String(authUser?.id || '') ||
-      (authUser?.username && String(t.username) === String(authUser.username))
+    const teacherMatches = filterByMadrasah(teachers || [], req).filter((t: any) =>
+      String(t.id) === String(authUser?.id || '')
     );
-    if (!teacher) return res.status(404).json({ success: false, message: "Data guru tidak ditemukan." });
+    if (teacherMatches.length > 1) {
+      return res.status(409).json({ success: false, message: "ID guru ambigu pada tenant ini." });
+    }
+    const teacher = teacherMatches[0];
+    if (!teacher) return res.status(404).json({ success: false, message: "Data guru tidak ditemukan pada madrasah ini." });
     return res.json({ success: true, scope: 'teacher', balance: Number(teacher.cbtTokenBalance || 0) });
   }
 
@@ -10504,9 +10588,10 @@ app.post("/api/chats", requireAuth, async (req: any, res) => {
     }
 
     const requestedSender = String(req.body?.senderId || '');
+    const canUseAdminAlias = ['admin', 'administrator', 'bos', 'superadmin'].includes(authRole);
     const senderId = isStudent
       ? String(authUser.id)
-      : (requestedSender === 'admin' ? 'admin' : String(authUser.id));
+      : (requestedSender === 'admin' && canUseAdminAlias ? 'admin' : String(authUser.id));
 
     const newChat = {
       senderId,
@@ -11606,18 +11691,34 @@ app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru'
       return res.status(400).json({ success: false, message: "classId dan examId harus diisi." });
     }
 
-    const ex = exams.find((e: any) => String(e.id) === String(examId));
-    if (!ex) return res.status(404).json({ success: false, message: "Jadwal ujian tidak ditemukan." });
+    const resolvedExam = resolveTenantItemIndexById(exams, examId, req);
+    if (resolvedExam.ambiguous) {
+      return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant." });
+    }
+    const ex = resolvedExam.item;
+    if (!ex) return res.status(404).json({ success: false, message: "Jadwal ujian tidak ditemukan pada tenant ini." });
 
     const authUser = getAuthUser(req);
     const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-    if (!isBos && !isItemForCurrentMadrasah(ex, req)) {
-      return res.status(403).json({ success: false, message: "Akses ditolak." });
+
+    const classMatches = filterByMadrasah(classes || [], req).filter((cl: any) => String(cl.id) === String(classId));
+    if (classMatches.length !== 1) {
+      return res.status(classMatches.length > 1 ? 409 : 404).json({
+        success: false,
+        message: classMatches.length > 1 ? "ID kelas ambigu pada tenant ini." : "Kelas tidak ditemukan pada tenant ini."
+      });
+    }
+    const targetClass = classMatches[0];
+    const examClasses = Array.isArray(ex.classes) ? ex.classes.map((v: any) => String(v)) : [];
+    if (examClasses.length > 0 && !examClasses.includes('ALL')) {
+      const allowedClassIds = new Set([String(targetClass.id), String(targetClass.name || ''), String(targetClass.code || '')]);
+      if (!examClasses.some((v: string) => allowedClassIds.has(v))) {
+        return res.status(409).json({ success: false, message: "Kelas yang dipilih bukan sasaran ujian ini." });
+      }
     }
 
-    let targets = students.filter((st: any) =>
-      String(st.classId) === String(classId) &&
-      (isBos || isItemForCurrentMadrasah(st, req))
+    let targets = filterByMadrasah(students || [], req).filter((st: any) =>
+      String(st.classId) === String(classId)
     ).filter((st: any) => {
       const key = resolveExamStateKey(req, st.id, examId);
       return Boolean(completedExams[key]) || studentExamAnswers[key] !== undefined;
@@ -11723,18 +11824,32 @@ app.post("/api/gemini/auto-koreksi-lkpd", requireAuth, requireRole(['teacher', '
       return res.status(400).json({ success: false, message: "classId dan lkpdId harus diisi." });
     }
 
-    const store = readLocalStore();
-    let lkpdList = store.lkpdList || [];
-    const lkpd = lkpdList.find((l: any) => String(l.id) === String(lkpdId));
+    const resolvedLkpd = resolveTenantItemIndexById(lkpdList, lkpdId, req);
+    if (resolvedLkpd.ambiguous) {
+      return res.status(409).json({ success: false, message: "ID LKPD ambigu lintas tenant." });
+    }
+    const lkpd = resolvedLkpd.item;
     if (!lkpd) {
-      return res.status(404).json({ success: false, message: "LKPD tidak ditemukan." });
+      return res.status(404).json({ success: false, message: "LKPD tidak ditemukan pada tenant ini." });
     }
 
     const authUser = getAuthUser(req);
     const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
 
-    if (!isBos && !isItemForCurrentMadrasah(lkpd, req)) {
-      return res.status(403).json({ success: false, message: "Akses ditolak." });
+    const classMatches = filterByMadrasah(classes || [], req).filter((cl: any) => String(cl.id) === String(classId));
+    if (classMatches.length !== 1) {
+      return res.status(classMatches.length > 1 ? 409 : 404).json({
+        success: false,
+        message: classMatches.length > 1 ? "ID kelas ambigu pada tenant ini." : "Kelas tidak ditemukan pada tenant ini."
+      });
+    }
+    const targetClass = classMatches[0];
+    const lkpdClass = String(lkpd.classId || '').trim();
+    if (lkpdClass && lkpdClass !== 'ALL') {
+      const classAliases = new Set([String(targetClass.id), String(targetClass.name || ''), String(targetClass.code || '')]);
+      if (!classAliases.has(lkpdClass) && !classAliases.has(String(lkpd.className || ''))) {
+        return res.status(409).json({ success: false, message: "Kelas yang dipilih bukan sasaran LKPD ini." });
+      }
     }
 
     const markers = lkpd.markers || [];
@@ -11743,9 +11858,8 @@ app.post("/api/gemini/auto-koreksi-lkpd", requireAuth, requireRole(['teacher', '
     }
 
     const submissions = lkpd.submissions || [];
-    const classStudents = students.filter((s: any) => 
-      String(s.classId) === String(classId) && 
-      (isBos || isItemForCurrentMadrasah(s, req))
+    const classStudents = filterByMadrasah(students || [], req).filter((s: any) =>
+      String(s.classId) === String(classId)
     );
     
     // Filter submissions of students in this class
@@ -16243,7 +16357,7 @@ async function startServer() {
         try {
           const data = JSON.parse(message.toString());
           if (data.type === "register") {
-            const auth = verifyAuthToken(String(data.token || ''));
+            const auth = verifyActiveAuthToken(String(data.token || ''));
             if (!auth) { ws.close(4001, 'Unauthorized'); return; }
             const requested = String(data.clientId || ''), role = String(auth.role || '').toLowerCase();
             const student = isStudentAuthRole(role), staff = isStaffAuthRole(role);
