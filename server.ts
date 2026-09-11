@@ -3674,10 +3674,10 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     madrasahs: sanitizedMadrasahs,
     tokenRequests: isStudent ? [] : tokenRequests,
     cbtTokenPrice,
-    eduGames,
+    eduGames: getGamesForRequest(req),
     gameAttempts: isStudent
-      ? (gameAttempts || []).filter((attempt: any) => String(attempt?.studentId || '') === String(authUser?.id || ''))
-      : gameAttempts
+      ? filterByMadrasah(gameAttempts || [], req).filter((attempt: any) => String(attempt?.studentId || '') === String(authUser?.id || ''))
+      : filterByMadrasah(gameAttempts || [], req)
   });
 });
 
@@ -3770,53 +3770,71 @@ const DEFAULT_SERVER_SEED_GAMES = [
   }
 ];
 
+function getGamesForRequest(req: any): any[] {
+  const custom = filterByMadrasah(Array.isArray(eduGames) ? eduGames : [], req);
+  return custom.length > 0 ? custom : DEFAULT_SERVER_SEED_GAMES;
+}
+
 // GET /api/games
-app.get("/api/games", (req, res) => {
-  const list = eduGames && eduGames.length > 0 ? eduGames : DEFAULT_SERVER_SEED_GAMES;
-  res.json({ success: true, games: list });
+app.get("/api/games", (req: any, res) => {
+  res.json({ success: true, games: getGamesForRequest(req) });
 });
 
 // POST /api/games (Create or Update Game)
-app.post("/api/games", async (req, res) => {
+app.post("/api/games", async (req: any, res) => {
   try {
-    const game = req.body;
-    if (!game || !game.title) {
+    const incoming = req.body;
+    if (!incoming || !incoming.title) {
       return res.status(400).json({ success: false, message: "Judul game wajib diisi" });
     }
-    if (!game.id) game.id = "GAME_" + Date.now();
+    const clean = { ...incoming };
+    delete clean.madrasahId;
+    delete clean.madrasahSlug;
+    if (!clean.id) clean.id = "GAME_" + Date.now();
 
-    if (!Array.isArray(eduGames) || eduGames.length === 0) {
-      eduGames = [...DEFAULT_SERVER_SEED_GAMES];
-    }
+    const existingIndex = (eduGames || []).findIndex((g: any) =>
+      String(g.id) === String(clean.id) && isItemForCurrentMadrasah(g, req)
+    );
+    const tagged = tagNewRecord(
+      existingIndex >= 0 ? { ...eduGames[existingIndex], ...clean } : clean,
+      req
+    );
+    if (existingIndex >= 0) eduGames[existingIndex] = tagged;
+    else eduGames.push(tagged);
 
-    const idx = eduGames.findIndex((g: any) => g.id === game.id);
-    if (idx >= 0) {
-      eduGames[idx] = game;
-    } else {
-      eduGames.push(game);
-    }
-
-    saveData("eduGames", eduGames);
-    res.json({ success: true, game });
+    await saveData("eduGames", eduGames);
+    res.json({ success: true, game: tagged });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Gagal menyimpan game" });
   }
 });
 
 // PUT /api/games/:id (Update Game)
-app.put("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.put("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
     const { id } = req.params;
-    const game = req.body;
-    if (!Array.isArray(eduGames) || eduGames.length === 0) {
-      eduGames = [...DEFAULT_SERVER_SEED_GAMES];
-    }
-    const idx = eduGames.findIndex((g: any) => g.id === id);
+    const incoming = req.body || {};
+    let idx = (eduGames || []).findIndex((g: any) =>
+      String(g.id) === String(id) && isItemForCurrentMadrasah(g, req)
+    );
+
     if (idx < 0) {
-      return res.status(404).json({ success: false, message: "Game tidak ditemukan" });
+      const seed = DEFAULT_SERVER_SEED_GAMES.find((g: any) => String(g.id) === String(id));
+      if (!seed) return res.status(404).json({ success: false, message: "Game tidak ditemukan" });
+      const cleanIncoming = { ...incoming };
+      delete cleanIncoming.madrasahId;
+      delete cleanIncoming.madrasahSlug;
+      const taggedSeed = tagNewRecord({ ...seed, ...cleanIncoming, id }, req);
+      eduGames.push(taggedSeed);
+      idx = eduGames.length - 1;
+    } else {
+      const cleanIncoming = { ...incoming };
+      delete cleanIncoming.madrasahId;
+      delete cleanIncoming.madrasahSlug;
+      eduGames[idx] = tagNewRecord({ ...eduGames[idx], ...cleanIncoming, id }, req);
     }
-    eduGames[idx] = { ...eduGames[idx], ...game };
-    saveData("eduGames", eduGames);
+
+    await saveData("eduGames", eduGames);
     res.json({ success: true, game: eduGames[idx] });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Gagal memperbarui game" });
@@ -3824,14 +3842,19 @@ app.put("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 
 });
 
 // DELETE /api/games/:id
-app.delete("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.delete("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
     const { id } = req.params;
-    if (!Array.isArray(eduGames) || eduGames.length === 0) {
-      eduGames = [...DEFAULT_SERVER_SEED_GAMES];
+    const before = eduGames.length;
+    eduGames = (eduGames || []).filter((g: any) =>
+      !(String(g.id) === String(id) && isItemForCurrentMadrasah(g, req))
+    );
+    if (eduGames.length === before) {
+      const seed = DEFAULT_SERVER_SEED_GAMES.find((g: any) => String(g.id) === String(id));
+      if (seed) return res.status(400).json({ success: false, message: "Game bawaan tidak dihapus; buat atau edit game custom untuk madrasah Anda." });
+      return res.status(404).json({ success: false, message: "Game tidak ditemukan" });
     }
-    eduGames = eduGames.filter((g: any) => g.id !== id);
-    saveData("eduGames", eduGames);
+    await saveData("eduGames", eduGames);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Gagal menghapus game" });
@@ -3859,11 +3882,11 @@ app.post("/api/games/:id/submit", async (req, res) => {
     const isBossRole = authRole === 'bos' || authRole === 'superadmin';
     const effectiveStudentId = isStudentRole ? String(authUser.id) : String(studentId || '');
 
-    const allGames = (Array.isArray(eduGames) && eduGames.length > 0) ? eduGames : DEFAULT_SERVER_SEED_GAMES;
-    let game = allGames.find((g: any) => g.id === id);
+    const customGames = filterByMadrasah(Array.isArray(eduGames) ? eduGames : [], req);
+    let game = customGames.find((g: any) => String(g.id) === String(id));
 
     if (!game) {
-      game = DEFAULT_SERVER_SEED_GAMES.find((g: any) => g.id === id);
+      game = DEFAULT_SERVER_SEED_GAMES.find((g: any) => String(g.id) === String(id));
     }
 
     if (!game) {
@@ -3929,7 +3952,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
       await saveData("students", students);
     }
 
-    const attemptLog = {
+    const attemptLog = tagNewRecord({
       id: "ATTEMPT_" + Date.now(),
       gameId: id,
       studentId: effectiveStudentId,
@@ -3937,7 +3960,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
       isCorrect,
       earnedXp: rewardXp,
       timestamp: getJakartaIsoString()
-    };
+    }, req);
     gameAttempts.push(attemptLog);
     await saveData("gameAttempts", gameAttempts);
 
