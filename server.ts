@@ -9258,7 +9258,7 @@ app.get("/api/exam/review", requireAuth, requireRole(['teacher', 'guru', 'admin'
     });
   } catch (error: any) {
     console.error('[Exam Review Error]:', error);
-    return res.status(500).json({ success: false, message: error?.message || 'Gagal memuat review jawaban.' });
+    return res.status(500).json({ success: false, message: safeServerError(error, 'Gagal memuat review jawaban.') });
   }
 });
 
