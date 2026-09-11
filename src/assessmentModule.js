@@ -4846,9 +4846,15 @@ function saveRoom(e) {
 }
 
 function deleteRoom(roomId) {
-    showConfirmModal('Hapus ruang ujian ini?', () => {
+    showConfirmModal('Hapus ruang ujian ini?', async () => {
         appState.rooms = (appState.rooms || []).filter(r => String(r.id) !== String(roomId));
         saveState('rooms');
+        try {
+            const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, { method: 'DELETE' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } catch (err) {
+            console.warn('Gagal menghapus ruang di server:', err);
+        }
         showToast('Ruang ujian dihapus', 'success');
         renderAssessmentModule(document.getElementById('view-container'), 'ruang');
     });
