@@ -1177,7 +1177,7 @@ async function determineAndInitPool() {
       return;
     }
 
-    const socketHosts = new Set<string>();
+    let selectedSocketHost = '';
 
     if (configuredHost) {
       if (!configuredHost.startsWith('/cloudsql/') && !configuredHost.startsWith('/app/cloudsql/')) {
@@ -1186,51 +1186,65 @@ async function determineAndInitPool() {
         console.error('[Database Required] ONLINE SQL_HOST must be a Cloud SQL Unix socket path.');
         return;
       }
-      socketHosts.add(resolveConfiguredSocketHost(configuredHost));
+      selectedSocketHost = resolveConfiguredSocketHost(configuredHost);
+    } else if (configuredConnectionName) {
+      if (!/^[A-Za-z0-9_.:-]+$/.test(configuredConnectionName)) {
+        activeDbSource = "NONE";
+        dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_CONNECTION_NAME_INVALID';
+        console.error('[Database Required] CLOUD_SQL_CONNECTION_NAME contains invalid characters.');
+        return;
+      }
+      selectedSocketHost = resolveConfiguredSocketHost(`/cloudsql/${configuredConnectionName}`);
+    } else {
+      // Cloud Run exposes mounted Cloud SQL instances under /cloudsql. Older working
+      // deployments did not always define SQL_HOST explicitly, so retain safe
+      // auto-discovery only when it resolves to exactly one mounted instance.
+      const discoveredByConnectionName = new Map<string, string>();
+      for (const baseDir of ['/cloudsql', '/app/cloudsql']) {
+        try {
+          if (!fs.existsSync(baseDir)) continue;
+          for (const entry of fs.readdirSync(baseDir)) {
+            const candidatePath = path.join(baseDir, entry);
+            try {
+              if (!fs.statSync(candidatePath).isDirectory()) continue;
+              const existing = discoveredByConnectionName.get(entry);
+              if (!existing || candidatePath.startsWith('/cloudsql/')) {
+                discoveredByConnectionName.set(entry, candidatePath);
+              }
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+
+      if (discoveredByConnectionName.size > 1) {
+        activeDbSource = "NONE";
+        dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_SOCKET_AMBIGUOUS';
+        console.error('[Database Required] Multiple Cloud SQL sockets are mounted. Set SQL_HOST or CLOUD_SQL_CONNECTION_NAME explicitly.');
+        return;
+      }
+      selectedSocketHost = Array.from(discoveredByConnectionName.values())[0] || '';
     }
 
-    if (configuredConnectionName) {
-      socketHosts.add(resolveConfiguredSocketHost(`/cloudsql/${configuredConnectionName}`));
-      socketHosts.add(resolveConfiguredSocketHost(`/app/cloudsql/${configuredConnectionName}`));
-    }
-
-    // Cloud Run exposes mounted Cloud SQL instances under /cloudsql. Older working
-    // deployments did not always define SQL_HOST explicitly, so retain safe
-    // auto-discovery while remaining Cloud-SQL-only.
-    for (const baseDir of ['/cloudsql', '/app/cloudsql']) {
-      try {
-        if (!fs.existsSync(baseDir)) continue;
-        for (const entry of fs.readdirSync(baseDir)) {
-          const candidatePath = path.join(baseDir, entry);
-          try {
-            if (fs.statSync(candidatePath).isDirectory()) socketHosts.add(candidatePath);
-          } catch (_) {}
-        }
-      } catch (_) {}
-    }
-
-    if (socketHosts.size === 0) {
+    if (!selectedSocketHost) {
       activeDbSource = "NONE";
       dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_SOCKET_NOT_FOUND';
       console.error('[Database Required] No mounted Cloud SQL Unix socket was found.');
       return;
     }
 
-    for (const socketHost of socketHosts) {
-      candidateConfigs.push({
-        name: `SQL_HOST (${socketHost} -> ${configuredDbName})`,
-        config: {
-          host: socketHost,
-          user: configuredUser,
-          password: configuredPassword,
-          database: configuredDbName,
-          max: 10,
-          connectionTimeoutMillis,
-          keepAlive: true,
-          idleTimeoutMillis: 15000,
-        }
-      });
-    }
+    candidateConfigs.push({
+      name: `SQL_HOST (${selectedSocketHost} -> ${configuredDbName})`,
+      config: {
+        host: selectedSocketHost,
+        user: configuredUser,
+        password: configuredPassword,
+        database: configuredDbName,
+        max: 10,
+        connectionTimeoutMillis,
+        keepAlive: true,
+        idleTimeoutMillis: 15000,
+      }
+    });
   } else {
     // Offline mode keeps local PostgreSQL compatibility. It never uses DATABASE_URL.
     if (configuredHost && configuredDbName) {
@@ -1891,7 +1905,10 @@ async function writeKeyToPostgresDirectUnlocked(key: string) {
 
     try {
       if (dbInitPromise) await dbInitPromise;
-      if (!pool || isDbQuotaExceeded) return;
+      if (!pool || isDbQuotaExceeded) {
+        if (isOnlineMode) throw new Error(`ONLINE_DATABASE_UNAVAILABLE: cannot persist ${key}`);
+        return;
+      }
 
       const freshValue = getMemoryKeyValue(key);
       if (freshValue === undefined) return;
@@ -17787,16 +17804,21 @@ async function startServer() {
     console.log(`======================================================`);
     console.log(`  > Akses Lokal Laptop : http://localhost:${PORT}`);
     
-    // Tampilkan seluruh IP LAN / Wi-Fi laptop untuk akses HP siswa
-    const ifaces = os.networkInterfaces();
     let hasLan = false;
-    for (const name of Object.keys(ifaces)) {
-      for (const iface of ifaces[name] || []) {
-        if (iface.family === 'IPv4' && !iface.internal) {
-          console.log(`  > Akses HP Siswa (LAN/Wi-Fi): http://${iface.address}:${PORT}`);
-          hasLan = true;
+    try {
+      // Tampilkan seluruh IP LAN / Wi-Fi laptop untuk akses HP siswa. Beberapa
+      // container membatasi enumerasi interface; itu tidak boleh menggagalkan boot.
+      const ifaces = os.networkInterfaces();
+      for (const name of Object.keys(ifaces)) {
+        for (const iface of ifaces[name] || []) {
+          if (iface.family === 'IPv4' && !iface.internal) {
+            console.log(`  > Akses HP Siswa (LAN/Wi-Fi): http://${iface.address}:${PORT}`);
+            hasLan = true;
+          }
         }
       }
+    } catch (networkErr: any) {
+      console.warn('[Startup] Network interface enumeration unavailable:', networkErr?.code || 'UNKNOWN_ERROR');
     }
     if (!hasLan) {
       console.log(`  > Akses Jaringan: http://0.0.0.0:${PORT}`);

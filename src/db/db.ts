@@ -7,28 +7,44 @@ declare global {
 }
 
 function buildPoolConfig(): PoolConfig {
-  const databaseUrl = String(process.env.DATABASE_URL || '').trim();
   const base: PoolConfig = {
     max: 10,
     connectionTimeoutMillis: 15000,
   };
 
-  if (databaseUrl) {
-    return {
-      ...base,
-      connectionString: databaseUrl,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
-    };
-  }
+  const connectionName = String(
+    process.env.CLOUD_SQL_CONNECTION_NAME ||
+    process.env.INSTANCE_CONNECTION_NAME ||
+    ''
+  ).trim();
+  const host = String(
+    process.env.SQL_HOST ||
+    (connectionName ? `/cloudsql/${connectionName}` : '')
+  ).trim();
+  const user = String(
+    process.env.SQL_USER ||
+    process.env.PGUSER ||
+    process.env.SQL_ADMIN_USER ||
+    ''
+  ).trim();
+  const password = String(
+    process.env.SQL_PASSWORD ||
+    process.env.PGPASSWORD ||
+    process.env.SQL_ADMIN_PASSWORD ||
+    ''
+  );
+  const database = String(
+    process.env.SQL_DB_NAME ||
+    process.env.PGDATABASE ||
+    'cloud_sql_production_database'
+  ).trim();
+  const port = Number(process.env.SQL_PORT || process.env.PGPORT || 5432);
+  const isCloudSqlSocket = host.startsWith('/cloudsql/') || host.startsWith('/app/cloudsql/');
+  const connectionNameInvalid = Boolean(connectionName && !/^[A-Za-z0-9_.:-]+$/.test(connectionName));
 
-  // Legacy/local compatibility only. Production deployment should use DATABASE_URL.
-  const host = String(process.env.SQL_HOST || '').trim();
-  const user = String(process.env.SQL_USER || '').trim();
-  const password = String(process.env.SQL_PASSWORD || '');
-  const database = String(process.env.SQL_DB_NAME || '').trim();
-
-  if (!host || !user || !database) {
-    throw new Error('DATABASE_URL is required unless complete local SQL_* settings are provided.');
+  if (!host || !user || (isCloudSqlSocket && !password) || !database || connectionNameInvalid ||
+      !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('Complete SQL_* or compatible PG* settings are required for PostgreSQL.');
   }
 
   return {
@@ -37,6 +53,7 @@ function buildPoolConfig(): PoolConfig {
     user,
     password,
     database,
+    port,
   };
 }
 

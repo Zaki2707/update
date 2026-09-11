@@ -56,6 +56,8 @@ async function testFailureDoesNotPoisonKey() {
 
 function testServerGuards() {
   const server = fs.readFileSync('server.ts', 'utf8');
+  const drizzleConfig = fs.readFileSync('drizzle.config.ts', 'utf8');
+  const drizzleDb = fs.readFileSync('src/db/db.ts', 'utf8');
   const app = fs.readFileSync('src/appScript.js', 'utf8');
   const chat = fs.readFileSync('src/chatModule.js', 'utf8');
   const modules = fs.readFileSync('src/modulesScript.js', 'utf8');
@@ -85,11 +87,23 @@ function testServerGuards() {
   assert.match(server, /for \(const baseDir of \['\/cloudsql', '\/app\/cloudsql'\]\)/);
   assert.match(server, /ONLINE SQL_HOST must be a Cloud SQL Unix socket path/);
   assert.match(server, /No mounted Cloud SQL Unix socket was found/);
+  assert.match(server, /ONLINE_CLOUD_SQL_SOCKET_AMBIGUOUS/);
+  assert.match(server, /Multiple Cloud SQL sockets are mounted\. Set SQL_HOST or CLOUD_SQL_CONNECTION_NAME explicitly/);
+  assert.match(server, /if \(!pool \|\| isDbQuotaExceeded\) \{[\s\S]*ONLINE_DATABASE_UNAVAILABLE: cannot persist \$\{key\}/);
   assert.match(server, /hasHydratedPersistentState = true;[\s\S]*await runOneTimeMigrations\(\)/);
   assert.match(server, /reason,[\s\S]*readyAt: onlineRuntimeReadyAt/);
   assert.match(server, /if \(isOnlineMode\)[\s\S]*candidateConfigs\.push\(\{[\s\S]*name: `SQL_HOST/);
   assert.match(server, /else \{[\s\S]*name: "Localhost TCP PostgreSQL"/);
   assert.equal(server.includes("'cloud_sql_development_database'"), false, 'online DB name guessing must stay removed');
+  assert.equal(drizzleConfig.includes('DATABASE_URL'), false, 'Drizzle tooling must use the same Cloud SQL variables as runtime');
+  assert.equal(drizzleDb.includes('DATABASE_URL'), false, 'Drizzle pool helper must not restore a separate database URL path');
+  for (const source of [drizzleConfig, drizzleDb]) {
+    assert.match(source, /process\.env\.SQL_HOST/);
+    assert.match(source, /process\.env\.CLOUD_SQL_CONNECTION_NAME/);
+    assert.match(source, /process\.env\.SQL_USER/);
+    assert.match(source, /process\.env\.SQL_PASSWORD/);
+    assert.match(source, /cloud_sql_production_database/);
+  }
   assert.match(server, /hasHydratedPersistentState[\s\S]*pool[\s\S]*!isDbQuotaExceeded/);
   assert.match(server, /mergeLessonPlanDbSources\(/);
   assert.match(server, /madrasah_lessonPlans/);
@@ -116,6 +130,7 @@ function testServerGuards() {
   assert.equal(listenIndex >= 0, true, 'server listen marker missing');
   assert.equal(backgroundInitIndex > listenIndex, true, 'online DB initialization must run after the port is listening');
   assert.equal(server.includes('akan terus di-hydrate di latar belakang'), false, 'misleading one-shot hydration warning remains');
+  assert.match(server, /try \{[\s\S]*os\.networkInterfaces\(\)[\s\S]*Network interface enumeration unavailable/);
 
   assert.match(server, /app\.put\("\/api\/student\/profile", requireAuth, requireRole/);
   assert.match(server, /withTokenLedger\(async \(\) =>/);
