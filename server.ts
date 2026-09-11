@@ -2355,6 +2355,9 @@ app.use((req: any, res, next) => {
 
   const adminOnly =
     p === '/api/db-status' ||
+    p === '/api/db-pull-cloud' ||
+    p === '/api/cloudinary/sync' ||
+    p === '/api/cloudinary/repair-missing' ||
     p.startsWith('/api/system/backup') ||
     p.startsWith('/api/system/restore') ||
     (p === '/api/settings' && method !== 'GET');
@@ -3399,6 +3402,23 @@ function sanitizeQuestionForStudent(q: any) {
   };
 }
 
+function sanitizeSettingsForClient(settings: any) {
+  if (!settings || typeof settings !== 'object') return settings || null;
+  const safe: any = { ...settings };
+  const explicitSensitive = new Set([
+    'adminPass', 'password', 'jwtSecret', 'apiKey', 'geminiApiKey',
+    'cloudinaryApiSecret', 'livekitApiSecret', 'databaseUrl', 'DATABASE_URL',
+    'sqlPassword', 'localStoreSecret', 'tokenLockSecret', 'licensePrivateKey'
+  ]);
+  for (const key of Object.keys(safe)) {
+    const lower = String(key).toLowerCase();
+    if (explicitSensitive.has(key) || lower.includes('password') || lower.includes('passphrase') ||
+        lower.includes('privatekey') || lower.includes('private_key') || lower.endsWith('secret') ||
+        lower.includes('connectionstring')) delete safe[key];
+  }
+  return safe;
+}
+
 // Aggregated All Data endpoint for super fast loading
 app.get("/api/all-data", requireAuth, (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -3524,11 +3544,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
         return String(m.id) === requestId || String(m.slug) === requestId;
       });
   const sanitizedMadrasahs = visibleMadrasahs.map(({ adminPass, tokenSignature, tokenSignatureInvalid, ...rest }: any) => rest);
-  let sanitizedSettings = null;
-  if (appSettings) {
-    const { adminPass, ...restSettings } = appSettings;
-    sanitizedSettings = restSettings;
-  }
+  const sanitizedSettings = sanitizeSettingsForClient(appSettings);
 
   res.json({
     success: true,
@@ -3690,7 +3706,7 @@ app.post("/api/games", async (req, res) => {
 });
 
 // PUT /api/games/:id (Update Game)
-app.put("/api/games/:id", async (req, res) => {
+app.put("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { id } = req.params;
     const game = req.body;
@@ -3710,7 +3726,7 @@ app.put("/api/games/:id", async (req, res) => {
 });
 
 // DELETE /api/games/:id
-app.delete("/api/games/:id", async (req, res) => {
+app.delete("/api/games/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   try {
     const { id } = req.params;
     if (!Array.isArray(eduGames) || eduGames.length === 0) {
@@ -3738,6 +3754,12 @@ app.post("/api/games/:id/submit", async (req, res) => {
   try {
     const { id } = req.params;
     const { submittedAnswer, studentId, isPreview, passed } = req.body;
+    const authUser = (req as any).user || getAuthUser(req);
+    if (!authUser) return res.status(401).json({ success: false, message: "Silakan login terlebih dahulu." });
+    const authRole = String(authUser.role || '').toLowerCase();
+    const isStudentRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(authRole);
+    const isBossRole = authRole === 'bos' || authRole === 'superadmin';
+    const effectiveStudentId = isStudentRole ? String(authUser.id) : String(studentId || '');
 
     const allGames = (Array.isArray(eduGames) && eduGames.length > 0) ? eduGames : DEFAULT_SERVER_SEED_GAMES;
     let game = allGames.find((g: any) => g.id === id);
@@ -3750,17 +3772,18 @@ app.post("/api/games/:id/submit", async (req, res) => {
       return res.status(404).json({ success: false, message: "Game tidak ditemukan" });
     }
 
+    if (!isBossRole && game?.madrasahId && !isItemForCurrentMadrasah(game, req)) {
+      return res.status(403).json({ success: false, message: "Game bukan milik madrasah Anda." });
+    }
     const normSubmitted = normalizeGameText(submittedAnswer);
     let isCorrect = false;
+    const completionGameTypes = ["memory_match", "match_pairs", "word_search", "spot_difference", "image_puzzle", "escape_room", "learning_adventure"];
 
-    if (passed === true || normSubmitted === "completed" || normSubmitted === "success" || normSubmitted === "passed") {
-      isCorrect = true;
-    } else if (game.gameType === "true_false") {
+    if (game.gameType === "true_false") {
       const normCorrectTF = normalizeGameText(game.correctAnswer || "BENAR");
       isCorrect = normSubmitted === normCorrectTF;
-    } else if (["memory_match", "match_pairs", "word_search", "spot_difference", "image_puzzle", "escape_room", "learning_adventure"].includes(game.gameType)) {
-      // Interactive games sending completion status
-      isCorrect = passed === true || normSubmitted === "completed" || normSubmitted === "success" || normSubmitted === normalizeGameText(game.answerKey);
+    } else if (completionGameTypes.includes(game.gameType)) {
+      isCorrect = passed === true || normSubmitted === "completed" || normSubmitted === "success" || normSubmitted === "passed" || normSubmitted === normalizeGameText(game.answerKey);
     } else {
       const normTarget = normalizeGameText(game.answerKey);
       if (normTarget) {
@@ -3777,7 +3800,10 @@ app.post("/api/games/:id/submit", async (req, res) => {
     }
 
     const rewardXp = isCorrect ? (game.rewardXp || 100) : 0;
-    let student = students.find((s: any) => s.id === studentId || s.nis === studentId);
+    let student = students.find((s: any) => String(s.id) === effectiveStudentId || String(s.nis) === effectiveStudentId);
+    if (student && !isBossRole && !isItemForCurrentMadrasah(student, req)) {
+      return res.status(403).json({ success: false, message: "Siswa bukan milik madrasah Anda." });
+    }
 
     let newTotalXp = 0;
     let dailyStreak = 1;
@@ -3808,7 +3834,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
     const attemptLog = {
       id: "ATTEMPT_" + Date.now(),
       gameId: id,
-      studentId,
+      studentId: effectiveStudentId,
       submittedAnswer,
       isCorrect,
       earnedXp: rewardXp,
@@ -3832,7 +3858,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
 // GET /api/games/leaderboard
 app.get("/api/games/leaderboard", (req, res) => {
   const classFilter = String(req.query.classId || '').trim();
-  let list = students || [];
+  let list = filterByMadrasah(students || [], req);
   
   if (classFilter && classFilter !== 'all' && classFilter !== 'Semua Kelas') {
     list = list.filter((s: any) => String(s.classId) === classFilter || String(s.className) === classFilter || String(s.kelas) === classFilter);
@@ -3863,13 +3889,24 @@ app.get("/api/games/leaderboard", (req, res) => {
 let gameMessages: Record<string, any[]> = {};
 let activeGameSessionsServer: Record<string, any> = {};
 
-app.get("/api/game/active-sessions", (req, res) => {
-  res.json({ success: true, sessions: activeGameSessionsServer });
+app.get("/api/game/active-sessions", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
+  const allowed = new Set((filterByMadrasah(students || [], req) || []).map((x: any) => String(x.id)));
+  const scoped: Record<string, any> = {};
+  for (const [id, value] of Object.entries(activeGameSessionsServer || {})) if (allowed.has(String(id))) scoped[id] = value;
+  res.json({ success: true, sessions: scoped });
 });
 
-app.post("/api/game/active-sessions", (req, res) => {
+app.post("/api/game/active-sessions", (req: any, res) => {
   try {
-    const { studentId, sessionData } = req.body;
+    const authUser = req.user || getAuthUser(req);
+    const role = String(authUser?.role || '').toLowerCase();
+    const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+    const requested = String(req.body?.studentId || '');
+    const studentId = self ? String(authUser?.id || '') : requested;
+    const sessionData = req.body?.sessionData;
+    if (self && requested && requested !== studentId) return res.status(403).json({ success: false, message: "Siswa hanya dapat memperbarui sesi miliknya." });
+    const target = (students || []).find((x: any) => String(x.id) === studentId);
+    if (target && role !== 'bos' && role !== 'superadmin' && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa bukan milik madrasah Anda." });
     if (studentId) {
       if (sessionData === null) {
         delete activeGameSessionsServer[studentId];
@@ -3886,20 +3923,31 @@ app.post("/api/game/active-sessions", (req, res) => {
   }
 });
 
-app.get("/api/game/messages", (req, res) => {
-  const studentId = String(req.query.studentId || '');
-  if (studentId) {
-    const msgs = gameMessages[studentId] || [];
-    const broadcastMsgs = gameMessages['BROADCAST'] || [];
-    res.json({ success: true, messages: [...msgs, ...broadcastMsgs] });
-  } else {
-    res.json({ success: true, messages: gameMessages });
-  }
+app.get("/api/game/messages", (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+  const requested = String(req.query.studentId || '');
+  const studentId = self ? String(authUser?.id || '') : requested;
+  if (self && requested && requested !== studentId) return res.status(403).json({ success: false, message: "Siswa hanya dapat membaca pesan miliknya." });
+  if (studentId) return res.json({ success: true, messages: [...(gameMessages[studentId] || []), ...(gameMessages['BROADCAST'] || [])] });
+  if (!['teacher','guru','admin','bos','superadmin'].includes(role)) return res.status(403).json({ success: false, message: "Akses ditolak." });
+  const allowed = new Set((filterByMadrasah(students || [], req) || []).map((x: any) => String(x.id)));
+  const scoped: Record<string, any[]> = {};
+  for (const [id, value] of Object.entries(gameMessages || {})) if (id === 'BROADCAST' || allowed.has(String(id))) scoped[id] = Array.isArray(value) ? value : [];
+  res.json({ success: true, messages: scoped });
 });
 
-app.post("/api/game/messages", (req, res) => {
+app.post("/api/game/messages", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   try {
-    const { recipientId, senderName, message, type } = req.body;
+    const { senderName, message, type } = req.body;
+    const recipientId = req.body.recipientId || req.body.studentId || 'BROADCAST';
+    if (recipientId !== 'BROADCAST') {
+      const target = (students || []).find((x: any) => String(x.id) === String(recipientId));
+      const role = String((req.user || getAuthUser(req))?.role || '').toLowerCase();
+      if (!target) return res.status(404).json({ success: false, message: "Siswa penerima tidak ditemukan." });
+      if (role !== 'bos' && role !== 'superadmin' && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa penerima bukan milik madrasah Anda." });
+    }
     if (!message) {
       return res.status(400).json({ success: false, message: "Pesan tidak boleh kosong" });
     }
@@ -3926,9 +3974,15 @@ app.post("/api/game/messages", (req, res) => {
   }
 });
 
-app.post("/api/game/messages/dismiss", (req, res) => {
+app.post("/api/game/messages/dismiss", (req: any, res) => {
   try {
-    const { studentId, messageId } = req.body;
+    const authUser = req.user || getAuthUser(req);
+    const role = String(authUser?.role || '').toLowerCase();
+    const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+    const requested = String(req.body?.studentId || '');
+    const studentId = self ? String(authUser?.id || '') : requested;
+    const messageId = req.body?.messageId;
+    if (self && requested && requested !== studentId) return res.status(403).json({ success: false, message: "Siswa hanya dapat menutup pesan miliknya." });
     if (studentId && gameMessages[studentId]) {
       gameMessages[studentId] = gameMessages[studentId].filter((m: any) => m.id !== messageId);
     }
@@ -6591,6 +6645,22 @@ app.post("/api/students/delete-bulk", requireAuth, requireRole(['admin', 'bos', 
   res.json({ success: true, message: `${allowedIdsArr.length} siswa dan seluruh data terkait (foto, absensi, dan nilai) berhasil dihapus.` });
 });
 
+function nextPrefixedNumericId(list: any[], prefix: string): string {
+  const re = new RegExp('^' + prefix + '(\\d+)$', 'i');
+  let max = 0;
+  const used = new Set<string>();
+  for (const item of (Array.isArray(list) ? list : [])) {
+    const id = String(item?.id || '').trim();
+    if (!id) continue;
+    used.add(id.toLowerCase());
+    const m = id.match(re);
+    if (m) max = Math.max(max, Number(m[1]) || 0);
+  }
+  let candidate = prefix + String(max + 1);
+  while (used.has(candidate.toLowerCase())) candidate = prefix + String(++max + 1);
+  return candidate;
+}
+
 // 5. Classes API
 app.get("/api/classes", requireAuth, (req, res) => {
   res.json({ success: true, classes: filterByMadrasah(classes, req) });
@@ -6630,7 +6700,7 @@ app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', '
       return res.json({ success: true, class: classes[idx] });
     }
   }
-  const newId = "C" + (classes.length + 1);
+  const newId = nextPrefixedNumericId(classes, "C");
   const newClass = tagNewRecord({ id: newId, code: code || newId, name, grade: grade || "X", homeroomTeacherId: homeroomTeacherId || "" }, req);
   classes.push(newClass);
 
@@ -6672,7 +6742,7 @@ app.post("/api/subjects", requireAuth, requireRole(['teacher', 'guru', 'admin', 
   if (!code || !name) {
     return res.status(400).json({ success: false, message: "Kode dan Nama mapel wajib diisi." });
   }
-  const newId = "S" + (subjects.length + 1);
+  const newId = nextPrefixedNumericId(subjects, "S");
   const newSub = tagNewRecord({ id: newId, code, name }, req);
   subjects.push(newSub);
   await saveData('subjects', subjects);
@@ -8707,8 +8777,13 @@ app.post("/api/exam/violation", async (req, res) => {
 });
 
 // Phase 5 Endpoint: Anti-Cheat Violation Audit Feed (GET /api/exams/:examId/violations)
-app.get("/api/exams/:examId/violations", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
+app.get("/api/exams/:examId/violations", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
   const { examId } = req.params;
+  const authUser = req.user || getAuthUser(req);
+  const exam = (getMemoryKeyValue('exams') || exams || []).find((x: any) => String(x.id) === String(examId));
+  if (!exam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan." });
+  const role = String(authUser?.role || '').toLowerCase();
+  if (role !== 'bos' && role !== 'superadmin' && !isItemForCurrentMadrasah(exam, req)) return res.status(403).json({ success: false, message: "Ujian bukan milik madrasah Anda." });
   const list = examViolationLogs[String(examId)] || [];
   res.json({
     success: true,
@@ -8856,6 +8931,7 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
   const userMadrasahId = getRequestMadrasahId(req);
 
   const activeExam = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
+  if (!activeExam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan." });
 
   if (!isBos && activeExam) {
     const examMId = String(activeExam.madrasahId || 'default').trim();
@@ -9007,7 +9083,8 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
       ...(blocked ? Object.keys(blocked) : []),
       ...(gradesObj ? Object.keys(gradesObj) : []),
       ...(messages ? Object.keys(messages) : []),
-      ...(forceFinished ? Object.keys(forceFinished) : [])
+      ...(forceFinished ? Object.keys(forceFinished) : []),
+      ...(livecamFrame?.key ? [String(livecamFrame.key)] : [])
     ].filter(Boolean);
 
     for (const tk of testKeys) {
@@ -9077,8 +9154,9 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
   }
   if (studentQuestions) {
     for (const key of Object.keys(studentQuestions)) {
-      studentExamQuestions[key] = studentQuestions[key];
-      promises.push(saveDeltaDb('studentExamQuestions', key, studentQuestions[key]));
+      const packet = Array.isArray(studentQuestions[key]) ? studentQuestions[key].map(sanitizeQuestionForStudent).filter(Boolean) : [];
+      studentExamQuestions[key] = packet;
+      promises.push(saveDeltaDb('studentExamQuestions', key, packet));
     }
     broadcastStateUpdate('studentExamQuestions');
   }
@@ -9112,11 +9190,8 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
     broadcastStateUpdate('blockedStudents');
   }
   if (messages) {
-    if (req.body.replaceMessages) {
-      examMessages = messages;
-    } else {
-      examMessages = { ...examMessages, ...messages };
-    }
+    if (req.body.replaceMessages && isBos) examMessages = messages;
+    else examMessages = { ...examMessages, ...messages };
     await saveData('examMessages', examMessages);
   }
   if (livecamFrame && livecamFrame.key && livecamFrame.frame) {
@@ -9129,11 +9204,11 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
 });
 
 // Reset Individual Student Exam Progress API
-app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   const { studentId, examId } = req.body;
-  if (!studentId || !examId) {
-    return res.status(400).json({ success: false, message: "studentId and examId required" });
-  }
+  if (!studentId || !examId) return res.status(400).json({ success: false, message: "studentId and examId required" });
+  const context = getExamAttemptContext(req, req.user || getAuthUser(req), String(studentId), String(examId));
+  if (rejectExamAttemptContext(res, context)) return;
   const key = studentId + "_" + examId;
   
   delete activeExamSessions[key];
@@ -12823,46 +12898,7 @@ app.delete("/api/calendar-events/:id", async (req, res) => {
   res.json({ success: true, calendarEvents });
 });
 
-// EduGames Submit API Endpoint
-app.post("/api/games/:id/submit", async (req, res) => {
-  const { id } = req.params;
-  const { submittedAnswer, studentId, isPreview, passed, customXp } = req.body;
-
-  let eduGamesData = (await getMemoryKeyValue('eduGames')) || [];
-  const game = Array.isArray(eduGamesData) ? eduGamesData.find((g: any) => String(g.id) === String(id)) : null;
-
-  let isCorrect = passed === true;
-  if (!isCorrect && game) {
-    const key = String(game.answerKey || game.correctAnswer || game.answer || '').trim().toLowerCase();
-    const sub = String(submittedAnswer || '').trim().toLowerCase();
-    if (key && sub && (key === sub || key.replace(/\s+/g, '') === sub.replace(/\s+/g, ''))) {
-      isCorrect = true;
-    }
-  }
-
-  let earnedXp = customXp !== undefined && customXp !== null ? Number(customXp) : (game ? Number(game.rewardXp || 100) : 100);
-  if (isNaN(earnedXp)) earnedXp = 100;
-
-  let newTotalXp = 0;
-  if (studentId && !isPreview) {
-    const stIdx = students.findIndex((s: any) => String(s.id) === String(studentId));
-    if (stIdx >= 0) {
-      if (isCorrect) {
-        students[stIdx].gameXp = (Number(students[stIdx].gameXp) || 0) + earnedXp;
-        students[stIdx].dailyStreak = (Number(students[stIdx].dailyStreak) || 0) + 1;
-      }
-      newTotalXp = students[stIdx].gameXp;
-      await saveData('students', students);
-    }
-  }
-
-  res.json({
-    success: true,
-    isCorrect,
-    earnedXp: isCorrect ? earnedXp : 0,
-    newTotalXp
-  });
-});
+// Duplicate legacy game-submit handler removed; canonical server-side validator is defined above.
 
 // Grade Categories API managed above (around line 3955)
 
@@ -13747,15 +13783,14 @@ app.delete("/api/generated-exams/:id", async (req, res) => {
 
 // Settings API
 app.get("/api/settings", (req, res) => {
-  const safeSettings: any = { ...(appSettings || {}) };
-  ['adminPass', 'password', 'jwtSecret', 'apiKey', 'geminiApiKey', 'cloudinaryApiSecret'].forEach(k => delete safeSettings[k]);
+  const safeSettings = sanitizeSettingsForClient(appSettings);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ success: true, settings: safeSettings, isOfflineMode });
 });
 app.put("/api/settings", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   appSettings = { ...appSettings, ...req.body };
   await saveData('settings', appSettings);
-  res.json({ success: true, settings: appSettings });
+  res.json({ success: true, settings: sanitizeSettingsForClient(appSettings) });
 });
 
 // Tenant-scoped account credential export for disaster-recovery backups.
@@ -13818,29 +13853,29 @@ app.post("/api/admin/reset-student-passwords-bulk", requireAuth, requireRole(['a
 // System Backup & Restore API
 app.get("/api/system/backup", (req, res) => {
   const backupData = {
-    version: "1.0",
+    version: "2.3",
     timestamp: new Date().toISOString(),
     schoolName: appSettings.schoolName || "Sekolah Menengah",
-    students,
-    teachers,
-    classes,
-    subjects,
-    schedules,
-    savedRosters,
-    timeSlots,
+    students: filterByMadrasah(students, req),
+    teachers: filterByMadrasah(teachers, req),
+    classes: filterByMadrasah(classes, req),
+    subjects: filterByMadrasah(subjects, req),
+    schedules: filterByMadrasah(schedules, req),
+    savedRosters: Array.isArray(savedRosters) ? filterByMadrasah(savedRosters, req) : savedRosters,
+    timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : timeSlots,
     kbmDuration,
-    attendance,
-    teacherAttendance,
-    questionBankGroups,
-    questions,
-    exams,
-    rooms,
-    journals,
-    gradeCategories,
-    generatedExams,
-    lessonPlans,
-    grades,
-    settings: appSettings,
+    attendance: filterByMadrasah(attendance, req),
+    teacherAttendance: filterByMadrasah(teacherAttendance, req),
+    questionBankGroups: filterByMadrasah(questionBankGroups, req),
+    questions: filterByMadrasah(questions, req),
+    exams: filterByMadrasah(exams, req),
+    rooms: filterByMadrasah(rooms, req),
+    journals: filterByMadrasah(journals, req),
+    gradeCategories: Array.isArray(gradeCategories) ? filterByMadrasah(gradeCategories, req) : gradeCategories,
+    generatedExams: filterByMadrasah(generatedExams, req),
+    lessonPlans: filterByMadrasah(lessonPlans, req),
+    grades: filterByMadrasah(grades, req),
+    settings: sanitizeSettingsForClient(appSettings),
     schoolLocationSettings
   };
   res.setHeader("Content-Disposition", `attachment; filename=Backup_Data_${new Date().toISOString().slice(0, 10)}.json`);
@@ -14816,8 +14851,6 @@ async function startServer() {
       etag: true,
       lastModified: true,
       setHeaders: (res, filePath) => {
-        res.removeHeader("X-Frame-Options");
-        res.setHeader("Content-Security-Policy", "frame-ancestors *");
         if (filePath.endsWith('.html')) {
           res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
           res.setHeader('Pragma', 'no-cache');
@@ -14829,8 +14862,6 @@ async function startServer() {
       if (req.path.endsWith('.js') || req.path.endsWith('.css') || req.path.endsWith('.map')) {
         return res.status(404).send('Asset not found');
       }
-      res.removeHeader("X-Frame-Options");
-      res.setHeader("Content-Security-Policy", "frame-ancestors *");
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
