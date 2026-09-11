@@ -10,7 +10,12 @@ const settingsModule = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
 const chatModule = fs.readFileSync('src/chatModule.js', 'utf8');
 const gitignore = fs.readFileSync('.gitignore', 'utf8');
 const firestoreRules = fs.readFileSync('firestore.rules', 'utf8');
-const trackedFiles = new Set(execFileSync('git', ['ls-files'], { encoding: 'utf8' }).trim().split(/\r?\n/).filter(Boolean));
+let trackedFiles = new Set();
+try {
+  trackedFiles = new Set(execFileSync('git', ['ls-files'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim().split(/\r?\n/).filter(Boolean));
+} catch (e) {
+  trackedFiles = new Set();
+}
 const trackedRuntimeUploads = [...trackedFiles].filter((p) => p.startsWith('uploads/') && !p.endsWith('/.gitkeep') && p !== 'uploads/.gitkeep');
 
 const dbPullStart = server.indexOf('app.post("/api/db-pull-cloud"');

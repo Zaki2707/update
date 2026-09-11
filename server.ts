@@ -4749,9 +4749,9 @@ app.get("/api/db-status", async (req, res) => {
 
   // 1. Check SQL (PostgreSQL/Cloud SQL)
   try {
-    const hasEnv = !!process.env.SQL_HOST || !!process.env.DATABASE_URL;
+    const hasEnv = !!process.env.SQL_HOST;
     if (!hasEnv) {
-      status.sql.message = "Variabel lingkungan SQL_HOST atau DATABASE_URL tidak ditemukan.";
+      status.sql.message = "Variabel lingkungan SQL_HOST (Cloud SQL) tidak ditemukan.";
     } else {
       status.sql.configured = true;
       if (dbInitPromise) {
@@ -5068,7 +5068,7 @@ app.post("/api/db-pull-cloud", async (req, res) => {
       }
       return res.status(500).json({
         success: false,
-        message: "Gagal menghubungkan ke database Cloud SQL. Silakan periksa konfigurasi kredensial database Anda di AI Studio (Pengaturan) atau pastikan variabel lingkungan DATABASE_URL terisi."
+        message: "Gagal menghubungkan ke database Cloud SQL. Silakan periksa konfigurasi kredensial database Anda di AI Studio (Pengaturan) atau pastikan variabel lingkungan SQL_HOST, SQL_USER, SQL_PASSWORD terisi."
       });
     }
 
