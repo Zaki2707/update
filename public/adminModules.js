@@ -1127,7 +1127,7 @@ async function saveTeacherPhotoBase64(base64Img, teacherId) {
         if (appState.currentUser && String(appState.currentUser.id) === String(teacherId)) {
             appState.currentUser.photo = appState.teachers[tchIdx].photo;
             appState.currentUser.photoHistory = appState.teachers[tchIdx].photoHistory;
-            localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser));
+            if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
         }
 
         try {
@@ -1209,7 +1209,7 @@ async function saveTeacherProfileSelf(e, teacherId) {
         }
         if (appState.currentUser && String(appState.currentUser.id) === String(teacherId)) {
             appState.currentUser = { ...appState.currentUser, ...data.teacher };
-            localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser));
+            if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
             const nameEl = document.getElementById('user-display-name');
             if (nameEl) nameEl.innerText = appState.currentUser.name || '';
         }

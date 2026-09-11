@@ -2,14 +2,28 @@ window.appState = window.appState || {};
 if (!window.appState.chats) window.appState.chats = [];
 
 function getChatAuthToken() {
+    const stored = window.getStoredAuthToken ? window.getStoredAuthToken() : '';
+    if (stored) return stored;
     const currentToken = window.appState?.currentUser?.token;
-    if (currentToken) return String(currentToken);
-    try {
-        const saved = JSON.parse(localStorage.getItem('madrasah_current_user') || 'null');
-        return saved?.token ? String(saved.token) : '';
-    } catch (_) {
-        return '';
-    }
+    return currentToken ? String(currentToken) : '';
+}
+
+function chatEscape(value) {
+    return window.escapeHtml ? window.escapeHtml(value) : String(value ?? '').replace(/[&<>"']/g, '');
+}
+
+function chatEscapeAttr(value) {
+    return window.escapeHtmlAttr ? window.escapeHtmlAttr(value) : chatEscape(value);
+}
+
+function isSafeChatAttachment(att) {
+    if (!att || typeof att !== 'object') return false;
+    const type = String(att.type || '').toLowerCase();
+    const data = String(att.data || '');
+    if (data.length > 8 * 1024 * 1024) return false;
+    if (type === 'image') return /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=\r\n]+$/i.test(data);
+    if (type === 'video') return /^data:video\/(?:mp4|webm);base64,[A-Za-z0-9+/=\r\n]+$/i.test(data);
+    return /^data:(?:application\/pdf|application\/msword|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|application\/vnd\.android\.package-archive|application\/octet-stream);base64,[A-Za-z0-9+/=\r\n]+$/i.test(data);
 }
 
 function hasAuthenticatedChatSession() {
@@ -167,12 +181,12 @@ window.renderChatModal = function(targetId, targetName, senderId, receiverId) {
                             <i class="fa-solid fa-user"></i>
                         </div>
                         <div>
-                            <h3 class="font-bold">${targetName}</h3>
+                            <h3 id="chat-target-name" class="font-bold"></h3>
                             <p class="text-[10px] text-blue-100 uppercase tracking-wider">Chat Session</p>
                         </div>
                     </div>
                     <div class="flex items-center gap-2">
-                        <button type="button" onclick="clearAllChats('${senderId}', '${receiverId}')" class="w-8 h-8 flex items-center justify-center bg-rose-500 hover:bg-rose-600 text-white rounded-full transition" title="Kosongkan Chat"><i class="fa-solid fa-trash-can"></i></button>
+                        <button type="button" id="chat-clear-btn" class="w-8 h-8 flex items-center justify-center bg-rose-500 hover:bg-rose-600 text-white rounded-full transition" title="Kosongkan Chat"><i class="fa-solid fa-trash-can"></i></button>
                         <button type="button" onclick="closeModal()" class="w-8 h-8 flex items-center justify-center bg-white/10 hover:bg-white/20 text-white rounded-full transition"><i class="fa-solid fa-xmark"></i></button>
                     </div>
                 </div>
@@ -188,7 +202,7 @@ window.renderChatModal = function(targetId, targetName, senderId, receiverId) {
                         <div id="chat-preview-doc" class="hidden h-16 w-16 bg-slate-100 rounded-xl border border-slate-200 flex items-center justify-center text-slate-500 text-xl"><i class="fa-solid fa-file"></i></div>
                         <button type="button" onclick="clearChatAttachment()" class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px] shadow-sm"><i class="fa-solid fa-xmark"></i></button>
                     </div>
-                    <form onsubmit="sendChatMessage(event, '${senderId}', '${receiverId}', '${targetId}', '${targetName}')" class="flex items-end gap-2">
+                    <form id="chat-send-form" class="flex items-end gap-2">
                         <label class="w-10 h-10 flex-shrink-0 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-full flex items-center justify-center cursor-pointer transition">
                             <i class="fa-solid fa-paperclip"></i>
                             <input type="file" id="chat-file-input" class="hidden" accept="image/*,video/*,.pdf,.doc,.docx,.apk" onchange="handleChatAttachment(event)">
@@ -203,6 +217,13 @@ window.renderChatModal = function(targetId, targetName, senderId, receiverId) {
         </div>
     `;
     modal.classList.remove('hidden');
+    const targetNameEl = document.getElementById('chat-target-name');
+    if (targetNameEl) targetNameEl.textContent = String(targetName || '');
+    const clearBtn = document.getElementById('chat-clear-btn');
+    if (clearBtn) clearBtn.onclick = () => clearAllChats(senderId, receiverId);
+    const sendForm = document.getElementById('chat-send-form');
+    if (sendForm) sendForm.onsubmit = (event) => sendChatMessage(event, senderId, receiverId, targetId, targetName);
+
     window.chatAttachmentData = null;
     refreshChatMessages(senderId, receiverId);
     
@@ -231,12 +252,26 @@ window.handleChatAttachment = function(e) {
     
     const reader = new FileReader();
     reader.onload = (ev) => {
-        const res = ev.target.result;
+        const res = String(ev.target.result || '');
+        const mime = String(file.type || '').toLowerCase();
+        const lowerName = String(file.name || '').toLowerCase();
         let type = 'document';
-        if (file.type.startsWith('image/')) type = 'image';
-        else if (file.type.startsWith('video/')) type = 'video';
-        
-        window.chatAttachmentData = { type, data: res, name: file.name };
+        if (['image/jpeg', 'image/png', 'image/webp'].includes(mime)) type = 'image';
+        else if (['video/mp4', 'video/webm'].includes(mime)) type = 'video';
+        else if (lowerName.endsWith('.apk')) type = 'apk';
+        else if (!['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/octet-stream'].includes(mime)) {
+            window.showToast('Tipe lampiran tidak didukung.', 'error');
+            clearChatAttachment();
+            return;
+        }
+
+        const candidate = { type, data: res, name: String(file.name || 'lampiran').slice(0, 120) };
+        if (!isSafeChatAttachment(candidate)) {
+            window.showToast('Lampiran tidak valid atau terlalu besar.', 'error');
+            clearChatAttachment();
+            return;
+        }
+        window.chatAttachmentData = candidate;
         
         document.getElementById('chat-attachment-preview').classList.remove('hidden');
         document.getElementById('chat-preview-img').classList.add('hidden');
@@ -330,38 +365,38 @@ window.refreshChatMessages = function(senderId, receiverId) {
         let attachmentHtml = '';
         if (msg.attachment) {
             if (msg.attachment.type === 'image') {
-                attachmentHtml = `<img src="${msg.attachment.data}" class="max-w-full rounded-xl mb-2 border border-black/10">`;
+                if (isSafeChatAttachment(msg.attachment)) attachmentHtml = `<img src="${chatEscapeAttr(msg.attachment.data)}" class="max-w-full rounded-xl mb-2 border border-black/10" alt="Lampiran gambar">`;
             } else if (msg.attachment.type === 'video') {
-                attachmentHtml = `<video src="${msg.attachment.data}" controls class="max-w-full rounded-xl mb-2 border border-black/10"></video>`;
+                if (isSafeChatAttachment(msg.attachment)) attachmentHtml = `<video src="${chatEscapeAttr(msg.attachment.data)}" controls class="max-w-full rounded-xl mb-2 border border-black/10"></video>`;
             } else if (msg.attachment.type === 'apk' || String(msg.attachment.name || '').endsWith('.apk')) {
                 attachmentHtml = `
                     <div class="p-3 bg-slate-900 text-white rounded-xl mb-2 flex items-center justify-between border border-slate-700/50">
                         <div class="flex items-center space-x-2.5">
                             <div class="w-8 h-8 rounded-lg bg-emerald-500/15 text-emerald-400 flex items-center justify-center text-sm"><i class="fa-solid fa-mobile-screen-button"></i></div>
                             <div>
-                                <h4 class="text-[10px] font-extrabold truncate w-[130px] text-emerald-400">${msg.attachment.name}</h4>
+                                <h4 class="text-[10px] font-extrabold truncate w-[130px] text-emerald-400">${chatEscape(msg.attachment.name)}</h4>
                                 <p class="text-[8px] text-slate-400 mt-0.5">Android Companion App</p>
                             </div>
                         </div>
-                        <a href="${msg.attachment.data}" download="${msg.attachment.name}" class="p-1.5 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"><i class="fa-solid fa-download"></i> Unduh</a>
+                        <a href="${chatEscapeAttr(msg.attachment.data)}" download="${chatEscape(msg.attachment.name)}" class="p-1.5 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"><i class="fa-solid fa-download"></i> Unduh</a>
                     </div>
                 `;
             } else {
-                attachmentHtml = `<a href="${msg.attachment.data}" download="${msg.attachment.name}" class="flex items-center gap-2 p-2 bg-black/10 rounded-xl mb-2 text-xs hover:bg-black/20 transition"><i class="fa-solid fa-file"></i> ${msg.attachment.name}</a>`;
+                attachmentHtml = `<a href="${chatEscapeAttr(msg.attachment.data)}" download="${chatEscape(msg.attachment.name)}" class="flex items-center gap-2 p-2 bg-black/10 rounded-xl mb-2 text-xs hover:bg-black/20 transition"><i class="fa-solid fa-file"></i> ${chatEscape(msg.attachment.name)}</a>`;
             }
         }
         
         const canDeleteThis = isAdmin || isTeacher || isMine;
-        const delBtn = canDeleteThis ? `<button type="button" onclick="deleteChatMessage('${msg.id}', '${senderId}', '${receiverId}')" class="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg opacity-100 sm:opacity-0 group-hover:opacity-100 transition shrink-0 cursor-pointer" title="Hapus Pesan"><i class="fa-solid fa-trash text-xs"></i></button>` : '';
-        const delBtnOther = (isAdmin || isTeacher) ? `<button type="button" onclick="deleteChatMessage('${msg.id}', '${senderId}', '${receiverId}')" class="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg opacity-100 sm:opacity-0 group-hover:opacity-100 transition shrink-0 cursor-pointer" title="Hapus Pesan"><i class="fa-solid fa-trash text-xs"></i></button>` : '';
+        const delBtn = canDeleteThis ? `<button type="button" onclick="deleteChatMessage('${chatEscapeAttr(msg.id)}', '${chatEscapeAttr(senderId)}', '${chatEscapeAttr(receiverId)}')" class="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg opacity-100 sm:opacity-0 group-hover:opacity-100 transition shrink-0 cursor-pointer" title="Hapus Pesan"><i class="fa-solid fa-trash text-xs"></i></button>` : '';
+        const delBtnOther = (isAdmin || isTeacher) ? `<button type="button" onclick="deleteChatMessage('${chatEscapeAttr(msg.id)}', '${chatEscapeAttr(senderId)}', '${chatEscapeAttr(receiverId)}')" class="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg opacity-100 sm:opacity-0 group-hover:opacity-100 transition shrink-0 cursor-pointer" title="Hapus Pesan"><i class="fa-solid fa-trash text-xs"></i></button>` : '';
 
         if (isMine) {
             html += `
-                <div class="flex items-center justify-end gap-1.5 group relative" data-senderid="${senderId}" data-receiverid="${receiverId}">
+                <div class="flex items-center justify-end gap-1.5 group relative" data-senderid="${chatEscapeAttr(senderId)}" data-receiverid="${chatEscapeAttr(receiverId)}">
                     ${delBtn}
                     <div class="max-w-[80%] bg-blue-600 text-white p-3 rounded-2xl rounded-tr-sm shadow-sm relative">
                         ${attachmentHtml}
-                        ${msg.text ? `<p class="text-sm break-words">${msg.text}</p>` : ''}
+                        ${msg.text ? `<p class="text-sm break-words">${chatEscape(msg.text)}</p>` : ''}
                         <div class="flex items-center justify-end gap-1 mt-1">
                             <p class="text-[10px] text-blue-200 text-right">${time}</p>
                             ${msg.read ? '<i class="fa-solid fa-check-double text-[10px] text-blue-300"></i>' : '<i class="fa-solid fa-check text-[10px] text-blue-200"></i>'}
@@ -371,10 +406,10 @@ window.refreshChatMessages = function(senderId, receiverId) {
             `;
         } else {
             html += `
-                <div class="flex items-center justify-start gap-1.5 group relative" data-senderid="${receiverId}" data-receiverid="${senderId}">
+                <div class="flex items-center justify-start gap-1.5 group relative" data-senderid="${chatEscapeAttr(receiverId)}" data-receiverid="${chatEscapeAttr(senderId)}">
                     <div class="max-w-[80%] bg-white border border-slate-100 text-slate-700 p-3 rounded-2xl rounded-tl-sm shadow-sm relative">
                         ${attachmentHtml}
-                        ${msg.text ? `<p class="text-sm break-words">${msg.text}</p>` : ''}
+                        ${msg.text ? `<p class="text-sm break-words">${chatEscape(msg.text)}</p>` : ''}
                         <p class="text-[10px] text-slate-400 mt-1">${time}</p>
                     </div>
                     ${delBtnOther}
@@ -404,7 +439,7 @@ window.sendChatMessage = async function(e, senderId, receiverId, targetId, targe
     btn.disabled = true;
     
     const newMsg = {
-        id: Date.now().toString(),
+        id: 'tmp_' + Date.now().toString(),
         senderId,
         receiverId,
         text,
@@ -426,7 +461,11 @@ window.sendChatMessage = async function(e, senderId, receiverId, targetId, targe
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(newMsg)
         });
-        if (!res.ok) throw new Error("Gagal mengirim pesan");
+        const payload = await res.json().catch(() => null);
+        if (!res.ok || !payload?.success) throw new Error(payload?.message || "Gagal mengirim pesan");
+        const idx = window.appState.chats.findIndex(c => String(c.id) === String(newMsg.id));
+        if (idx >= 0 && payload.data) window.appState.chats[idx] = payload.data;
+        refreshChatMessages(senderId, receiverId);
     } catch (err) {
         window.showToast("Gagal mengirim pesan, periksa koneksi.", "error");
     } finally {

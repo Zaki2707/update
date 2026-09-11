@@ -361,11 +361,11 @@ function renderStudentProfile(container) {
                     <form onsubmit="saveStudentProfileUpdate(event, '${st.id}')" class="space-y-4 text-xs sm:text-sm pt-2">
                         <div>
                             <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Nama Lengkap</label>
-                            <input type="text" id="prof-name" value="${st.name || ''}" required class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                            <input type="text" id="prof-name" value="${window.escapeHtmlAttr ? window.escapeHtmlAttr(st.name || '') : ''}" required class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl">
                         </div>
                         <div>
                             <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">No. HP</label>
-                            <input type="tel" id="prof-phone" value="${st.no_hp || ''}" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl font-mono" placeholder="Contoh: 081234567890">
+                            <input type="tel" id="prof-phone" value="${window.escapeHtmlAttr ? window.escapeHtmlAttr(st.no_hp || '') : ''}" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl font-mono" placeholder="Contoh: 081234567890">
                         </div>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
@@ -596,7 +596,7 @@ async function saveStudentPhotoBase64(base64Img, studentId) {
         if (appState.currentUser && String(appState.currentUser.id) === String(studentId)) {
             appState.currentUser.photo = appState.students[stIdx].photo;
             appState.currentUser.photoHistory = appState.students[stIdx].photoHistory;
-            localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser));
+            if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
         }
 
         try {
@@ -831,7 +831,7 @@ async function selectStudentProfileFromHistory(studentId, photoUrl) {
         if (appState.currentUser && String(appState.currentUser.id) === String(studentId)) {
             appState.currentUser.photo = photoUrl;
             appState.currentUser.photoHistory = appState.students[stIdx].photoHistory;
-            localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser));
+            if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
         }
 
         try {
@@ -912,7 +912,7 @@ async function deleteStudentPhotoFromHistory(studentId, photoUrl, event) {
                 appState.currentUser.photo = appState.students[stIdx].photo;
                 appState.currentUser.photoHistory = appState.students[stIdx].photoHistory;
                 appState.currentUser.deletedPhotos = appState.students[stIdx].deletedPhotos;
-                localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser));
+                if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
             }
 
             try {
@@ -969,7 +969,11 @@ async function saveStudentProfileUpdate(e, studentId) {
         const stIdx = appState.students.findIndex(s => String(s.id) === String(studentId));
         if (stIdx < 0) { showToast('Data siswa tidak ditemukan.', 'error'); return; }
 
-        const response = await fetch(`/api/students/${encodeURIComponent(studentId)}`, {
+        if (!appState.currentUser || String(appState.currentUser.id) !== String(studentId)) {
+            showToast('Akses profil tidak valid.', 'error');
+            return;
+        }
+        const response = await fetch('/api/student/profile', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, username, password, no_hp })
@@ -980,13 +984,14 @@ async function saveStudentProfileUpdate(e, studentId) {
             throw new Error(data.message || 'Gagal menyimpan perubahan profil.');
         }
 
-        appState.students[stIdx] = { ...appState.students[stIdx], name, username, password, no_hp };
+        const updatedStudent = data.student || { ...appState.students[stIdx], name, username, no_hp };
+        appState.students[stIdx] = { ...appState.students[stIdx], ...updatedStudent };
+        delete appState.students[stIdx].password;
         if (appState.currentUser && String(appState.currentUser.id) === String(studentId)) {
-            appState.currentUser.name = name;
-            appState.currentUser.username = username;
-            appState.currentUser.password = password;
-            appState.currentUser.no_hp = no_hp;
-            localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser));
+            appState.currentUser = data.user || { ...appState.currentUser, name, username, no_hp };
+            delete appState.currentUser.password;
+            if (data.token) appState.currentUser.token = data.token;
+            if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
             const nameEl = document.getElementById('user-display-name');
             if (nameEl) nameEl.innerText = name;
         }
