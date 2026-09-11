@@ -10338,27 +10338,26 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
   const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
   const userMadrasahId = getRequestMadrasahId(req);
 
-  const activeExam = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
-  if (!activeExam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan." });
-
-  if (!isBos && activeExam) {
-    const examMId = String(activeExam.madrasahId || 'default').trim();
-    if (examMId !== String(userMadrasahId).trim()) {
-      return res.status(403).json({ success: false, message: "Akses ditolak: Anda tidak memiliki wewenang memantau ujian dari madrasah lain." });
-    }
+  const examSource = getMemoryKeyValue('exams') || exams || [];
+  const resolvedExam = resolveTenantItemIndexById(examSource, eId, req);
+  if (resolvedExam.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant. Pilih tenant target secara eksplisit." });
   }
- 
+  const activeExam = resolvedExam.item;
+  if (!activeExam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan pada tenant yang diizinkan." });
+
+  const examTenant = canonicalRealtimeTenant(activeExam.madrasahId || activeExam.madrasahSlug || 'default');
   let studentList = getMemoryKeyValue('students') || students || [];
-  if (!isBos) {
-    studentList = studentList.filter((s: any) => String(s.madrasahId || 'default').trim() === String(userMadrasahId).trim());
-  }
+  studentList = studentList.filter((student: any) =>
+    canonicalRealtimeTenant(student.madrasahId || student.madrasahSlug || 'default') === examTenant
+  );
 
-  const activeExamInMem = (getMemoryKeyValue('exams') || exams || []).find((e: any) => String(e.id) === eId);
- 
   // Filter students by assigned classes if defined on the exam
   let targetStudents = studentList;
-  if (activeExamInMem && activeExamInMem.classes && activeExamInMem.classes.length > 0 && !activeExamInMem.classes.includes('ALL')) {
-    targetStudents = studentList.filter((s: any) => activeExamInMem.classes.includes(String(s.classId || s.className || s.class)));
+  if (activeExam.classes && activeExam.classes.length > 0 && !activeExam.classes.includes('ALL')) {
+    targetStudents = studentList.filter((student: any) =>
+      activeExam.classes.includes(String(student.classId || student.className || student.class))
+    );
   }
  
   const summary = targetStudents.map((st: any) => {
@@ -12050,32 +12049,28 @@ app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru'
       return res.status(400).json({ success: false, message: "classId dan examId harus diisi." });
     }
 
-    const authUser = getAuthUser(req);
-    const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-    const examCandidates = (exams || []).filter((e: any) => String(e.id) === String(examId));
-    let ex: any = null;
-
-    if (isBos) {
-      const explicitTenantRaw = req.headers['x-madrasah-id'] || req.query?.madrasahId || req.body?.madrasahId;
-      const explicitTenant = explicitTenantRaw ? canonicalRealtimeTenant(explicitTenantRaw) : '';
-      const scoped = explicitTenant
-        ? examCandidates.filter((item: any) => canonicalRealtimeTenant(item?.madrasahId || item?.madrasahSlug || 'default') === explicitTenant)
-        : examCandidates;
-      if (scoped.length > 1) {
-        return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant. Pilih madrasah target terlebih dahulu." });
-      }
-      ex = scoped[0] || null;
-    } else {
-      const owned = examCandidates.filter((item: any) => isItemForCurrentMadrasah(item, req));
-      if (owned.length > 1) {
-        return res.status(409).json({ success: false, message: "ID ujian ambigu pada tenant ini." });
-      }
-      ex = owned[0] || null;
+    const resolvedExam = resolveTenantItemIndexById(exams, examId, req);
+    if (resolvedExam.ambiguous) {
+      return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant. Pilih tenant target secara eksplisit." });
     }
-
+    const ex = resolvedExam.item;
     if (!ex) return res.status(404).json({ success: false, message: "Jadwal ujian tidak ditemukan pada tenant yang diizinkan." });
 
-    const examTenant = canonicalRealtimeTenant(ex?.madrasahId || ex?.madrasahSlug || 'default');
+    const resolvedClass = resolveTenantItemIndexById(classes, classId, req);
+    if (resolvedClass.ambiguous) {
+      return res.status(409).json({ success: false, message: "ID kelas ambigu lintas tenant. Pilih tenant target secara eksplisit." });
+    }
+    const targetClass = resolvedClass.item;
+    if (!targetClass) {
+      return res.status(404).json({ success: false, message: "Kelas tidak ditemukan pada tenant yang diizinkan." });
+    }
+
+    const examTenant = canonicalRealtimeTenant(ex.madrasahId || ex.madrasahSlug || 'default');
+    const classTenant = canonicalRealtimeTenant(targetClass.madrasahId || targetClass.madrasahSlug || 'default');
+    if (examTenant !== classTenant) {
+      return res.status(409).json({ success: false, message: "Ujian dan kelas harus berasal dari tenant yang sama." });
+    }
+
     const allowedClassIds = Array.isArray(ex.classes)
       ? new Set(ex.classes.map((value: any) => String(value)))
       : new Set<string>();
@@ -12083,6 +12078,7 @@ app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru'
       return res.status(400).json({ success: false, message: "Kelas tidak termasuk target ujian ini." });
     }
 
+    const authUser = getAuthUser(req);
     let targets = students.filter((st: any) =>
       String(st.classId) === String(classId) &&
       canonicalRealtimeTenant(st?.madrasahId || st?.madrasahSlug || 'default') === examTenant
@@ -12191,34 +12187,30 @@ app.post("/api/gemini/auto-koreksi-lkpd", requireAuth, requireRole(['teacher', '
       return res.status(400).json({ success: false, message: "classId dan lkpdId harus diisi." });
     }
 
-    const authUser = getAuthUser(req);
-    const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-    const lkpdCandidates = (lkpdList || []).filter((item: any) => String(item.id) === String(lkpdId));
-    let lkpd: any = null;
-
-    if (isBos) {
-      const explicitTenantRaw = req.headers['x-madrasah-id'] || req.query?.madrasahId || req.body?.madrasahId;
-      const explicitTenant = explicitTenantRaw ? canonicalRealtimeTenant(explicitTenantRaw) : '';
-      const scoped = explicitTenant
-        ? lkpdCandidates.filter((item: any) => canonicalRealtimeTenant(item?.madrasahId || item?.madrasahSlug || 'default') === explicitTenant)
-        : lkpdCandidates;
-      if (scoped.length > 1) {
-        return res.status(409).json({ success: false, message: "ID LKPD ambigu lintas tenant. Pilih madrasah target terlebih dahulu." });
-      }
-      lkpd = scoped[0] || null;
-    } else {
-      const owned = lkpdCandidates.filter((item: any) => isItemForCurrentMadrasah(item, req));
-      if (owned.length > 1) {
-        return res.status(409).json({ success: false, message: "ID LKPD ambigu pada tenant ini." });
-      }
-      lkpd = owned[0] || null;
+    const resolvedLkpd = resolveTenantItemIndexById(lkpdList, lkpdId, req);
+    if (resolvedLkpd.ambiguous) {
+      return res.status(409).json({ success: false, message: "ID LKPD ambigu lintas tenant. Pilih tenant target secara eksplisit." });
     }
-
+    const lkpd = resolvedLkpd.item;
     if (!lkpd) {
       return res.status(404).json({ success: false, message: "LKPD tidak ditemukan pada tenant yang diizinkan." });
     }
 
-    const lkpdTenant = canonicalRealtimeTenant(lkpd?.madrasahId || lkpd?.madrasahSlug || 'default');
+    const resolvedClass = resolveTenantItemIndexById(classes, classId, req);
+    if (resolvedClass.ambiguous) {
+      return res.status(409).json({ success: false, message: "ID kelas ambigu lintas tenant. Pilih tenant target secara eksplisit." });
+    }
+    const targetClass = resolvedClass.item;
+    if (!targetClass) {
+      return res.status(404).json({ success: false, message: "Kelas tidak ditemukan pada tenant yang diizinkan." });
+    }
+
+    const lkpdTenant = canonicalRealtimeTenant(lkpd.madrasahId || lkpd.madrasahSlug || 'default');
+    const classTenant = canonicalRealtimeTenant(targetClass.madrasahId || targetClass.madrasahSlug || 'default');
+    if (lkpdTenant !== classTenant) {
+      return res.status(409).json({ success: false, message: "LKPD dan kelas harus berasal dari tenant yang sama." });
+    }
+
     const markers = lkpd.markers || [];
     if (markers.length === 0) {
       return res.json({ success: false, message: "LKPD ini tidak memiliki titik pertanyaan untuk dikoreksi." });
