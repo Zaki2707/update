@@ -753,11 +753,17 @@ export function handleSaveCalendarEventSubmit(e, editId) {
 export function deleteCalendarEvent(eventId) {
     if (!eventId) return;
 
-    const action = () => {
+    const action = async () => {
         const events = getCalendarEvents().filter(e => String(e.id) !== String(eventId));
         window.appState.calendarEvents = events;
         if (typeof window.saveState === 'function') {
             window.saveState('calendarEvents');
+        }
+        try {
+            const response = await fetch(`/api/calendar-events/${encodeURIComponent(eventId)}`, { method: 'DELETE' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } catch (err) {
+            console.warn('Gagal menghapus agenda di server:', err);
         }
         if (window.showToast) window.showToast('Agenda berhasil dihapus!', 'success');
         refreshCalendarView();
