@@ -3958,6 +3958,11 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     filteredGeneratedExams = [];
   }
 
+  if (studentRole === 'teacher' || studentRole === 'guru') {
+    filteredQGroups = filterQuestionBankGroupsForRequest(filteredQGroups, req);
+    filteredQuestions = filterQuestionsForRequest(filteredQuestions, req);
+  }
+
   // Sanitasi sensitif (hilangkan password dan adminPass)
   const sanitizedTeachers = filteredTeachers.map(({ password, ...rest }: any) => rest);
   const sanitizedStudents = (isStudent ? filteredStudents : sortedStudents).map((st: any) => {
@@ -8631,15 +8636,108 @@ app.post('/api/theme-assets/release', requireAuth, requireRole(['admin', 'bos', 
   }
 });
 
+function canonicalTeacherSubjectRef(value: any): string {
+  return String(value || '').trim().normalize('NFKC').toLocaleLowerCase('id-ID').replace(/[\s._-]+/g, '');
+}
+
+function teacherQuestionBankSubjectAliases(req: any): Set<string> | null {
+  const authUser = getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  if (role !== 'teacher' && role !== 'guru') return null;
+
+  const ownedTeachers = (teachers || []).filter((teacher: any) =>
+    String(teacher.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(teacher, req)
+  );
+  if (ownedTeachers.length !== 1) return new Set<string>();
+
+  const assigned = Array.isArray(ownedTeachers[0].mapel)
+    ? ownedTeachers[0].mapel
+    : (ownedTeachers[0].mapel ? [ownedTeachers[0].mapel] : []);
+  const allowed = new Set<string>();
+
+  for (const raw of assigned) {
+    const key = canonicalTeacherSubjectRef(raw);
+    if (key) allowed.add(key);
+  }
+
+  const tenantSubjects = filterByMadrasah(subjects || [], req);
+  for (const subject of tenantSubjects) {
+    const aliases = [subject?.id, subject?.code, subject?.name]
+      .map(canonicalTeacherSubjectRef)
+      .filter(Boolean);
+    if (aliases.some((alias: string) => allowed.has(alias))) {
+      for (const alias of aliases) allowed.add(alias);
+    }
+  }
+  return allowed;
+}
+
+function teacherCanAccessSubjectRef(req: any, subjectRef: any): boolean {
+  const allowed = teacherQuestionBankSubjectAliases(req);
+  if (allowed === null) return true;
+  const key = canonicalTeacherSubjectRef(subjectRef);
+  if (!key) return false;
+  if (allowed.has(key)) return true;
+
+  const tenantSubjects = filterByMadrasah(subjects || [], req);
+  const matched = tenantSubjects.find((subject: any) =>
+    [subject?.id, subject?.code, subject?.name]
+      .map(canonicalTeacherSubjectRef)
+      .filter(Boolean)
+      .includes(key)
+  );
+  if (!matched) return false;
+  return [matched?.id, matched?.code, matched?.name]
+    .map(canonicalTeacherSubjectRef)
+    .filter(Boolean)
+    .some((alias: string) => allowed.has(alias));
+}
+
+function teacherCanAccessQuestionBankGroup(req: any, group: any): boolean {
+  const allowed = teacherQuestionBankSubjectAliases(req);
+  if (allowed === null) return true;
+  return teacherCanAccessSubjectRef(req, group?.subjectId || group?.subject);
+}
+
+function teacherCanAccessQuestion(req: any, questionItem: any): boolean {
+  const allowed = teacherQuestionBankSubjectAliases(req);
+  if (allowed === null) return true;
+
+  const directSubject = questionItem?.subjectId || questionItem?.subject;
+  if (directSubject && teacherCanAccessSubjectRef(req, directSubject)) return true;
+
+  const code = String(questionItem?.code || questionItem?.bankCode || questionItem?.groupCode || questionItem?.category || '').trim();
+  if (!code) return false;
+  const tenantGroups = filterByMadrasah(questionBankGroups || [], req);
+  return tenantGroups.some((group: any) =>
+    String(group?.code || '').trim() === code && teacherCanAccessQuestionBankGroup(req, group)
+  );
+}
+
+function filterQuestionBankGroupsForRequest(list: any[], req: any): any[] {
+  return filterByMadrasah(Array.isArray(list) ? list : [], req)
+    .filter((group: any) => teacherCanAccessQuestionBankGroup(req, group));
+}
+
+function filterQuestionsForRequest(list: any[], req: any): any[] {
+  return filterByMadrasah(Array.isArray(list) ? list : [], req)
+    .filter((questionItem: any) => teacherCanAccessQuestion(req, questionItem));
+}
+
+// QUESTION_BANK_TEACHER_SUBJECT_SCOPE: teacher bank access is enforced server-side, not only by UI.
+
 // 8. Question Bank Groups API
 app.get("/api/question-bank-groups", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
-  res.json({ success: true, groups: filterByMadrasah(questionBankGroups, req) });
+  res.json({ success: true, groups: filterQuestionBankGroupsForRequest(questionBankGroups, req) });
 });
 
 app.post("/api/question-bank-groups", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { code, subjectId, classId } = req.body;
   if (!code) {
     return res.status(400).json({ success: false, message: "Kode bank soal wajib diisi." });
+  }
+  if (!teacherCanAccessSubjectRef(req, subjectId)) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat membuat bank soal untuk mata pelajaran yang diampu." });
   }
   const newGrp = tagNewRecord({
     id: req.body.id || ("BG_" + Date.now()),
@@ -8654,14 +8752,21 @@ app.post("/api/question-bank-groups", requireAuth, requireRole(['teacher', 'guru
 
 app.delete("/api/question-bank-groups/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
-  questionBankGroups = questionBankGroups.filter(bg => !(String(bg.id) === String(id) && isItemForCurrentMadrasah(bg, req)));
+  const resolved = resolveTenantItemIndexById(questionBankGroups, id, req, false);
+  if (resolved.ambiguous) return res.status(409).json({ success: false, message: "ID bank soal ambigu lintas tenant." });
+  if (resolved.index < 0) return res.status(404).json({ success: false, message: "Bank soal tidak ditemukan." });
+  const target = questionBankGroups[resolved.index];
+  if (!teacherCanAccessQuestionBankGroup(req, target)) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat menghapus bank soal mata pelajaran yang diampu." });
+  }
+  questionBankGroups = questionBankGroups.filter((_, index) => index !== resolved.index);
   await saveData('questionBankGroups', questionBankGroups);
   res.json({ success: true, message: "Bank soal berhasil dihapus!" });
 });
 
 // 9. Questions API
 app.get("/api/questions", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
-  res.json({ success: true, questions: filterByMadrasah(questions, req) });
+  res.json({ success: true, questions: filterQuestionsForRequest(questions, req) });
 });
 
 app.post("/api/questions/batch", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
@@ -8670,14 +8775,25 @@ app.post("/api/questions/batch", requireAuth, requireRole(['teacher', 'guru', 'a
   }
 
   const incoming = req.body;
+  const authRole = String(getAuthUser(req)?.role || '').toLowerCase();
+  const isTeacher = authRole === 'teacher' || authRole === 'guru';
+  if (isTeacher && incoming.some((item: any) => !teacherCanAccessQuestion(req, item))) {
+    return res.status(403).json({ success: false, message: "Batch soal memuat mata pelajaran di luar penugasan guru." });
+  }
+
   const beforeTenantCount = filterByMadrasah(questions, req).length;
 
-  if (isOnlineMode) {
-    // ONLINE is server-authoritative. Browser/import state may be stale or partial, so
-    // omission is NEVER a deletion signal. Only explicit DELETE endpoints may shrink it.
+  if (isTeacher) {
+    // Teacher sync is always non-destructive so one teacher cannot erase another subject in the same tenant.
+    questions = mergeTenantScopedSyncRecords(
+      questions,
+      incoming,
+      req,
+      (item: any) => String(item?.id || '').trim()
+    );
+  } else if (isOnlineMode) {
     questions = mergeTenantCrudSyncData(questions, incoming, req);
   } else {
-    // Preserve the legacy offline replace-list behavior.
     questions = mergeTenantListData(questions, incoming, req);
   }
 
@@ -8689,8 +8805,8 @@ app.post("/api/questions/batch", requireAuth, requireRole(['teacher', 'guru', 'a
   await saveData('questions', questions);
   res.json({
     success: true,
-    questions: filterByMadrasah(questions, req),
-    mode: isOnlineMode ? 'merge-non-destructive' : 'replace-offline'
+    questions: filterQuestionsForRequest(questions, req),
+    mode: isTeacher ? 'teacher-subject-merge' : (isOnlineMode ? 'merge-non-destructive' : 'replace-offline')
   });
 });
 
@@ -8705,6 +8821,10 @@ app.post("/api/questions", requireAuth, requireRole(['teacher', 'guru', 'admin',
   }
 
   let { question, options, optionA, optionB, optionC, optionD, optionE, answer, subjectId, classId, code, type, explanation, imageUrl } = req.body;
+  const questionProbe = { subjectId: subjectId || req.body.subject || "", code: code || req.body.category || "" };
+  if (!teacherCanAccessQuestion(req, questionProbe)) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat membuat soal untuk mata pelajaran yang diampu." });
+  }
   if (imageUrl && imageUrl.startsWith("data:image/")) { imageUrl = await saveBase64ToFirestore(imageUrl); }
   const newQ = tagNewRecord({
     id: "Q_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
@@ -8742,32 +8862,37 @@ app.put("/api/questions/:id", requireAuth, requireRole(['teacher', 'guru', 'admi
     return res.status(404).json({ success: false, message: "Soal tidak ditemukan pada madrasah ini." });
   }
 
+  const existingQuestion = questions[resolved.index];
+  if (!teacherCanAccessQuestion(req, existingQuestion)) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat mengedit soal mata pelajaran yang diampu." });
+  }
   const cleanBody = { ...(req.body || {}) };
   delete cleanBody.id;
   delete cleanBody.madrasahId;
   delete cleanBody.madrasahSlug;
-  questions[resolved.index] = tagNewRecord({
-    ...questions[resolved.index],
+  const candidateQuestion = {
+    ...existingQuestion,
     ...cleanBody,
-    id: questions[resolved.index].id
-  }, req);
+    id: existingQuestion.id
+  };
+  if (!teacherCanAccessQuestion(req, candidateQuestion)) {
+    return res.status(403).json({ success: false, message: "Soal tidak boleh dipindahkan ke mata pelajaran di luar penugasan guru." });
+  }
+  questions[resolved.index] = tagNewRecord(candidateQuestion, req);
 
   await saveData('questions', questions);
   res.json({ success: true, question: questions[resolved.index] });
 });
 
 app.delete("/api/questions/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
-  const authUser = getAuthUser(req);
-  const isTeacherOrAdmin = Boolean(authUser && (
-    authUser.role === 'teacher' || authUser.role === 'guru' ||
-    authUser.role === 'admin' || authUser.role === 'bos' || authUser.role === 'superadmin'
-  ));
-  if (!isTeacherOrAdmin) {
-    return res.status(403).json({ success: false, message: "Akses ditolak: Hanya guru dan admin yang dapat menghapus soal." });
-  }
-
   const { id } = req.params;
-  questions = questions.filter(q => !(String(q.id) === String(id) && isItemForCurrentMadrasah(q, req)));
+  const resolved = resolveTenantItemIndexById(questions, id, req, false);
+  if (resolved.ambiguous) return res.status(409).json({ success: false, message: "ID soal ambigu lintas tenant." });
+  if (resolved.index < 0) return res.status(404).json({ success: false, message: "Soal tidak ditemukan pada madrasah ini." });
+  if (!teacherCanAccessQuestion(req, questions[resolved.index])) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat menghapus soal mata pelajaran yang diampu." });
+  }
+  questions = questions.filter((_, index) => index !== resolved.index);
   await saveData('questions', questions);
   res.json({ success: true, message: "Soal berhasil dihapus!" });
 });
