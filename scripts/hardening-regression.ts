@@ -79,7 +79,8 @@ function testServerGuards() {
   assert.match(app, /sessionStorage\.setItem\(AUTH_SESSION_TOKEN_KEY/);
   assert.equal(app.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser))"), false);
   assert.match(chat, /chatEscape\(msg\.text\)/);
-  assert.equal(chat.includes('
+  assert.equal(chat.includes("${msg.text}"), false);
+
   for (const destructive of [
     'exams = [...otherExams, ...taggedIncoming]',
     'rooms = [...otherRooms, ...taggedIncoming]',
