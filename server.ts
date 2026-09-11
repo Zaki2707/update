@@ -8985,6 +8985,144 @@ function examBroadcastStateKey(req: any, examId: any): string {
   return `bcastv2::${encodeExamStatePart(tenant)}::${encodeExamStatePart(examId)}`;
 }
 
+function lkpdStateTenant(req: any, studentId?: any, lkpdId?: any): string {
+  const requested = canonicalRealtimeTenant(
+    getRequestMadrasahId(req) || req?.user?.madrasahId || req?.user?.madrasahSlug || 'default'
+  );
+  if (requested && requested !== 'BOSS') return requested;
+
+  if (lkpdId !== undefined && lkpdId !== null) {
+    const matches = (lkpdList || []).filter((item: any) => String(item.id) === String(lkpdId));
+    if (matches.length === 1) return canonicalRealtimeTenant(matches[0]?.madrasahId || matches[0]?.madrasahSlug || 'default');
+  }
+  if (studentId !== undefined && studentId !== null) {
+    const matches = (students || []).filter((item: any) => String(item.id) === String(studentId));
+    if (matches.length === 1) return canonicalRealtimeTenant(matches[0]?.madrasahId || matches[0]?.madrasahSlug || 'default');
+  }
+  return requested || 'default';
+}
+
+function lkpdStateKey(req: any, studentId: any, lkpdId: any): string {
+  const tenant = lkpdStateTenant(req, studentId, lkpdId);
+  return `lkpdv1::${encodeExamStatePart(tenant)}::${encodeExamStatePart(studentId)}::${encodeExamStatePart(lkpdId)}`;
+}
+
+function lkpdBroadcastStateKey(req: any, lkpdId: any): string {
+  const tenant = lkpdStateTenant(req, undefined, lkpdId);
+  return `lkpdbcastv1::${encodeExamStatePart(tenant)}::${encodeExamStatePart(lkpdId)}`;
+}
+
+function parseNamespacedLkpdStateKey(key: string): { tenant: string; studentId: string; lkpdId: string } | null {
+  const parts = String(key || '').split('::');
+  if (parts.length !== 4 || parts[0] !== 'lkpdv1') return null;
+  const tenant = decodeExamStatePart(parts[1]);
+  const studentId = decodeExamStatePart(parts[2]);
+  const lkpdId = decodeExamStatePart(parts[3]);
+  return tenant && studentId && lkpdId ? { tenant, studentId, lkpdId } : null;
+}
+
+function parseNamespacedLkpdBroadcastKey(key: string): { tenant: string; lkpdId: string } | null {
+  const parts = String(key || '').split('::');
+  if (parts.length !== 3 || parts[0] !== 'lkpdbcastv1') return null;
+  const tenant = decodeExamStatePart(parts[1]);
+  const lkpdId = decodeExamStatePart(parts[2]);
+  return tenant && lkpdId ? { tenant, lkpdId } : null;
+}
+
+function parseLkpdStateKeyForRequest(req: any, key: string): { studentId: string; lkpdId: string } | null {
+  const raw = String(key || '');
+  const namespaced = parseNamespacedLkpdStateKey(raw);
+  if (namespaced) {
+    if (canonicalRealtimeTenant(namespaced.tenant) !== lkpdStateTenant(req, namespaced.studentId, namespaced.lkpdId)) return null;
+    const student = (students || []).find((item: any) =>
+      String(item.id) === namespaced.studentId && isItemForCurrentMadrasah(item, req)
+    );
+    const lkpd = (lkpdList || []).find((item: any) =>
+      String(item.id) === namespaced.lkpdId && isItemForCurrentMadrasah(item, req)
+    );
+    return student && lkpd ? { studentId: namespaced.studentId, lkpdId: namespaced.lkpdId } : null;
+  }
+
+  const tenantStudents = (students || [])
+    .filter((item: any) => isItemForCurrentMadrasah(item, req))
+    .map((item: any) => String(item.id))
+    .sort((a: string, b: string) => b.length - a.length);
+  const tenantLkpds = new Set<string>(
+    (lkpdList || []).filter((item: any) => isItemForCurrentMadrasah(item, req)).map((item: any) => String(item.id))
+  );
+
+  for (const studentId of tenantStudents) {
+    const prefix = studentId + '_';
+    if (raw.startsWith(prefix)) {
+      const lkpdId = raw.slice(prefix.length);
+      if (tenantLkpds.has(lkpdId)) return { studentId, lkpdId };
+    }
+  }
+
+  const tenantStudentSet = new Set<string>(tenantStudents);
+  const orderedLkpdIds = Array.from(tenantLkpds).sort((a, b) => b.length - a.length);
+  for (const lkpdId of orderedLkpdIds) {
+    const prefix = lkpdId + '_';
+    if (raw.startsWith(prefix)) {
+      const studentId = raw.slice(prefix.length);
+      if (tenantStudentSet.has(studentId)) return { studentId, lkpdId };
+    }
+  }
+  return null;
+}
+
+function resolveLkpdStateKey(req: any, studentId: any, lkpdId: any): string {
+  const namespaced = lkpdStateKey(req, studentId, lkpdId);
+  const stores = [activeExamSessions, studentTabSwitches, studentOutOfTab, blockedStudents, studentLivecamFrames, examMessages];
+  if (stores.some((store: any) => store && Object.prototype.hasOwnProperty.call(store, namespaced))) return namespaced;
+
+  const direct = legacyExamStateKey(studentId, lkpdId);
+  const reverse = legacyExamStateKey(lkpdId, studentId);
+  const parsedDirect = parseLkpdStateKeyForRequest(req, direct);
+  if (parsedDirect && stores.some((store: any) => store && Object.prototype.hasOwnProperty.call(store, direct))) return direct;
+  const parsedReverse = parseLkpdStateKeyForRequest(req, reverse);
+  if (parsedReverse && stores.some((store: any) => store && Object.prototype.hasOwnProperty.call(store, reverse))) return reverse;
+  return namespaced;
+}
+
+function resolveLkpdStudentContext(req: any, authUser: any, lkpdId: any) {
+  const studentId = String(authUser?.id || '');
+  const role = String(authUser?.role || '').toLowerCase();
+  if (!['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
+    return { error: { status: 403, message: 'Endpoint LKPD siswa hanya untuk akun siswa.' } };
+  }
+
+  const studentMatches = (students || []).filter((item: any) =>
+    String(item.id) === studentId && isItemForCurrentMadrasah(item, req)
+  );
+  if (studentMatches.length !== 1) {
+    return { error: { status: studentMatches.length > 1 ? 409 : 404, message: 'Identitas siswa tidak ditemukan secara unik pada tenant ini.' } };
+  }
+  const lkpdMatches = (lkpdList || []).filter((item: any) =>
+    String(item.id) === String(lkpdId) && isItemForCurrentMadrasah(item, req)
+  );
+  if (lkpdMatches.length !== 1) {
+    return { error: { status: lkpdMatches.length > 1 ? 409 : 404, message: 'LKPD tidak ditemukan secara unik pada tenant ini.' } };
+  }
+
+  const student = studentMatches[0];
+  const lkpd = lkpdMatches[0];
+  const targets = Array.isArray(lkpd.classes)
+    ? lkpd.classes.map((value: any) => String(value))
+    : [lkpd.classId, lkpd.class_id, lkpd.className].filter(Boolean).map((value: any) => String(value));
+  const unrestricted = targets.length === 0 || targets.some((value: string) => value.toUpperCase() === 'ALL');
+  if (!unrestricted) {
+    const studentClasses = [student.classId, student.class_id, student.className, student.class]
+      .filter(Boolean).map((value: any) => String(value));
+    if (!targets.some((target: string) => studentClasses.includes(target))) {
+      return { error: { status: 403, message: 'Siswa tidak terdaftar pada kelas sasaran LKPD ini.' } };
+    }
+  }
+  return { student, lkpd, studentId };
+}
+
+// LKPD_STUDENT_STATE_V1: dedicated identity-scoped monitoring path for student LKPD activity.
+
 function parseNamespacedExamBroadcastKey(key: string): { tenant: string; examId: string } | null {
   const parts = String(key || '').split('::');
   if (parts.length !== 3 || parts[0] !== 'bcastv2') return null;
@@ -9021,15 +9159,23 @@ function normalizeExamMessageKeyForRequest(req: any, rawKey: string): string {
     const expectedTenant = examStateTenant(req, undefined, namespacedBroadcast.examId);
     return canonicalRealtimeTenant(namespacedBroadcast.tenant) === expectedTenant ? raw : '';
   }
-  if (raw.startsWith('broadcast_')) {
-    const examId = raw.slice('broadcast_'.length);
-    const exam = (exams || []).find((item: any) => String(item.id) === examId && isItemForCurrentMadrasah(item, req));
-    return exam ? examBroadcastStateKey(req, examId) : '';
+  const lkpdBroadcast = parseNamespacedLkpdBroadcastKey(raw);
+  if (lkpdBroadcast) {
+    const expectedTenant = lkpdStateTenant(req, undefined, lkpdBroadcast.lkpdId);
+    return canonicalRealtimeTenant(lkpdBroadcast.tenant) === expectedTenant ? raw : '';
   }
-  const parsed = parseExamStateKeyForRequest(req, raw);
-  return parsed ? examStateKey(req, parsed.studentId, parsed.examId) : '';
+  if (raw.startsWith('broadcast_')) {
+    const targetId = raw.slice('broadcast_'.length);
+    const exam = (exams || []).find((item: any) => String(item.id) === targetId && isItemForCurrentMadrasah(item, req));
+    if (exam) return examBroadcastStateKey(req, targetId);
+    const lkpd = (lkpdList || []).find((item: any) => String(item.id) === targetId && isItemForCurrentMadrasah(item, req));
+    return lkpd ? lkpdBroadcastStateKey(req, targetId) : '';
+  }
+  const parsedExam = parseExamStateKeyForRequest(req, raw);
+  if (parsedExam) return examStateKey(req, parsedExam.studentId, parsedExam.examId);
+  const parsedLkpd = parseLkpdStateKeyForRequest(req, raw);
+  return parsedLkpd ? lkpdStateKey(req, parsedLkpd.studentId, parsedLkpd.lkpdId) : '';
 }
-
 function normalizeExamMessageMapKeysForRequest(req: any, source: any): any {
   if (!source || typeof source !== 'object' || Array.isArray(source)) return source;
   const normalized: any = {};
@@ -9046,13 +9192,17 @@ function examMessageKeyBelongsToRequest(req: any, rawKey: string): boolean {
   if (bcast) {
     return canonicalRealtimeTenant(bcast.tenant) === examStateTenant(req, undefined, bcast.examId);
   }
-  if (raw.startsWith('broadcast_')) {
-    const examId = raw.slice('broadcast_'.length);
-    return (exams || []).some((item: any) => String(item.id) === examId && isItemForCurrentMadrasah(item, req));
+  const lkpdBcast = parseNamespacedLkpdBroadcastKey(raw);
+  if (lkpdBcast) {
+    return canonicalRealtimeTenant(lkpdBcast.tenant) === lkpdStateTenant(req, undefined, lkpdBcast.lkpdId);
   }
-  return Boolean(parseExamStateKeyForRequest(req, raw));
+  if (raw.startsWith('broadcast_')) {
+    const targetId = raw.slice('broadcast_'.length);
+    return (exams || []).some((item: any) => String(item.id) === targetId && isItemForCurrentMadrasah(item, req)) ||
+      (lkpdList || []).some((item: any) => String(item.id) === targetId && isItemForCurrentMadrasah(item, req));
+  }
+  return Boolean(parseExamStateKeyForRequest(req, raw) || parseLkpdStateKeyForRequest(req, raw));
 }
-
 function isAttemptBlocked(req: any, studentId: any, examId: any, resolvedKey?: string): boolean {
   const key = resolvedKey || resolveExamStateKey(req, studentId, examId);
   if (Boolean(blockedStudents[key])) return true;
@@ -9145,15 +9295,19 @@ function parseExamStateKeyForRequest(req: any, key: string): { studentId: string
 }
 
 function normalizeExamStateMutationKey(req: any, key: string): string {
-  const parsed = parseExamStateKeyForRequest(req, key);
-  return parsed ? examStateKey(req, parsed.studentId, parsed.examId) : String(key || '');
+  const parsedExam = parseExamStateKeyForRequest(req, key);
+  if (parsedExam) return examStateKey(req, parsedExam.studentId, parsedExam.examId);
+  const parsedLkpd = parseLkpdStateKeyForRequest(req, key);
+  if (parsedLkpd) return lkpdStateKey(req, parsedLkpd.studentId, parsedLkpd.lkpdId);
+  return '';
 }
 
 function normalizeExamStateMapKeysForRequest(req: any, source: any): any {
   if (!source || typeof source !== 'object' || Array.isArray(source)) return source;
   const normalized: any = {};
   for (const rawKey of Object.keys(source)) {
-    normalized[normalizeExamStateMutationKey(req, rawKey)] = source[rawKey];
+    const normalizedKey = normalizeExamStateMutationKey(req, rawKey);
+    if (normalizedKey) normalized[normalizedKey] = source[rawKey];
   }
   return normalized;
 }
@@ -9167,8 +9321,20 @@ function filterExamStateMapForRequest(mapObj: any, req: any): any {
   const tenantExamIds = new Set(
     (exams || []).filter((item: any) => isItemForCurrentMadrasah(item, req)).map((item: any) => String(item.id))
   );
+  const tenantLkpdIds = new Set(
+    (lkpdList || []).filter((item: any) => isItemForCurrentMadrasah(item, req)).map((item: any) => String(item.id))
+  );
 
   for (const key of Object.keys(mapObj)) {
+    const lkpdBroadcast = parseNamespacedLkpdBroadcastKey(key);
+    if (lkpdBroadcast) {
+      const expectedTenant = lkpdStateTenant(req, undefined, lkpdBroadcast.lkpdId);
+      if (canonicalRealtimeTenant(lkpdBroadcast.tenant) === expectedTenant && tenantLkpdIds.has(lkpdBroadcast.lkpdId)) {
+        filtered['broadcast_' + lkpdBroadcast.lkpdId] = mapObj[key];
+      }
+      continue;
+    }
+
     const namespacedBroadcast = parseNamespacedExamBroadcastKey(key);
     if (namespacedBroadcast) {
       const expectedTenant = examStateTenant(req, undefined, namespacedBroadcast.examId);
@@ -9178,20 +9344,138 @@ function filterExamStateMapForRequest(mapObj: any, req: any): any {
       continue;
     }
     if (key.startsWith('broadcast_')) {
-      const parsedExamId = key.slice('broadcast_'.length);
-      if (tenantExamIds.has(parsedExamId)) filtered[key] = mapObj[key];
+      const targetId = key.slice('broadcast_'.length);
+      if (tenantExamIds.has(targetId) || tenantLkpdIds.has(targetId)) filtered[key] = mapObj[key];
       continue;
     }
-    const parsed = parseExamStateKeyForRequest(req, key);
-    if (parsed) {
-      // Keep the browser contract stable while isolating server storage internally.
-      filtered[legacyExamStateKey(parsed.studentId, parsed.examId)] = mapObj[key];
+
+    const parsedLkpd = parseLkpdStateKeyForRequest(req, key);
+    if (parsedLkpd) {
+      filtered[legacyExamStateKey(parsedLkpd.studentId, parsedLkpd.lkpdId)] = mapObj[key];
+      continue;
+    }
+
+    const parsedExam = parseExamStateKeyForRequest(req, key);
+    if (parsedExam) {
+      filtered[legacyExamStateKey(parsedExam.studentId, parsedExam.examId)] = mapObj[key];
       continue;
     }
     if (tenantStudentIds.has(key)) filtered[key] = mapObj[key];
   }
   return filtered;
 }
+
+app.post("/api/lkpd/student-state", requireAuth, requireRole(['student', 'siswa', 'class_leader', 'ketua_kelas']), async (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const lkpdId = String(req.body?.lkpdId || '').trim();
+  if (!lkpdId || lkpdId.length > 256) return res.status(400).json({ success: false, message: 'lkpdId tidak valid.' });
+
+  const context = resolveLkpdStudentContext(req, authUser, lkpdId);
+  if (context.error) return res.status(context.error.status).json({ success: false, message: context.error.message });
+
+  const studentId = context.studentId;
+  const lkpd = context.lkpd;
+  const key = lkpdStateKey(req, studentId, lkpdId);
+  const existingKey = resolveLkpdStateKey(req, studentId, lkpdId);
+  const writes: Promise<any>[] = [];
+  const active = req.body?.active !== false;
+  const now = Date.now();
+
+  if (!active) {
+    delete activeExamSessions[key];
+    if (existingKey !== key) delete activeExamSessions[existingKey];
+    writes.push(saveDeltaDb('activeExamSessions', key, null));
+  } else {
+    const existingSession = activeExamSessions[existingKey] || activeExamSessions[key] || {};
+    const answeredCount = Math.max(0, Math.min(10000, Math.floor(Number(req.body?.answeredCount ?? existingSession.answeredCount ?? 0) || 0)));
+    const session = {
+      ...existingSession,
+      studentId,
+      studentName: context.student?.name || existingSession.studentName || '',
+      lkpdId,
+      answeredCount,
+      totalQuestions: Array.isArray(lkpd?.markers) ? lkpd.markers.length : Number(existingSession.totalQuestions || 0),
+      startedAt: existingSession.startedAt || new Date(now).toISOString(),
+      lastActiveAt: new Date(now).toISOString(),
+      lastSeenAt: now
+    };
+    activeExamSessions[key] = session;
+    if (existingKey !== key) delete activeExamSessions[existingKey];
+    writes.push(saveDeltaDb('activeExamSessions', key, session));
+  }
+
+  if (typeof req.body?.outOfTab === 'boolean') {
+    studentOutOfTab[key] = req.body.outOfTab;
+    if (existingKey !== key) delete studentOutOfTab[existingKey];
+    writes.push(saveDeltaDb('studentOutOfTab', key, req.body.outOfTab));
+  }
+
+  const violationReason = String(req.body?.violationReason || '').trim().slice(0, 500);
+  if (violationReason) {
+    const currentCount = Number(studentTabSwitches[existingKey] || studentTabSwitches[key] || 0);
+    studentTabSwitches[key] = currentCount + 1;
+    studentOutOfTab[key] = true;
+    if (existingKey !== key) {
+      delete studentTabSwitches[existingKey];
+      delete studentOutOfTab[existingKey];
+    }
+    writes.push(saveDeltaDb('studentTabSwitches', key, studentTabSwitches[key]));
+    writes.push(saveDeltaDb('studentOutOfTab', key, true));
+  }
+
+  if (req.body?.livecamFrame) {
+    const frameText = String(req.body.livecamFrame);
+    if (Buffer.byteLength(frameText, 'utf8') > 2 * 1024 * 1024) return res.status(413).json({ success: false, message: 'Frame livecam LKPD terlalu besar.' });
+    if (!parseSafeRasterDataUrl(frameText)) return res.status(400).json({ success: false, message: 'Format frame livecam LKPD tidak valid.' });
+    studentLivecamFrames[key] = frameText;
+    if (existingKey !== key) delete studentLivecamFrames[existingKey];
+  }
+
+  await Promise.all(writes);
+  if (writes.length > 0) {
+    broadcastStateUpdate('activeExamSessions');
+    broadcastStateUpdate('studentTabSwitches');
+    broadcastStateUpdate('studentOutOfTab');
+  }
+  if (req.body?.livecamFrame) broadcastStateUpdate('studentLivecamFrames');
+
+  const personalKey = resolveLkpdStateKey(req, studentId, lkpdId);
+  const broadcastKey = lkpdBroadcastStateKey(req, lkpdId);
+  const legacyBroadcast = 'broadcast_' + lkpdId;
+  const blocked = Boolean(blockedStudents[personalKey] || blockedStudents[key]);
+  const messagePersonal = examMessages[personalKey] ?? examMessages[key] ?? null;
+  const messageBroadcast = examMessages[broadcastKey] ??
+    (((lkpdList || []).filter((item: any) => String(item.id) === lkpdId).length === 1) ? examMessages[legacyBroadcast] : null);
+
+  return res.json({
+    success: true,
+    blocked,
+    outOfTab: Boolean(studentOutOfTab[key]),
+    tabSwitches: Number(studentTabSwitches[key] || 0),
+    messagePersonal,
+    messageBroadcast,
+    session: activeExamSessions[key] ? {
+      answeredCount: activeExamSessions[key].answeredCount || 0,
+      totalQuestions: activeExamSessions[key].totalQuestions || 0,
+      lastSeenAt: activeExamSessions[key].lastSeenAt || now
+    } : null
+  });
+});
+
+app.post("/api/lkpd/message/ack", requireAuth, requireRole(['student', 'siswa', 'class_leader', 'ketua_kelas']), async (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const lkpdId = String(req.body?.lkpdId || '').trim();
+  const context = resolveLkpdStudentContext(req, authUser, lkpdId);
+  if (context.error) return res.status(context.error.status).json({ success: false, message: context.error.message });
+
+  const key = resolveLkpdStateKey(req, context.studentId, lkpdId);
+  if (Object.prototype.hasOwnProperty.call(examMessages, key)) {
+    const nextMessages = { ...examMessages };
+    delete nextMessages[key];
+    await saveData('examMessages', nextMessages, true);
+  }
+  return res.json({ success: true });
+});
 
 // Exam Monitoring State API (Locked strictly to teachers, proctors, and admins)
 app.get("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
@@ -10493,34 +10777,18 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
   const userMadrasahId = getRequestMadrasahId(req);
 
   if (!isBos) {
-    const studentList = getMemoryKeyValue('students') || students || [];
-    const tenantStudentIds = new Set(
-      studentList
-        .filter((s: any) => String(s.madrasahId || 'default').trim() === String(userMadrasahId).trim())
-        .map((s: any) => String(s.id))
-    );
-
-    const tenantExams = (getMemoryKeyValue('exams') || exams || []).filter((e: any) => 
-      String(e.madrasahId || 'default').trim() === String(userMadrasahId).trim()
-    );
-    const tenantExamIds = new Set(tenantExams.map((e: any) => String(e.id)));
-
-    const validateKey = (key: string) => {
-      if (!key) return true;
-      if (key.startsWith('broadcast_')) {
-        const eId = key.replace('broadcast_', '');
-        return tenantExamIds.has(eId);
-      }
-      let matchedStudentId = null;
-      for (const sId of tenantStudentIds) {
-        if (key.startsWith(sId + '_') || key === sId) {
-          matchedStudentId = sId;
-          break;
-        }
-      }
-      if (matchedStudentId) {
-        const remainder = key.replace(matchedStudentId + '_', '');
-        return remainder === matchedStudentId || tenantExamIds.has(remainder) || tenantExamIds.has(key.split('_').slice(1).join('_')) || !key.includes('_');
+    const validateKey = (rawKey: string) => {
+      if (!rawKey) return true;
+      const raw = String(rawKey);
+      if (parseExamStateKeyForRequest(req, raw) || parseLkpdStateKeyForRequest(req, raw)) return true;
+      const examBcast = parseNamespacedExamBroadcastKey(raw);
+      if (examBcast) return (exams || []).some((item: any) => String(item.id) === examBcast.examId && isItemForCurrentMadrasah(item, req));
+      const lkpdBcast = parseNamespacedLkpdBroadcastKey(raw);
+      if (lkpdBcast) return (lkpdList || []).some((item: any) => String(item.id) === lkpdBcast.lkpdId && isItemForCurrentMadrasah(item, req));
+      if (raw.startsWith('broadcast_')) {
+        const targetId = raw.slice('broadcast_'.length);
+        return (exams || []).some((item: any) => String(item.id) === targetId && isItemForCurrentMadrasah(item, req)) ||
+          (lkpdList || []).some((item: any) => String(item.id) === targetId && isItemForCurrentMadrasah(item, req));
       }
       return false;
     };
@@ -10540,14 +10808,15 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
       ...(livecamFrame?.key ? [String(livecamFrame.key)] : [])
     ].filter(Boolean);
 
-    for (const tk of testKeys) {
-      if (!validateKey(tk)) {
-        return res.status(403).json({ success: false, message: "Akses ditolak: Anda tidak memiliki wewenang mengubah state siswa madrasah lain." });
+    for (const key of testKeys) {
+      if (!validateKey(String(key))) {
+        return res.status(403).json({ success: false, message: "Akses ditolak: state monitoring bukan milik tenant yang diizinkan." });
       }
     }
   }
 
   sessionKey = sessionKey ? normalizeExamStateMutationKey(req, String(sessionKey)) : sessionKey;
+  if (req.body.sessionKey && !sessionKey) return res.status(403).json({ success: false, message: "Session key monitoring tidak valid." });
   activeExamSessionsBatch = normalizeExamStateMapKeysForRequest(req, activeExamSessionsBatch);
   completed = normalizeExamStateMapKeysForRequest(req, completed);
   answers = normalizeExamStateMapKeysForRequest(req, answers);
@@ -10559,7 +10828,9 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
   forceFinished = normalizeExamStateMapKeysForRequest(req, forceFinished);
   messages = normalizeExamMessageMapKeysForRequest(req, messages);
   if (livecamFrame?.key) {
-    livecamFrame = { ...livecamFrame, key: normalizeExamStateMutationKey(req, String(livecamFrame.key)) };
+    const normalizedLivecamKey = normalizeExamStateMutationKey(req, String(livecamFrame.key));
+    if (!normalizedLivecamKey) return res.status(403).json({ success: false, message: "Livecam key monitoring tidak valid." });
+    livecamFrame = { ...livecamFrame, key: normalizedLivecamKey };
   }
 
   if (sessionKey) {
