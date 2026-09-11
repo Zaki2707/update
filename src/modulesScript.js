@@ -1519,6 +1519,15 @@ async function submitStudentAttendance() {
     const currentUser = appState.currentUser;
     if (!currentUser) { showToast('Sesi siswa tidak ditemukan.', 'error'); return; }
 
+    const gpsPoint = window._currentLatLon;
+    const hasValidGps = !!gpsPoint &&
+        Number.isFinite(Number(gpsPoint.latitude)) &&
+        Number.isFinite(Number(gpsPoint.longitude));
+    if (requireGps && !hasValidGps) {
+        showToast('GPS belum tersedia atau tidak valid. Aktifkan lokasi lalu coba lagi.', 'error');
+        return;
+    }
+
     // Validate GPS Radius geofence before submitting
     let isOutsideRadius = false;
     let distanceRounded = 0;
@@ -1564,7 +1573,7 @@ async function submitStudentAttendance() {
         subjectId: selectedSubjectId,
         date: chosenDate,
         status: 'HADIR',
-        location: window._currentLatLon ? `${window._currentLatLon.latitude}, ${window._currentLatLon.longitude}` : '-6.2000, 106.8166',
+        location: hasValidGps ? `${Number(gpsPoint.latitude)}, ${Number(gpsPoint.longitude)}` : '',
         photo: window._capturedSelfieData,
         note: ''
     };
