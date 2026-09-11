@@ -2243,9 +2243,15 @@ function saveEditedJournal(e, id) {
 }
 
 function deleteJournal(id) {
-    showConfirmModal('Apakah Anda yakin ingin menghapus jurnal ini?', () => {
+    showConfirmModal('Apakah Anda yakin ingin menghapus jurnal ini?', async () => {
         appState.journals = (appState.journals || []).filter(j => String(j.id) !== String(id));
         saveState('journals');
+        try {
+            const response = await fetch(`/api/journals/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } catch (err) {
+            console.warn('Gagal menghapus jurnal di server:', err);
+        }
         showToast('Jurnal berhasil dihapus!', 'success');
         renderJournalModule(document.getElementById('view-container'));
     });

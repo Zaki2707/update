@@ -5756,12 +5756,18 @@ function saveGeneratedExamPackage(subjectId) {
 }
 
 function deleteGeneratedExam(examId) {
-    showConfirmModal('Apakah Anda yakin ingin menghapus paket soal ini?', () => {
+    showConfirmModal('Apakah Anda yakin ingin menghapus paket soal ini?', async () => {
         if (!appState.generatedExams) {
             appState.generatedExams = JSON.parse(localStorage.getItem('madrasah_generated_exams')) || [];
         }
         appState.generatedExams = appState.generatedExams.filter(ex => String(ex.id) !== String(examId));
         saveState('generatedExams');
+        try {
+            const response = await fetch(`/api/generated-exams/${encodeURIComponent(examId)}`, { method: 'DELETE' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } catch (err) {
+            console.warn('Gagal menghapus paket soal di server:', err);
+        }
         
         showToast('Paket Soal berhasil dihapus', 'success');
         
