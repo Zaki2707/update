@@ -360,7 +360,7 @@ function renderLkpdCanvasComponent(lkpd, options = {}) {
     let canvasBackground = '';
     const isCustom = !!lkpd.customImage;
     if (isCustom) {
-        canvasBackground = `<img src="${lkpd.customImage}" alt="${lkpd.title}" class="max-w-full h-auto block max-h-[70vh] select-none pointer-events-none rounded-2xl mx-auto" style="object-fit: contain; width: ${imgScale}%;" />`;
+        canvasBackground = `<img src="${lkpd.customImage}" alt="${lkpdEscapeHtml(lkpd.title)}" class="max-w-full h-auto block max-h-[70vh] select-none pointer-events-none rounded-2xl mx-auto" style="object-fit: contain; width: ${imgScale}%;" />`;
     } else {
         const svgContent = LKPD_THEME_SVGS[lkpd.theme] || LKPD_THEME_SVGS.biology;
         canvasBackground = `
@@ -1078,7 +1078,7 @@ window.openManageLkpdModal = function(lkpdId) {
                             <span class="text-[10px] font-extrabold text-emerald-400 uppercase tracking-widest bg-emerald-950 px-2.5 py-0.5 rounded-full border border-emerald-800 inline-block">
                                 Kelola Titik Penanda LKPD
                             </span>
-                            <h3 class="font-black text-lg text-white">${lkpd.title}</h3>
+                            <h3 class="font-black text-lg text-white">${lkpdEscapeHtml(lkpd.title)}</h3>
                             <p class="text-xs text-slate-300">Pilih tema lembar kerja atau import gambar sendiri, lalu klik pada gambar untuk memberi nomor lokasi jawaban.</p>
                         </div>
                     </div>
@@ -1648,7 +1648,7 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
                     <span class="text-[10px] font-extrabold text-emerald-600 uppercase tracking-widest bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-100 inline-block mb-1">
                         Portal Ujian Lembar Kerja (LKPD)
                     </span>
-                    <h3 class="font-black text-slate-800 text-base sm:text-lg leading-tight">${lkpd.title}</h3>
+                    <h3 class="font-black text-slate-800 text-base sm:text-lg leading-tight">${lkpdEscapeHtml(lkpd.title)}</h3>
                     <p class="text-xs text-slate-500 font-medium">Siswa: <strong>${lkpdEscapeHtml(stName)}</strong> (${lkpdEscapeHtml(stNis)}) &bull; Kelas: <strong>${lkpdEscapeHtml(lkpd.className || 'Semua Kelas')}</strong></p>
                 </div>
                 <div class="px-3.5 py-2 bg-rose-50 text-rose-700 rounded-2xl text-xs font-mono font-bold flex items-center space-x-2 border border-rose-200 shadow-xs">
@@ -3086,7 +3086,7 @@ window.openImportLkpdToHarianModal = function(classId, lkpdId) {
     const clsStudents = window.appState.students.filter(st => String(st.classId) === String(classId));
     const gradedCount = submissions.filter(s => s.isGraded).length;
 
-    const defaultTitle = `Nilai LKPD ${lkpd.title}`;
+    const defaultTitle = `Nilai LKPD ${lkpdEscapeHtml(lkpd.title)}`;
     const defaultSubject = lkpd.subject || (window.appState.subjects && window.appState.subjects[0] ? window.appState.subjects[0].name : 'Mata Pelajaran');
 
     const modal = document.getElementById('modal-container');
@@ -3113,23 +3113,23 @@ window.openImportLkpdToHarianModal = function(classId, lkpdId) {
                 <div class="p-6 space-y-4 text-xs text-slate-700">
                     <div class="bg-emerald-50 border border-emerald-100 p-4 rounded-2xl space-y-2">
                         <div class="flex justify-between items-center text-emerald-900 font-semibold">
-                            <span><i class="fa-solid fa-users mr-1.5 text-emerald-600"></i> Kelas: <b>${cls.name}</b></span>
+                            <span><i class="fa-solid fa-users mr-1.5 text-emerald-600"></i> Kelas: <b>${lkpdEscapeHtml(cls.name)}</b></span>
                             <span class="bg-emerald-200/80 text-emerald-800 px-2.5 py-1 rounded-xl text-[11px] font-bold">${clsStudents.length} Siswa (${gradedCount} Memiliki Nilai)</span>
                         </div>
                         <p class="text-[11px] text-emerald-700 leading-normal">
-                            Nilai akhir dari evaluasi LKPD <b>"${lkpd.title}"</b> akan otomatis dimasukkan ke dalam daftar Penilaian Harian seluruh siswa kelas ${cls.name}.
+                            Nilai akhir dari evaluasi LKPD <b>"${lkpdEscapeHtml(lkpd.title)}"</b> akan otomatis dimasukkan ke dalam daftar Penilaian Harian seluruh siswa kelas ${lkpdEscapeHtml(cls.name)}.
                         </p>
                     </div>
 
                     <div>
                         <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Judul Penilaian Harian <span class="text-rose-500">*</span></label>
-                        <input type="text" id="import-lkpd-title" value="${defaultTitle}" placeholder="Contoh: LKPD Bab 1 Sel, PH LKPD 2" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"/>
+                        <input type="text" id="import-lkpd-title" value="${lkpdEscapeAttr(defaultTitle)}" placeholder="Contoh: LKPD Bab 1 Sel, PH LKPD 2" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"/>
                         <p class="text-[10px] text-slate-400 mt-1">Judul ini akan menjadi nama kolom pada tabel Rekap Nilai Harian / e-Rapor.</p>
                     </div>
 
                     <div>
                         <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Mata Pelajaran <span class="text-rose-500">*</span></label>
-                        <input type="text" id="import-lkpd-subject" value="${defaultSubject}" placeholder="Contoh: Biologi, TIK" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"/>
+                        <input type="text" id="import-lkpd-subject" value="${lkpdEscapeAttr(defaultSubject)}" placeholder="Contoh: Biologi, TIK" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"/>
                     </div>
                 </div>
 
@@ -3274,8 +3274,8 @@ window.cetakNilaiLkpdEvaluasi = function(classId, lkpdId) {
         return `
             <tr style="border-bottom: 1px solid #e5e7eb;">
                 <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center; font-family: monospace;">${idx + 1}</td>
-                <td style="border: 1px solid #d1d5db; padding: 10px; font-weight: 600;">${st.name}</td>
-                <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center; font-family: monospace;">${st.nis || '-'}</td>
+                <td style="border: 1px solid #d1d5db; padding: 10px; font-weight: 600;">${lkpdEscapeHtml(st.name)}</td>
+                <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center; font-family: monospace;">${lkpdEscapeHtml(st.nis || '-')}</td>
                 <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center;">${hasSub ? '✓ Mengumpulkan' : '⏳ Belum Kumpul'}</td>
                 <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center; font-weight: bold; background-color: #ecfdf5; color: #047857;">${scoreVal}</td>
             </tr>
@@ -3346,7 +3346,7 @@ window.cetakNilaiLkpdEvaluasi = function(classId, lkpdId) {
         <body>
             <div class="kop-surat">
                 <h1>YAYASAN PENDIDIKAN ISLAM MADRASAH</h1>
-                <h2>${window.appState.settings?.schoolName || "MA AL-UKHUWAH"}</h2>
+                <h2>${lkpdEscapeHtml(window.appState.settings?.schoolName || "MA AL-UKHUWAH")}</h2>
                 <p>Status Terakreditasi A &bull; Portal Madrasah Terintegrasi</p>
             </div>
 
@@ -3356,11 +3356,11 @@ window.cetakNilaiLkpdEvaluasi = function(classId, lkpdId) {
 
             <div class="meta-box">
                 <div>
-                    <p style="margin: 0 0 4px 0;"><strong>Lembar Kerja:</strong> ${lkpd.title}</p>
-                    <p style="margin: 0;"><strong>Mata Pelajaran:</strong> ${lkpd.subject || 'Mata Pelajaran'}</p>
+                    <p style="margin: 0 0 4px 0;"><strong>Lembar Kerja:</strong> ${lkpdEscapeHtml(lkpd.title)}</p>
+                    <p style="margin: 0;"><strong>Mata Pelajaran:</strong> ${lkpdEscapeHtml(lkpd.subject || 'Mata Pelajaran')}</p>
                 </div>
                 <div style="text-align: right;">
-                    <p style="margin: 0 0 4px 0;"><strong>Kelas:</strong> ${cls.name}</p>
+                    <p style="margin: 0 0 4px 0;"><strong>Kelas:</strong> ${lkpdEscapeHtml(cls.name)}</p>
                     <p style="margin: 0;"><strong>Tanggal Cetak:</strong> ${new Date().toLocaleDateString('id-ID', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
                 </div>
             </div>
@@ -3440,7 +3440,7 @@ window.exportNilaiExcelLkpdEvaluasi = function(classId, lkpdId) {
             { wch: 5 }, { wch: 12 }, { wch: Math.max(max_width, 22) }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 16 }
         ];
 
-        XLSX.writeFile(workbook, `Nilai_Evaluasi_LKPD_${cls.name}_${lkpd.title.replace(/\s+/g, '_')}.xlsx`);
+        XLSX.writeFile(workbook, `Nilai_Evaluasi_LKPD_${lkpdEscapeHtml(cls.name)}_${lkpd.title.replace(/\s+/g, '_')}.xlsx`);
         showToast('File Excel Nilai LKPD berhasil diunduh!', 'success');
     } else {
         let csvContent = "data:text/csv;charset=utf-8,No,NIS,Nama Siswa,Kelas,Judul LKPD,Status,Nilai Akhir\n";
@@ -3450,7 +3450,7 @@ window.exportNilaiExcelLkpdEvaluasi = function(classId, lkpdId) {
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
         link.setAttribute("href", encodedUri);
-        link.setAttribute("download", `Nilai_Evaluasi_LKPD_${cls.name}_${lkpd.title.replace(/\s+/g, '_')}.csv`);
+        link.setAttribute("download", `Nilai_Evaluasi_LKPD_${lkpdEscapeHtml(cls.name)}_${lkpd.title.replace(/\s+/g, '_')}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -3498,7 +3498,7 @@ window.openCetakLkpdJawabanModal = function(classId, lkpdId) {
                             ${clsStudents.map(st => {
                                 const sub = submissions.find(s => s.studentId === st.id);
                                 const hasSub = !!sub;
-                                return `<option value="${st.id}" ${hasSub ? '' : 'disabled'}>${st.name} (${st.nis || '-'}) ${hasSub ? ' (Sudah Kumpul)' : ' (Belum Kumpul)'}</option>`;
+                                return `<option value="${lkpdEscapeAttr(st.id)}" ${hasSub ? '' : 'disabled'}>${lkpdEscapeHtml(st.name)} (${lkpdEscapeHtml(st.nis || '-')}) ${hasSub ? ' (Sudah Kumpul)' : ' (Belum Kumpul)'}</option>`;
                             }).join('')}
                         </select>
                         <p class="text-[10px] text-slate-400 mt-1">Siswa yang belum mengumpulkan tidak dapat dipilih / diunduh jawabannya.</p>
@@ -3550,7 +3550,7 @@ window.openGradeLkpdSubmissionModal = function(lkpdId, studentId) {
                         <span class="text-[10px] font-extrabold text-amber-400 uppercase tracking-widest bg-amber-950 px-2.5 py-0.5 rounded-full border border-amber-800 inline-block mb-1">
                             Lembar Penilaian & Koreksi Guru
                         </span>
-                        <h3 class="font-black text-lg text-white">${lkpdEscapeHtml(sub.studentName)} &bull; ${lkpd.title}</h3>
+                        <h3 class="font-black text-lg text-white">${lkpdEscapeHtml(sub.studentName)} &bull; ${lkpdEscapeHtml(lkpd.title)}</h3>
                         <p class="text-xs text-slate-300">Bandingkan jawaban siswa dengan kunci guru, masukkan poin per nomor, dan simpan nilai.</p>
                     </div>
                     <button type="button" onclick="document.getElementById('grade-sub-modal-bg').remove()" class="w-9 h-9 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white transition cursor-pointer">
@@ -3607,7 +3607,7 @@ window.openGradeLkpdSubmissionModal = function(lkpdId, studentId) {
 
                                         <div class="p-2.5 bg-white rounded-xl border border-slate-200">
                                             <span class="block text-[10px] font-extrabold text-slate-500 uppercase">Jawaban Siswa:</span>
-                                            <p class="text-xs font-bold text-slate-900 mt-0.5">${studentAns || '<span class="text-rose-400 italic">Tidak menjawab</span>'}</p>
+                                            <p class="text-xs font-bold text-slate-900 mt-0.5">${studentAns ? lkpdEscapeHtml(studentAns) : '<span class="text-rose-400 italic">Tidak menjawab</span>'}</p>
                                         </div>
 
                                         <div class="grid grid-cols-2 gap-3 pt-1">
@@ -3617,7 +3617,7 @@ window.openGradeLkpdSubmissionModal = function(lkpdId, studentId) {
                                             </div>
                                             <div>
                                                 <label class="block text-[10px] font-extrabold text-slate-600 mb-1">Catatan / Feedback:</label>
-                                                <input type="text" id="grade-feed-${mk.id}" value="${curFeed}" placeholder="Komentar guru..." class="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-slate-700">
+                                                <input type="text" id="grade-feed-${mk.id}" value="${lkpdEscapeAttr(curFeed)}" placeholder="Komentar guru..." class="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-slate-700">
                                             </div>
                                         </div>
                                     </div>
@@ -3729,12 +3729,12 @@ window.downloadLkpdStudentPdf = function(lkpdId, studentId) {
                     <p style="margin: 4px 0 12px 0; color: #1e293b; font-weight: 700; font-size: 13px;">${lkpdEscapeHtml(mk.question)}</p>
                     
                     <strong style="color: #047857;">Jawaban Siswa:</strong>
-                    <div class="student-answer">${ans}</div>
+                    <div class="student-answer">${lkpdEscapeHtml(ans)}</div>
                     
                     ${fb && fb !== '-' ? `
                         <div class="teacher-feedback">
                             <strong>Ulasan Guru:</strong>
-                            <p style="margin: 4px 0 0 0; color: #92400e; font-style: italic; font-weight: 600;">${fb}</p>
+                            <p style="margin: 4px 0 0 0; color: #92400e; font-style: italic; font-weight: 600;">${lkpdEscapeHtml(fb)}</p>
                         </div>
                     ` : ''}
                 </div>
@@ -3747,7 +3747,7 @@ window.downloadLkpdStudentPdf = function(lkpdId, studentId) {
         <html>
         <head>
             <meta charset="utf-8">
-            <title>Hasil_LKPD_${lkpd.title.replace(/\s+/g, '_')}_${sub.studentName.replace(/\s+/g, '_')}</title>
+            <title>Hasil_LKPD_${lkpdEscapeHtml(String(lkpd.title || '').replace(/\s+/g, '_'))}_${lkpdEscapeHtml(String(sub.studentName || '').replace(/\s+/g, '_'))}</title>
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
             <style>
                 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
@@ -3928,7 +3928,7 @@ window.downloadLkpdStudentPdf = function(lkpdId, studentId) {
             <div class="score-panel">
                 <h3>Nilai Akhir Evaluasi LKPD</h3>
                 <div class="score-val">${sub.totalScore} / 100</div>
-                <div class="score-meta">Status kelulusan tuntas &bull; Dikoreksi oleh: ${sub.gradedBy || 'Guru Pendamping'}</div>
+                <div class="score-meta">Status kelulusan tuntas &bull; Dikoreksi oleh: ${lkpdEscapeHtml(sub.gradedBy || 'Guru Pendamping')}</div>
             </div>
 
             <div class="section-title">Profil Peserta Didik & Lembar Kerja</div>
@@ -3937,17 +3937,17 @@ window.downloadLkpdStudentPdf = function(lkpdId, studentId) {
                     <td class="label">Nama Lengkap</td>
                     <td class="value">: ${lkpdEscapeHtml(sub.studentName)}</td>
                     <td class="label">Mata Pelajaran</td>
-                    <td class="value">: ${lkpd.subjectName || 'Umum'}</td>
+                    <td class="value">: ${lkpdEscapeHtml(lkpd.subjectName || 'Umum')}</td>
                 </tr>
                 <tr>
                     <td class="label">Nomor Induk (NIS)</td>
                     <td class="value">: ${lkpdEscapeHtml(sub.nis || '-')}</td>
                     <td class="label">Lembar Kerja</td>
-                    <td class="value">: ${lkpd.title}</td>
+                    <td class="value">: ${lkpdEscapeHtml(lkpd.title)}</td>
                 </tr>
                 <tr>
                     <td class="label">Kelas / Rombel</td>
-                    <td class="value">: ${sub.className || '-'}</td>
+                    <td class="value">: ${lkpdEscapeHtml(sub.className || '-')}</td>
                     <td class="label">Tanggal Dinilai</td>
                     <td class="value">: ${sub.gradedAt ? new Date(sub.gradedAt).toLocaleDateString('id-ID', {day: 'numeric', month: 'long', year: 'numeric'}) : '-'}</td>
                 </tr>
