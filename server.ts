@@ -6355,6 +6355,10 @@ app.post("/api/students", requireAuth, requireRole(['teacher', 'guru', 'admin', 
   }
 
   const newId = req.body.id || "ST_" + Date.now();
+  const idClashes = (students || []).filter((st: any) => String(st.id) === String(newId));
+  if (idClashes.length > 0) {
+    return res.status(409).json({ success: false, message: "ID siswa sudah digunakan. Gunakan ID lain agar state CBT dan realtime tetap unik." });
+  }
   const rawPassword = password || "123456";
   const hashed = hashPassword(rawPassword);
 
@@ -7989,7 +7993,7 @@ app.post("/api/question-bank-groups", async (req, res) => {
 
 app.delete("/api/question-bank-groups/:id", async (req, res) => {
   const { id } = req.params;
-  questionBankGroups = questionBankGroups.filter(bg => String(bg.id) !== String(id));
+  questionBankGroups = questionBankGroups.filter(bg => !(String(bg.id) === String(id) && isItemForCurrentMadrasah(bg, req)));
   await saveData('questionBankGroups', questionBankGroups);
   res.json({ success: true, message: "Bank soal berhasil dihapus!" });
 });
@@ -8105,7 +8109,7 @@ app.delete("/api/questions/:id", async (req, res) => {
   }
 
   const { id } = req.params;
-  questions = questions.filter(q => String(q.id) !== String(id));
+  questions = questions.filter(q => !(String(q.id) === String(id) && isItemForCurrentMadrasah(q, req)));
   await saveData('questions', questions);
   res.json({ success: true, message: "Soal berhasil dihapus!" });
 });
@@ -9602,8 +9606,33 @@ app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru',
 let examSignalingMessages: any = {};
 function isStudentAuthRole(role: string) { return ['student','siswa','class_leader','ketua_kelas'].includes(String(role || '').toLowerCase()); }
 function isStaffAuthRole(role: string) { return ['teacher','guru','admin','bos','superadmin'].includes(String(role || '').toLowerCase()); }
+function canonicalRealtimeTenant(rawTenant: any): string {
+  const raw = String(rawTenant || 'default').trim() || 'default';
+  const matched = (madrasahs || []).find((m: any) =>
+    String(m?.id || '') === raw || String(m?.slug || '') === raw
+  );
+  return String(matched?.id || raw);
+}
+
+function signalingRequestTenant(req: any, user: any): string {
+  return canonicalRealtimeTenant(getRequestMadrasahId(req) || user?.madrasahId || user?.madrasahSlug || 'default');
+}
+
+function signalingUserTenant(user: any): string {
+  return canonicalRealtimeTenant(user?.madrasahId || user?.madrasahSlug || 'default');
+}
+
+function signalingItemTenant(item: any): string {
+  return canonicalRealtimeTenant(item?.madrasahId || item?.madrasahSlug || 'default');
+}
+
 function signalingAdminKey(req: any, user: any) {
-  return 'admin::' + String(getRequestMadrasahId(req) || user?.madrasahId || user?.madrasahSlug || 'default');
+  return 'admin::' + signalingRequestTenant(req, user);
+}
+
+function signalingStudentKey(req: any, user: any, studentId: any, target?: any) {
+  const tenant = target ? signalingItemTenant(target) : signalingRequestTenant(req, user);
+  return 'student::' + tenant + '::' + String(studentId);
 }
 
 app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
@@ -9620,9 +9649,10 @@ app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
   } else if (recipientId === 'admin') {
     targetKey = signalingAdminKey(req, user);
   } else {
-    const target = (students || []).find((x: any) => String(x.id) === recipientId);
-    if (!target) return res.status(404).json({ success: false, message: "Siswa tujuan tidak ditemukan." });
+    const target = (students || []).find((x: any) => String(x.id) === recipientId && (boss || isItemForCurrentMadrasah(x, req)));
+    if (!target) return res.status(404).json({ success: false, message: "Siswa tujuan tidak ditemukan pada tenant yang diizinkan." });
     if (!boss && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa tujuan bukan milik madrasah Anda." });
+    targetKey = signalingStudentKey(req, user, recipientId, target);
   }
 
   const senderId = String(user.id);
@@ -9641,7 +9671,7 @@ app.get("/api/exam/signaling", requireAuth, (req: any, res) => {
   let key = requested;
   if (student) {
     if (requested !== String(user.id)) return res.status(403).json({ success: false, message: "Siswa hanya dapat membaca signaling miliknya." });
-    key = String(user.id);
+    key = signalingStudentKey(req, user, user.id);
   } else if (isStaffAuthRole(role)) {
     if (requested !== 'admin') return res.status(403).json({ success: false, message: "Pengawas hanya dapat membaca antrean pengawas." });
     key = signalingAdminKey(req, user);
@@ -9682,13 +9712,21 @@ app.post("/api/exam/livekit-token", requireAuth, async (req: any, res) => {
     if (isOnlineMode && (!apiKey || !apiSecret || !serverUrl || /localhost|127\.0\.0\.1/i.test(serverUrl))) {
       return res.status(503).json({ success: false, message: "LiveKit online belum dikonfigurasi dengan aman." });
     }
+    // Keep the legacy logical room name accepted from the frontend, but isolate the
+    // physical LiveKit room by the exam owner's canonical tenant. This prevents two
+    // madrasahs with the same examId from ever sharing a media room.
+    const roomTenant = canonicalRealtimeTenant(exam?.madrasahId || exam?.madrasahSlug || getRequestMadrasahId(req) || 'default');
+    const physicalRoomName = 'room_tenant_' +
+      Buffer.from(roomTenant, 'utf8').toString('base64url') +
+      '_exam_' + Buffer.from(examId, 'utf8').toString('base64url');
+
     const at = new AccessToken(apiKey || "devkey", apiSecret || "secret", {
       identity: student ? ('student_' + String(user.id)) : ('staff_' + String(user.id)),
       ttl: "2h"
     });
-    at.addGrant({ room: roomName, roomJoin: true, canPublish: student, canSubscribe: staff });
+    at.addGrant({ room: physicalRoomName, roomJoin: true, canPublish: student, canSubscribe: staff });
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ success: true, token: await at.toJwt(), serverUrl: serverUrl || "ws://localhost:7880" });
+    res.json({ success: true, token: await at.toJwt(), serverUrl: serverUrl || "ws://localhost:7880", roomName: physicalRoomName });
   } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
 
@@ -9865,8 +9903,19 @@ app.post("/api/grades", requireAuth, requireRole(['teacher', 'guru', 'admin', 'b
     const { classId, studentId, subjectName, category, score } = item;
     if (!classId || !studentId) continue;
 
+    const targetStudent = (students || []).find((st: any) =>
+      String(st.id) === String(studentId) && isItemForCurrentMadrasah(st, req)
+    );
+    const targetClass = (classes || []).find((cl: any) =>
+      String(cl.id) === String(classId) && isItemForCurrentMadrasah(cl, req)
+    );
+    if (!targetStudent || !targetClass) {
+      return res.status(403).json({ success: false, message: 'Nilai hanya dapat dibuat untuk siswa dan kelas pada tenant yang sama.' });
+    }
+
     const existingIdx = grades.findIndex(
-      g => String(g.classId) === String(classId) &&
+      g => isItemForCurrentMadrasah(g, req) &&
+           String(g.classId) === String(classId) &&
            String(g.studentId) === String(studentId) &&
            String(g.subjectName || "").toLowerCase() === String(subjectName || "").toLowerCase() &&
            String(g.category || "").toLowerCase() === String(category || "").toLowerCase()
@@ -9962,7 +10011,7 @@ app.post("/api/grade-categories/rename", requireAuth, requireRole(['teacher', 'g
   let updatedCount = 0;
   if (Array.isArray(grades)) {
     grades.forEach(g => {
-      if (String(g.category || '').trim().toLowerCase() === oldLower) {
+      if (isItemForCurrentMadrasah(g, req) && String(g.category || '').trim().toLowerCase() === oldLower) {
         g.category = newTrim;
         updatedCount++;
       }
@@ -9992,7 +10041,7 @@ app.delete("/api/grade-categories/:name", requireAuth, requireRole(['teacher', '
   let deletedCount = 0;
   if (Array.isArray(grades)) {
     const prevLen = grades.length;
-    grades = grades.filter(g => String(g.category || '').trim().toLowerCase() !== catLower);
+    grades = grades.filter(g => !isItemForCurrentMadrasah(g, req) || String(g.category || '').trim().toLowerCase() !== catLower);
     deletedCount = prevLen - grades.length;
     if (deletedCount > 0) {
       await saveData('grades', grades);
@@ -11260,7 +11309,7 @@ app.post("/api/lesson-plans", async (req, res) => {
 
 app.delete("/api/lesson-plans/:id", async (req, res) => {
   const { id } = req.params;
-  lessonPlans = lessonPlans.filter(item => String(item.id) !== String(id));
+  lessonPlans = lessonPlans.filter(item => !(String(item.id) === String(id) && isItemForCurrentMadrasah(item, req)));
   await saveData('lessonPlans', lessonPlans);
   res.json({ success: true, message: "Modul Ajar berhasil dihapus" });
 });
@@ -12962,7 +13011,7 @@ app.post("/api/schedules", async (req, res) => {
 });
 app.delete("/api/schedules/:id", async (req, res) => {
   const { id } = req.params;
-  schedules = schedules.filter(s => String(s.id) !== String(id));
+  schedules = schedules.filter(s => !(String(s.id) === String(id) && isItemForCurrentMadrasah(s, req)));
   await saveData('schedules', schedules);
   res.json({ success: true, schedules: filterByMadrasah(schedules, req) });
 });
@@ -13027,7 +13076,7 @@ app.post("/api/exams", async (req, res) => {
 });
 app.delete("/api/exams/:id", async (req, res) => {
   const { id } = req.params;
-  exams = exams.filter(e => String(e.id) !== String(id));
+  exams = exams.filter(e => !(String(e.id) === String(id) && isItemForCurrentMadrasah(e, req)));
   await saveData('exams', exams);
   res.json({ success: true, exams: filterByMadrasah(exams, req) });
 });
@@ -13077,7 +13126,7 @@ app.post("/api/rooms", async (req, res) => {
 });
 app.delete("/api/rooms/:id", async (req, res) => {
   const { id } = req.params;
-  rooms = rooms.filter(r => String(r.id) !== String(id));
+  rooms = rooms.filter(r => !(String(r.id) === String(id) && isItemForCurrentMadrasah(r, req)));
   await saveData('rooms', rooms);
   res.json({ success: true, rooms: filterByMadrasah(rooms, req) });
 });
@@ -13137,7 +13186,7 @@ app.post("/api/journals", async (req, res) => {
 });
 app.delete("/api/journals/:id", async (req, res) => {
   const { id } = req.params;
-  journals = journals.filter(j => String(j.id) !== String(id));
+  journals = journals.filter(j => !(String(j.id) === String(id) && isItemForCurrentMadrasah(j, req)));
   await saveData('journals', journals);
   res.json({ success: true, journals: filterByMadrasah(journals, req) });
 });
@@ -13187,7 +13236,7 @@ app.post("/api/calendar-events", async (req, res) => {
 });
 app.delete("/api/calendar-events/:id", async (req, res) => {
   const { id } = req.params;
-  calendarEvents = calendarEvents.filter(c => String(c.id) !== String(id));
+  calendarEvents = calendarEvents.filter(c => !(String(c.id) === String(id) && isItemForCurrentMadrasah(c, req)));
   await saveData('calendarEvents', calendarEvents);
   res.json({ success: true, calendarEvents });
 });
@@ -14070,7 +14119,7 @@ app.post("/api/generated-exams", async (req, res) => {
 });
 app.delete("/api/generated-exams/:id", async (req, res) => {
   const { id } = req.params;
-  generatedExams = generatedExams.filter(e => String(e.id) !== String(id));
+  generatedExams = generatedExams.filter(e => !(String(e.id) === String(id) && isItemForCurrentMadrasah(e, req)));
   await saveData('generatedExams', generatedExams);
   res.json({ success: true, generatedExams: filterByMadrasah(generatedExams, req) });
 });
@@ -15450,8 +15499,10 @@ async function startServer() {
               ws.close(4003, 'Client identity mismatch'); return;
             }
             user = auth; publicId = requested || String(auth.id);
-            const tenant = String(auth.madrasahId || auth.madrasahSlug || 'default');
-            storageKey = publicId === 'admin' ? ('admin::' + tenant) : publicId;
+            const tenant = signalingUserTenant(auth);
+            storageKey = publicId === 'admin'
+              ? ('admin::' + tenant)
+              : (student ? ('student::' + tenant + '::' + publicId) : ('staff::' + tenant + '::' + publicId));
             const previous = clients.get(storageKey);
             if (previous && previous !== ws && previous.readyState === 1) try { previous.close(4000, 'Replaced'); } catch (_) {}
             clients.set(storageKey, ws);
@@ -15459,14 +15510,18 @@ async function startServer() {
             if (!user || !storageKey || !publicId) { ws.close(4001, 'Register first'); return; }
             const recipient = String(data.recipientId || ''), role = String(user.role || '').toLowerCase();
             const student = isStudentAuthRole(role), boss = role === 'bos' || role === 'superadmin';
-            const tenant = String(user.madrasahId || user.madrasahSlug || 'default');
+            const tenant = signalingUserTenant(user);
             let targetKey = recipient;
             if (student) { if (recipient !== 'admin') return; targetKey = 'admin::' + tenant; }
             else if (recipient === 'admin') targetKey = 'admin::' + tenant;
             else {
-              const target = (students || []).find((x: any) => String(x.id) === recipient);
+              const target = (students || []).find((x: any) =>
+                String(x.id) === recipient && (boss || signalingItemTenant(x) === tenant)
+              );
               if (!target) return;
-              if (!boss && String(target.madrasahId || target.madrasahSlug || 'default') !== tenant) return;
+              const targetTenant = signalingItemTenant(target);
+              if (!boss && targetTenant !== tenant) return;
+              targetKey = 'student::' + targetTenant + '::' + recipient;
             }
             const targetWs = clients.get(targetKey);
             if (targetWs?.readyState === 1) targetWs.send(JSON.stringify({ type: "signal", senderId: publicId, signal: data.signal }));
