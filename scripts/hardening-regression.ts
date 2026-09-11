@@ -98,6 +98,13 @@ function testServerGuards() {
   assert.match(server, /LKPD_STUDENT_STATE_V1/);
   assert.match(server, /function lkpdStateKey\(/);
   assert.match(server, /function lkpdBroadcastStateKey\(/);
+  assert.match(server, /function lkpdLegacyStateKeysForRequest\(/);
+  assert.match(server, /function lkpdStateCandidateKeys\(/);
+  assert.match(server, /migrateDeltaState\(blockedStudents, 'blockedStudents'\)/);
+  assert.match(server, /saveDeltaDb\('activeExamSessions', legacyKey, null\)/);
+  assert.match(server, /const blocked = personalKeys\.some/);
+  assert.match(server, /for \(const candidate of personalKeys\) delete nextMessages\[candidate\]/);
+  assert.match(server, /const ownCandidates = \(students \|\| \[\]\)\.filter/);
   assert.match(server, /app\.post\("\/api\/lkpd\/student-state"/);
   const lkpdModule = fs.readFileSync('src/lkpdModule.js', 'utf8');
   assert.match(lkpdModule, /fetch\('\/api\/lkpd\/student-state'/);

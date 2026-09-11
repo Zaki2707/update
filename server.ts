@@ -4144,7 +4144,10 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     childguardLocations: isStudent ? {} : (isBosUser ? childguardLocations : filterStudentKeyedObjectForRequest(childguardLocations, req)),
     childguardStatus: isStudent
       ? Object.fromEntries(Object.entries(childguardStatus || {}).filter(([statusKey]) => {
-          const own = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
+          const ownCandidates = (students || []).filter((st: any) =>
+            String(st.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(st, req)
+          );
+          const own = ownCandidates.length === 1 ? ownCandidates[0] : null;
           return String(statusKey) === String(authUser?.id || '') || String(statusKey) === String(own?.nis || '');
         }))
       : (isBosUser ? childguardStatus : filterStudentKeyedObjectForRequest(childguardStatus, req)),
@@ -9085,6 +9088,21 @@ function resolveLkpdStateKey(req: any, studentId: any, lkpdId: any): string {
   return namespaced;
 }
 
+function lkpdLegacyStateKeysForRequest(req: any, studentId: any, lkpdId: any): string[] {
+  const candidates = [
+    legacyExamStateKey(studentId, lkpdId),
+    legacyExamStateKey(lkpdId, studentId)
+  ];
+  return Array.from(new Set(candidates)).filter((candidate) => Boolean(parseLkpdStateKeyForRequest(req, candidate)));
+}
+
+function lkpdStateCandidateKeys(req: any, studentId: any, lkpdId: any): string[] {
+  return Array.from(new Set([
+    lkpdStateKey(req, studentId, lkpdId),
+    ...lkpdLegacyStateKeysForRequest(req, studentId, lkpdId)
+  ]));
+}
+
 function resolveLkpdStudentContext(req: any, authUser: any, lkpdId: any) {
   const studentId = String(authUser?.id || '');
   const role = String(authUser?.role || '').toLowerCase();
@@ -9377,16 +9395,44 @@ app.post("/api/lkpd/student-state", requireAuth, requireRole(['student', 'siswa'
   const lkpd = context.lkpd;
   const key = lkpdStateKey(req, studentId, lkpdId);
   const existingKey = resolveLkpdStateKey(req, studentId, lkpdId);
+  const legacyKeys = lkpdLegacyStateKeysForRequest(req, studentId, lkpdId).filter((candidate) => candidate !== key);
   const writes: Promise<any>[] = [];
   const active = req.body?.active !== false;
   const now = Date.now();
 
+  const migrateDeltaState = (store: any, storeName: string) => {
+    const hasNamespaced = Object.prototype.hasOwnProperty.call(store || {}, key);
+    if (!hasNamespaced) {
+      for (const legacyKey of legacyKeys) {
+        if (Object.prototype.hasOwnProperty.call(store || {}, legacyKey)) {
+          store[key] = store[legacyKey];
+          writes.push(saveDeltaDb(storeName, key, store[key]));
+          break;
+        }
+      }
+    }
+    for (const legacyKey of legacyKeys) {
+      if (Object.prototype.hasOwnProperty.call(store || {}, legacyKey)) {
+        delete store[legacyKey];
+        writes.push(saveDeltaDb(storeName, legacyKey, null));
+      }
+    }
+  };
+
+  // Preserve teacher-controlled state while moving legacy LKPD keys to the tenant namespace.
+  migrateDeltaState(studentTabSwitches, 'studentTabSwitches');
+  migrateDeltaState(studentOutOfTab, 'studentOutOfTab');
+  migrateDeltaState(blockedStudents, 'blockedStudents');
+
   if (!active) {
     delete activeExamSessions[key];
-    if (existingKey !== key) delete activeExamSessions[existingKey];
     writes.push(saveDeltaDb('activeExamSessions', key, null));
+    for (const legacyKey of legacyKeys) {
+      if (Object.prototype.hasOwnProperty.call(activeExamSessions || {}, legacyKey)) delete activeExamSessions[legacyKey];
+      writes.push(saveDeltaDb('activeExamSessions', legacyKey, null));
+    }
   } else {
-    const existingSession = activeExamSessions[existingKey] || activeExamSessions[key] || {};
+    const existingSession = activeExamSessions[key] || activeExamSessions[existingKey] || {};
     const answeredCount = Math.max(0, Math.min(10000, Math.floor(Number(req.body?.answeredCount ?? existingSession.answeredCount ?? 0) || 0)));
     const session = {
       ...existingSession,
@@ -9400,8 +9446,11 @@ app.post("/api/lkpd/student-state", requireAuth, requireRole(['student', 'siswa'
       lastSeenAt: now
     };
     activeExamSessions[key] = session;
-    if (existingKey !== key) delete activeExamSessions[existingKey];
     writes.push(saveDeltaDb('activeExamSessions', key, session));
+    for (const legacyKey of legacyKeys) {
+      if (Object.prototype.hasOwnProperty.call(activeExamSessions || {}, legacyKey)) delete activeExamSessions[legacyKey];
+      writes.push(saveDeltaDb('activeExamSessions', legacyKey, null));
+    }
   }
 
   if (typeof req.body?.outOfTab === 'boolean') {
@@ -9439,19 +9488,20 @@ app.post("/api/lkpd/student-state", requireAuth, requireRole(['student', 'siswa'
   }
   if (req.body?.livecamFrame) broadcastStateUpdate('studentLivecamFrames');
 
-  const personalKey = resolveLkpdStateKey(req, studentId, lkpdId);
+  const personalKeys = lkpdStateCandidateKeys(req, studentId, lkpdId);
   const broadcastKey = lkpdBroadcastStateKey(req, lkpdId);
   const legacyBroadcast = 'broadcast_' + lkpdId;
-  const blocked = Boolean(blockedStudents[personalKey] || blockedStudents[key]);
-  const messagePersonal = examMessages[personalKey] ?? examMessages[key] ?? null;
+  const blocked = personalKeys.some((candidate) => blockedStudents[candidate] === true);
+  const messagePersonalKey = personalKeys.find((candidate) => Object.prototype.hasOwnProperty.call(examMessages || {}, candidate));
+  const messagePersonal = messagePersonalKey ? examMessages[messagePersonalKey] : null;
   const messageBroadcast = examMessages[broadcastKey] ??
     (((lkpdList || []).filter((item: any) => String(item.id) === lkpdId).length === 1) ? examMessages[legacyBroadcast] : null);
 
   return res.json({
     success: true,
     blocked,
-    outOfTab: Boolean(studentOutOfTab[key]),
-    tabSwitches: Number(studentTabSwitches[key] || 0),
+    outOfTab: personalKeys.some((candidate) => studentOutOfTab[candidate] === true),
+    tabSwitches: Math.max(0, ...personalKeys.map((candidate) => Number(studentTabSwitches[candidate] || 0))),
     messagePersonal,
     messageBroadcast,
     session: activeExamSessions[key] ? {
@@ -9468,10 +9518,10 @@ app.post("/api/lkpd/message/ack", requireAuth, requireRole(['student', 'siswa', 
   const context = resolveLkpdStudentContext(req, authUser, lkpdId);
   if (context.error) return res.status(context.error.status).json({ success: false, message: context.error.message });
 
-  const key = resolveLkpdStateKey(req, context.studentId, lkpdId);
-  if (Object.prototype.hasOwnProperty.call(examMessages, key)) {
+  const personalKeys = lkpdStateCandidateKeys(req, context.studentId, lkpdId);
+  if (personalKeys.some((candidate) => Object.prototype.hasOwnProperty.call(examMessages || {}, candidate))) {
     const nextMessages = { ...examMessages };
-    delete nextMessages[key];
+    for (const candidate of personalKeys) delete nextMessages[candidate];
     await saveData('examMessages', nextMessages, true);
   }
   return res.json({ success: true });
