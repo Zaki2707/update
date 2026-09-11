@@ -55,6 +55,32 @@ window.isSameSubject = function(subA, subB, subjects) {
     return false;
 };
 
+async function loadImportGroupsFromServer(force = false) {
+    // IMPORT_GROUP_SERVER_AUTHORITATIVE: never reuse a generic localStorage cache across tenants.
+    if (appState._importGroupsLoadPromise && !force) return appState._importGroupsLoadPromise;
+    if (appState._importGroupsLoaded && !force) return appState.importGroups || [];
+
+    const task = fetch('/api/import-groups')
+        .then(r => r.ok ? r.json() : ({ success: false }))
+        .then(res => {
+            appState.importGroups = res.success && Array.isArray(res.data) ? res.data : [];
+            appState._importGroupsLoaded = true;
+            try { localStorage.removeItem('madrasah_import_groups'); } catch (_) {}
+            return appState.importGroups;
+        })
+        .catch(err => {
+            console.error('Gagal mengambil kelompok modul:', err);
+            appState.importGroups = [];
+            appState._importGroupsLoaded = true;
+            return appState.importGroups;
+        });
+
+    appState._importGroupsLoadPromise = task;
+    try { return await task; }
+    finally { appState._importGroupsLoadPromise = null; }
+}
+window.loadImportGroupsFromServer = loadImportGroupsFromServer;
+
 function getGuruName() {
     return (appState.settings && appState.settings.teacherName) || 'Sufyan Syauri, S.Pd.I';
 }
@@ -543,27 +569,13 @@ function renderModulCardHtml(lp, selectedSubjectId) {
 }
 
 function renderModulAjarSimpanView(selectedSubjectId) {
-    if (!appState.importGroups || appState.importGroups.length === 0) {
-        if (!appState.importGroups) {
-            try {
-                appState.importGroups = JSON.parse(localStorage.getItem('madrasah_import_groups')) || [];
-            } catch(e) { appState.importGroups = []; }
-        }
-        fetch('/api/import-groups')
-            .then(r => r.json())
-            .then(res => {
-                if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-                    appState.importGroups = res.data;
-                    try {
-                        localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
-                    } catch(e) {}
-                    const c = document.getElementById('view-container');
-                    if (c && (appState.currentView === 'modul-ajar' || appState.currentRoute === 'modul-ajar')) {
-                        renderModulAjarModule(c);
-                    }
-                }
-            })
-            .catch(e => {});
+    if (!appState._importGroupsLoaded && !appState._importGroupsLoadPromise) {
+        loadImportGroupsFromServer().then(() => {
+            const c = document.getElementById('view-container');
+            if (c && (appState.currentView === 'modul-ajar' || appState.currentRoute === 'modul-ajar')) {
+                renderModulAjarModule(c);
+            }
+        });
     }
 
     const subjectPlansSimpan = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, selectedSubjectId, appState.subjects));
@@ -772,26 +784,13 @@ function renderModulAjarModule(container) {
             .catch(err => console.error('Gagal mengambil modul ajar:', err));
     }
 
-    // Load import groups if not already loaded
-    if (!appState.importGroups) {
-        appState.importGroups = [];
-        try {
-            appState.importGroups = JSON.parse(localStorage.getItem('madrasah_import_groups')) || [];
-        } catch(e) {}
-        fetch('/api/import-groups')
-            .then(r => r.json())
-            .then(res => {
-                if (res.success && Array.isArray(res.data)) {
-                    appState.importGroups = res.data;
-                    try {
-                        localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
-                    } catch(e) {}
-                    if (appState.currentView === 'modul-ajar' || appState.currentRoute === 'modul-ajar') {
-                        renderModulAjarModule(container);
-                    }
-                }
-            })
-            .catch(err => console.error('Gagal mengambil kelompok modul:', err));
+    // Load tenant-scoped import groups once, including the valid empty state.
+    if (!appState._importGroupsLoaded && !appState._importGroupsLoadPromise) {
+        loadImportGroupsFromServer().then(() => {
+            if (appState.currentView === 'modul-ajar' || appState.currentRoute === 'modul-ajar') {
+                renderModulAjarModule(container);
+            }
+        });
     }
 
     const selectedSubjectId = appState.selectedModulAjarSubjectId || '';
