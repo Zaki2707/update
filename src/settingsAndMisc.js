@@ -1801,7 +1801,7 @@ async function setAttendancePhotoAsStudentProfile(studentId, photoUrl, dateStr) 
         if (appState.currentUser && String(appState.currentUser.id) === String(studentId)) {
             appState.currentUser.photo = photoUrl;
             appState.currentUser.photoHistory = appState.students[stIdx].photoHistory;
-            localStorage.setItem('madrasah_current_user', JSON.stringify(appState.currentUser));
+            if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
         }
 
         try {
