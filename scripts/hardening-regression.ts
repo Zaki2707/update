@@ -76,10 +76,14 @@ function testServerGuards() {
   assert.match(server, /ONLINE_STARTUP_NOT_READY/);
   assert.match(server, /Retry-After", "2"/);
   assert.match(server, /function isOnlineRuntimeUsable\(\)/);
-  assert.match(server, /process\.env\.DATABASE_URL/);
-  assert.match(server, /name: "DATABASE_URL"/);
-  assert.match(server, /activeDbSource: "SQL_HOST" \| "DATABASE_URL" \| "NONE"/);
-  assert.match(server, /SQL_HOST[\s\S]*DATABASE_URL[\s\S]*Localhost TCP PostgreSQL/);
+  assert.equal(server.includes('process.env.DATABASE_URL'), false, 'DATABASE_URL runtime fallback must stay removed');
+  assert.equal(server.includes('name: "DATABASE_URL"'), false, 'DATABASE_URL candidate must stay removed');
+  assert.match(server, /activeDbSource: "SQL_HOST" \| "NONE"/);
+  assert.match(server, /ONLINE mode requires Cloud SQL env/);
+  assert.match(server, /ONLINE SQL_HOST must be a Cloud SQL Unix socket path/);
+  assert.match(server, /if \(isOnlineMode\)[\s\S]*candidateConfigs\.push\(\{[\s\S]*name: `SQL_HOST/);
+  assert.match(server, /else \{[\s\S]*name: "Localhost TCP PostgreSQL"/);
+  assert.equal(server.includes("'cloud_sql_development_database'"), false, 'online DB name guessing must stay removed');
   assert.match(server, /hasHydratedPersistentState[\s\S]*pool[\s\S]*!isDbQuotaExceeded/);
   assert.match(server, /mergeLessonPlanDbSources\(/);
   assert.match(server, /madrasah_lessonPlans/);

@@ -1079,7 +1079,7 @@ import pkg from 'pg';
 const { Pool } = pkg;
 
 let pool: pkg.Pool | null = null;
-let activeDbSource: "SQL_HOST" | "DATABASE_URL" | "NONE" = "NONE";
+let activeDbSource: "SQL_HOST" | "NONE" = "NONE";
 let dbConnectionErrorMsg: string | null = null;
 let dbInitPromise: Promise<void> | null = null;
 let isRecreatingPool = false;
@@ -1125,87 +1125,96 @@ async function determineAndInitPool() {
     }
   }
 
-  const connectionTimeoutMillis = 10000;
-
+  const connectionTimeoutMillis = isOnlineMode ? 5000 : 10000;
   const candidateConfigs: Array<{ name: string; config: any }> = [];
 
-  const socketHosts = new Set<string>();
-  if (process.env.SQL_HOST) {
-    socketHosts.add(process.env.SQL_HOST);
-    if (process.env.SQL_HOST.startsWith('/app/cloudsql/')) {
-      socketHosts.add(process.env.SQL_HOST.replace('/app/cloudsql/', '/cloudsql/'));
-    } else if (process.env.SQL_HOST.startsWith('/cloudsql/')) {
-      socketHosts.add('/app' + process.env.SQL_HOST);
-    }
-  }
+  const configuredHost = String(process.env.SQL_HOST || '').trim();
+  const configuredUser = String(process.env.SQL_USER || '').trim();
+  const configuredPassword = String(process.env.SQL_PASSWORD || '');
+  const configuredDbName = String(process.env.SQL_DB_NAME || '').trim();
 
-  for (const baseDir of ['/cloudsql', '/app/cloudsql']) {
+  const resolveConfiguredSocketHost = (host: string): string => {
+    if (!host) return host;
+    const alternate = host.startsWith('/app/cloudsql/')
+      ? host.replace('/app/cloudsql/', '/cloudsql/')
+      : (host.startsWith('/cloudsql/') ? '/app' + host : '');
+
     try {
-      if (fs.existsSync(baseDir)) {
-        const entries = fs.readdirSync(baseDir);
-        for (const entry of entries) {
-          socketHosts.add(path.join(baseDir, entry));
-        }
-      }
-    } catch (e) {}
-  }
+      if (fs.existsSync(host)) return host;
+      if (alternate && fs.existsSync(alternate)) return alternate;
+    } catch (_) {}
+    return host;
+  };
 
-  const dbNamesToTry = Array.from(new Set([
-    process.env.SQL_DB_NAME,
-    'cloud_sql_development_database',
-    'cloud_sql_production_database'
-  ].filter(Boolean))) as string[];
+  if (isOnlineMode) {
+    const missing: string[] = [];
+    if (!configuredHost) missing.push('SQL_HOST');
+    if (!configuredUser) missing.push('SQL_USER');
+    if (!configuredPassword) missing.push('SQL_PASSWORD');
+    if (!configuredDbName) missing.push('SQL_DB_NAME');
 
-  for (const hostPath of socketHosts) {
-    if (!hostPath.startsWith('/') || fs.existsSync(hostPath)) {
-      for (const dbName of dbNamesToTry) {
-        candidateConfigs.push({
-          name: `SQL_HOST (${hostPath} -> ${dbName})`,
-          config: {
-            host: hostPath,
-            user: process.env.SQL_USER || process.env.PGUSER,
-            password: process.env.SQL_PASSWORD,
-            database: dbName,
-            max: 10,
-            connectionTimeoutMillis,
-            keepAlive: true,
-            idleTimeoutMillis: 15000,
-          }
-        });
-      }
+    if (missing.length > 0) {
+      activeDbSource = "NONE";
+      dbConnectionErrorMsg = `ONLINE_CLOUD_SQL_CONFIG_MISSING: ${missing.join(', ')}`;
+      console.error(`[Database Required] ONLINE mode requires Cloud SQL env: ${missing.join(', ')}.`);
+      return;
     }
-  }
 
-  // Backward-compatible production fallback. SQL_HOST/Cloud SQL socket remains
-  // preferred, but existing deployments that still provide DATABASE_URL must not
-  // silently lose their database connection after a code deploy.
-  if (process.env.DATABASE_URL) {
+    if (!configuredHost.startsWith('/cloudsql/') && !configuredHost.startsWith('/app/cloudsql/')) {
+      activeDbSource = "NONE";
+      dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_HOST_INVALID';
+      console.error('[Database Required] ONLINE SQL_HOST must be a Cloud SQL Unix socket path.');
+      return;
+    }
+
+    const socketHost = resolveConfiguredSocketHost(configuredHost);
     candidateConfigs.push({
-      name: "DATABASE_URL",
+      name: `SQL_HOST (${socketHost} -> ${configuredDbName})`,
       config: {
-        connectionString: process.env.DATABASE_URL,
+        host: socketHost,
+        user: configuredUser,
+        password: configuredPassword,
+        database: configuredDbName,
         max: 10,
         connectionTimeoutMillis,
         keepAlive: true,
         idleTimeoutMillis: 15000,
       }
     });
-  }
-
-  candidateConfigs.push({
-    name: "Localhost TCP PostgreSQL",
-    config: {
-      host: 'localhost',
-      port: 5432,
-      user: process.env.SQL_USER || process.env.PGUSER,
-      password: process.env.SQL_PASSWORD,
-      database: process.env.SQL_DB_NAME || 'cloud_sql_production_database',
-      max: 10,
-      connectionTimeoutMillis: 2000,
-      keepAlive: true,
-      idleTimeoutMillis: 15000,
+  } else {
+    // Offline mode keeps local PostgreSQL compatibility. It never uses DATABASE_URL.
+    if (configuredHost && configuredDbName) {
+      const socketHost = resolveConfiguredSocketHost(configuredHost);
+      candidateConfigs.push({
+        name: `SQL_HOST (${socketHost} -> ${configuredDbName})`,
+        config: {
+          host: socketHost,
+          user: configuredUser || process.env.PGUSER,
+          password: process.env.SQL_PASSWORD,
+          database: configuredDbName,
+          max: 10,
+          connectionTimeoutMillis,
+          keepAlive: true,
+          idleTimeoutMillis: 15000,
+        }
+      });
     }
-  });
+
+    candidateConfigs.push({
+      name: "Localhost TCP PostgreSQL",
+      config: {
+        host: 'localhost',
+        port: 5432,
+        user: configuredUser || process.env.PGUSER,
+        password: process.env.SQL_PASSWORD,
+        database: configuredDbName || 'cloud_sql_production_database',
+        max: 10,
+        connectionTimeoutMillis: 2000,
+        keepAlive: true,
+        idleTimeoutMillis: 15000,
+      }
+    });
+  }
 
   for (const candidate of candidateConfigs) {
     console.log(`Database Probe: Attempting connection via ${candidate.name}...`);
@@ -1226,10 +1235,8 @@ async function determineAndInitPool() {
       await Promise.race([testPromise, timeoutPromise]);
       
       pool = testPool;
-      activeDbSource = (candidate.name.startsWith("SQL_HOST")
-        ? "SQL_HOST"
-        : (candidate.name === "DATABASE_URL" ? "DATABASE_URL" : "NONE"));
-      if (activeDbSource === "SQL_HOST" || activeDbSource === "DATABASE_URL") {
+      activeDbSource = candidate.name.startsWith("SQL_HOST") ? "SQL_HOST" : "NONE";
+      if (activeDbSource === "SQL_HOST") {
         isDbQuotaExceeded = false;
       }
       console.log(`Database Probe: Connection succeeded! Using ${candidate.name} as the exclusive cloud database.`);
@@ -1238,7 +1245,10 @@ async function determineAndInitPool() {
       const msg = err?.message || String(err);
       if (msg.includes("quota") || msg.includes("data transfer quota") || msg.includes("exceeded")) {
         isDbQuotaExceeded = true;
-        console.warn(`Database Probe: Quota limit hit on ${candidate.name}. Switching seamlessly to local storage fallback.`);
+        console.warn(isOnlineMode
+          ? `Database Probe: Cloud SQL quota/limit issue on ${candidate.name}; ONLINE mode remains fail-closed.`
+          : `Database Probe: Quota limit hit on ${candidate.name}. Offline mode may use local storage fallback.`
+        );
       } else {
         console.warn(`Database Probe via ${candidate.name}: ${msg}`);
       }
@@ -4876,9 +4886,14 @@ app.get("/api/db-status", async (req, res) => {
 
   // 1. Check SQL (PostgreSQL/Cloud SQL)
   try {
-    const hasEnv = !!process.env.SQL_HOST || !!process.env.DATABASE_URL;
+    const hasEnv = Boolean(
+      process.env.SQL_HOST &&
+      process.env.SQL_USER &&
+      process.env.SQL_PASSWORD &&
+      process.env.SQL_DB_NAME
+    );
     if (!hasEnv) {
-      status.sql.message = "Konfigurasi database tidak ditemukan. Isi SQL_HOST atau DATABASE_URL.";
+      status.sql.message = "Konfigurasi Cloud SQL belum lengkap. Isi SQL_HOST, SQL_USER, SQL_PASSWORD, dan SQL_DB_NAME.";
     } else {
       status.sql.configured = true;
       if (dbInitPromise) {
@@ -5195,7 +5210,7 @@ app.post("/api/db-pull-cloud", async (req, res) => {
       }
       return res.status(500).json({
         success: false,
-        message: "Gagal menghubungkan ke database. Pastikan SQL_HOST + SQL_USER + SQL_PASSWORD atau DATABASE_URL dikonfigurasi dengan benar."
+        message: "Gagal menghubungkan ke Cloud SQL. Pastikan SQL_HOST, SQL_USER, SQL_PASSWORD, dan SQL_DB_NAME dikonfigurasi dengan benar."
       });
     }
 
