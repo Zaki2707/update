@@ -77,6 +77,23 @@ function testServerGuards() {
   assert.match(server, /Frame livecam terlalu besar/);
   assert.match(server, /function parseSafeRasterDataUrl\(/);
   assert.equal(server.includes('examViolationLogs[eId].unshift'), false);
+  assert.match(server, /function runWithDbKeyLocks/);
+  assert.match(server, /async function writeBatchToPostgresDirect/);
+  assert.match(server, /await writeBatchToPostgresDirect\(normalizedItems\.map/);
+  assert.equal(/async function saveDataBatch[\s\S]*?for \(const item of items\) \{\s*await writeKeyToPostgresDirect\(item\.key\)/.test(server), false);
+  assert.match(server, /resolveTenantItemIndexById\(exams, examId, req\)/);
+  assert.match(server, /resolveTenantItemIndexById\(lkpdList, lkpdId, req\)/);
+  assert.match(server, /app\.get\("\/api\/token-requests", requireAuth, requireRole/);
+  assert.match(server, /function sanitizeMadrasahMemberView/);
+  assert.equal(server.includes('if (isOnlineMode && isStudentSyncRole)'), false);
+  assert.match(server, /Jawaban terlalu besar\. Maksimal 64 KB per soal/);
+  assert.match(server, /Format frame livecam tidak valid/);
+  assert.match(server, /rewardAlreadyClaimed/);
+  assert.match(server, /storeMutationQueue\.run\(rewardLockKey/);
+  assert.match(server, /State sesi game terlalu besar/);
+  assert.match(server, /const nextTokenRequests = tokenRequests\.map/);
+  assert.match(server, /const nextMadrasahs = madrasahs\.map/);
+  assert.match(server, /const nextTeachers = teachers\.map/);
 
   assert.match(app, /sessionStorage\.setItem\(AUTH_SESSION_TOKEN_KEY/);
   assert.equal(app.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser))"), false);
