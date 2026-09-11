@@ -58,6 +58,7 @@ function testServerGuards() {
   const server = fs.readFileSync('server.ts', 'utf8');
   const app = fs.readFileSync('src/appScript.js', 'utf8');
   const chat = fs.readFileSync('src/chatModule.js', 'utf8');
+  const modules = fs.readFileSync('src/modulesScript.js', 'utf8');
 
   assert.match(server, /dbWriteQueue\.run\(key, \(\) => writeKeyToPostgresDirectUnlocked\(key\)\)/);
   assert.match(server, /app\.delete\("\/api\/exams\/:id", requireAuth, requireRole/);
@@ -100,11 +101,24 @@ function testServerGuards() {
   assert.match(server, /TEACHER_MONITOR_SCOPE_V2/);
   assert.match(server, /LKPD_STUDENT_SUBMISSION_WRITE_SCOPE/);
   assert.match(server, /LKPD_REALTIME_EVENT_V2/);
+  assert.match(server, /STUDENT_ATTENDANCE_POLICY_V1/);
+  assert.match(server, /function validateStudentAttendancePolicy\(/);
+  assert.match(server, /const policyError = validateStudentAttendancePolicy\(req, photo, location\)/);
+  assert.match(server, /for \(const item of data\.slice\(0, 100\)\)/);
+  assert.match(server, /status: 'HADIR',[\s\S]*note: '',[\s\S]*timestamp: Date\.now\(\)/);
+  assert.match(modules, /GPS belum tersedia atau tidak valid/);
+  assert.equal(modules.includes(": '-6.2000, 106.8166'"), false);
   assert.match(server, /saveDeltaBatchDb/);
   assert.match(server, /monitoringStateKeyAllowedForActor/);
   assert.match(server, /teacherCanUseLkpdPayload/);
   assert.match(server, /function normalizeStudentStoredRole\(/);
   assert.match(server, /role: normalizeStudentStoredRole\(student\.role\)/);
+  assert.match(server, /function studentCanAccessExam\(/);
+  assert.match(server, /filteredExams = selfStudent[\s\S]*studentCanAccessExam\(selfStudent, exam\)/);
+  assert.match(server, /filteredLkpds = selfStudent[\s\S]*studentCanAccessLkpd\(selfStudent, lkpd\)/);
+  assert.match(server, /list = ownStudent \? list\.filter\(\(exam: any\) => studentCanAccessExam\(ownStudent, exam\)\) : \[\]/);
+  assert.match(server, /const stateContext = getExamAttemptContext\(req, authUser, sId, eId\)/);
+  assert.match(server, /summaryIsStudent \|\| studentCanAccessExam\(summaryStudent\.student, ex\)/);
   assert.equal(server.includes('role: student.role || "student"'), false);
   assert.equal(server.includes('role: req.body.role || "student"'), false);
   assert.equal(server.includes('role: req.body.role ?? st.role'), false);
