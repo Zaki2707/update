@@ -11338,6 +11338,27 @@ function signalingStudentKey(req: any, user: any, studentId: any, target?: any) 
   return 'student::' + tenant + '::' + String(studentId);
 }
 
+// TEACHER_LIVECAM_SCOPE_V1: a teacher may signal only a student who currently has
+// an active attempt in an exam the teacher is allowed to monitor.
+function teacherCanMonitorStudentRealtime(req: any, user: any, targetStudent: any): boolean {
+  const role = String(user?.role || '').toLowerCase();
+  if (role !== 'teacher' && role !== 'guru') return true;
+  if (!targetStudent || !isItemForCurrentMadrasah(targetStudent, req)) return false;
+  const targetId = String(targetStudent.id || '');
+  if (!targetId) return false;
+  const authorizedExams = (getMemoryKeyValue('exams') || exams || []).filter((exam: any) =>
+    isItemForCurrentMadrasah(exam, req) &&
+    teacherCanUseExamPayload(req, exam) &&
+    studentCanAccessExam(targetStudent, exam)
+  );
+  return authorizedExams.some((exam: any) => {
+    const examId = String(exam.id || '');
+    if (!examId) return false;
+    const key = resolveExamStateKey(req, targetId, examId);
+    return Boolean(activeExamSessions[key] && !completedExams[key] && !forceFinishedExams[key]);
+  });
+}
+
 app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
   const user = req.user || getAuthUser(req);
   const recipientId = String(req.body?.recipientId || ''), signal = req.body?.signal;
@@ -11363,6 +11384,9 @@ app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
       return res.status(status).json({ success: false, message: status === 409 ? "ID siswa ambigu lintas tenant; pilih tenant target secara eksplisit." : "Siswa tujuan tidak ditemukan pada tenant yang diizinkan." });
     }
     if (!boss && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa tujuan bukan milik madrasah Anda." });
+    if ((role === 'teacher' || role === 'guru') && !teacherCanMonitorStudentRealtime(req, user, target)) {
+      return res.status(403).json({ success: false, message: "Guru hanya dapat membuka livecam siswa pada ujian aktif yang diampu." });
+    }
     targetKey = signalingStudentKey(req, user, recipientId, target);
   }
 
@@ -11386,9 +11410,15 @@ app.get("/api/exam/signaling", requireAuth, (req: any, res) => {
   } else if (isStaffAuthRole(role)) {
     if (requested !== 'admin') return res.status(403).json({ success: false, message: "Pengawas hanya dapat membaca antrean pengawas." });
     key = signalingAdminKey(req, user);
+    if ((role === 'teacher' || role === 'guru') && !senderId) {
+      return res.status(400).json({ success: false, message: "Guru wajib memilih siswa yang sedang dimonitor." });
+    }
     if (senderId && !boss) {
       const target = (students || []).find((x: any) => String(x.id) === senderId);
       if (!target || !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Pengirim bukan siswa madrasah Anda." });
+      if ((role === 'teacher' || role === 'guru') && !teacherCanMonitorStudentRealtime(req, user, target)) {
+        return res.status(403).json({ success: false, message: "Guru hanya dapat membaca signaling siswa pada ujian aktif yang diampu." });
+      }
     }
   } else return res.status(403).json({ success: false, message: "Akses signaling ditolak." });
 
@@ -11420,6 +11450,9 @@ app.post("/api/exam/livekit-token", requireAuth, async (req: any, res) => {
       return res.status(404).json({ success: false, message: "Ujian tidak ditemukan pada tenant yang diizinkan." });
     }
     if (!boss && !isItemForCurrentMadrasah(exam, req)) return res.status(403).json({ success: false, message: "Ujian bukan milik madrasah Anda." });
+    if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, exam)) {
+      return res.status(403).json({ success: false, message: "Guru hanya dapat membuka livecam untuk ujian mata pelajaran/bank soal yang diampu." });
+    }
     if (student) {
       const context = getExamAttemptContext(req, user, String(user.id), examId);
       if (rejectExamAttemptContext(res, context)) return;
@@ -17510,6 +17543,10 @@ async function startServer() {
               if (!target) return;
               const targetTenant = signalingItemTenant(target);
               if (!boss && targetTenant !== tenant) return;
+              if ((role === 'teacher' || role === 'guru')) {
+                const wsReq: any = { user };
+                if (!teacherCanMonitorStudentRealtime(wsReq, user, target)) return;
+              }
               targetKey = 'student::' + targetTenant + '::' + recipient;
             }
             const targetWs = clients.get(targetKey);
