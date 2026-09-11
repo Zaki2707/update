@@ -81,7 +81,61 @@ function testServerGuards() {
   assert.match(app, /sessionStorage\.setItem\(AUTH_SESSION_TOKEN_KEY/);
   assert.equal(app.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser))"), false);
   assert.match(chat, /chatEscape\(msg\.text\)/);
-  assert.equal(chat.includes('$' + '{msg.text}'), false);
+  assert.equal(chat.includes('
+  for (const destructive of [
+    'exams = [...otherExams, ...taggedIncoming]',
+    'rooms = [...otherRooms, ...taggedIncoming]',
+    'journals = [...otherJournals, ...taggedIncoming]',
+    'calendarEvents = [...otherEvents, ...taggedIncoming]',
+    'generatedExams = [...otherExams, ...taggedIncoming]'
+  ]) {
+    assert.equal(server.includes(destructive), false, 'destructive online batch pattern remains: ' + destructive);
+  }
+
+  for (const legacyKey of [
+    'const key = sId + "_" + eId;',
+    "const key = studentId + '_' + examId;",
+    'const key = studentId + "_" + examId;'
+  ]) {
+    assert.equal(server.includes(legacyKey), false, 'unscoped CBT key remains: ' + legacyKey);
+  }
+}
+
+await testSameKeySerializes();
+await testDifferentKeysCanProgress();
+await testFailureDoesNotPoisonKey();
+testServerGuards();
+console.log('Hardening regression passed.');
+ + '{msg.text}'), false);
+  const staffAiRoutes = [
+    '/api/gemini/generate-questions',
+    '/api/gemini/generate-enrichment',
+    '/api/gemini/generate-modul',
+    '/api/gemini/generate-modul-all',
+    '/api/modul/parse-document',
+    '/api/modul/import-ai-structure',
+    '/api/gemini/generate-modul2-general',
+    '/api/gemini/generate-modul2-bab',
+    '/api/gemini/generate-ppt',
+    '/api/gemini/generate-poster',
+    '/api/gemini/generate-kbc-document',
+    '/api/gemini/generate-soal-kisi',
+    '/api/gemini/generate-rpp',
+    '/api/gemini/generate-device'
+  ];
+  for (const route of staffAiRoutes) {
+    assert.equal(
+      server.includes(`app.post("${route}", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin'])`),
+      true,
+      'AI/module route is not explicitly staff-only: ' + route
+    );
+  }
+  assert.match(server, /ID ujian ambigu lintas tenant\. Pilih madrasah target terlebih dahulu\./);
+  assert.match(server, /ID LKPD ambigu lintas tenant\. Pilih madrasah target terlebih dahulu\./);
+  assert.match(server, /=== examTenant/);
+  assert.match(server, /=== lkpdTenant/);
+  assert.equal(server.includes('const store = readLocalStore();\n    let lkpdList = store.lkpdList || [];'), false);
+  assert.match(server, /default-src 'none'; style-src 'none'; script-src 'none'; sandbox/);
 
   for (const destructive of [
     'exams = [...otherExams, ...taggedIncoming]',
