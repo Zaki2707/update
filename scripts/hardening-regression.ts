@@ -95,6 +95,13 @@ function testServerGuards() {
   assert.equal(server.includes('if (isOnlineMode && isStudentSyncRole)'), false);
   assert.match(server, /const resolvedExam = resolveTenantItemIndexById\(examSource, eId, req\)/);
   assert.match(server, /app\.get\("\/api\/token-requests", requireAuth, requireRole/);
+  assert.match(server, /LKPD_STUDENT_STATE_V1/);
+  assert.match(server, /function lkpdStateKey\(/);
+  assert.match(server, /function lkpdBroadcastStateKey\(/);
+  assert.match(server, /app\.post\("\/api\/lkpd\/student-state"/);
+  const lkpdModule = fs.readFileSync('src/lkpdModule.js', 'utf8');
+  assert.match(lkpdModule, /fetch\('\/api\/lkpd\/student-state'/);
+  assert.equal(lkpdModule.includes("const res = await fetch('/api/exam-monitoring-state')"), false);
 
   assert.match(app, /sessionStorage\.setItem\(AUTH_SESSION_TOKEN_KEY/);
   assert.equal(app.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser))"), false);
