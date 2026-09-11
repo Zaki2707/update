@@ -3713,7 +3713,7 @@ function sanitizeStudentPeerProfile(student: any) {
     classId: student.classId || student.class_id || '',
     class_id: student.class_id || student.classId || '',
     photo: student.photo || '',
-    role: student.role || 'student'
+    role: normalizeStudentStoredRole(student.role)
   };
 }
 
@@ -3971,6 +3971,17 @@ function gradePayloadAllowedForTeacher(req: any, gradePayload: any): boolean {
   return Boolean(subjectRef && teacherCanAccessSubjectRef(req, subjectRef));
 }
 
+function studentCanAccessExam(student: any, exam: any): boolean {
+  if (!student || !exam) return false;
+  const targets = Array.isArray(exam.classes)
+    ? exam.classes.map((value: any) => String(value))
+    : [exam.classId, exam.class_id, exam.className].filter(Boolean).map((value: any) => String(value));
+  if (targets.length === 0 || targets.some((value: string) => value.toUpperCase() === 'ALL')) return true;
+  const studentClasses = [student.classId, student.class_id, student.className, student.class]
+    .filter(Boolean).map((value: any) => String(value));
+  return targets.some((target: string) => studentClasses.includes(target));
+}
+
 function studentCanAccessLkpd(student: any, lkpd: any): boolean {
   if (!student || !lkpd) return false;
   const targets = Array.isArray(lkpd.classes)
@@ -4108,8 +4119,12 @@ app.get("/api/all-data", requireAuth, (req, res) => {
 
     filteredQuestions = [];
     filteredQGroups = [];
-    filteredExams = filteredExams.map(sanitizeExamForStudent);
-    filteredLkpds = filteredLkpds.map((lkpd: any) => sanitizeLkpdForStudent(lkpd, ownId));
+    filteredExams = selfStudent
+      ? filteredExams.filter((exam: any) => studentCanAccessExam(selfStudent, exam)).map(sanitizeExamForStudent)
+      : [];
+    filteredLkpds = selfStudent
+      ? filteredLkpds.filter((lkpd: any) => studentCanAccessLkpd(selfStudent, lkpd)).map((lkpd: any) => sanitizeLkpdForStudent(lkpd, ownId))
+      : [];
 
     if (isClassLeader && ownClassId) {
       filteredStudents = filteredStudents.filter((st: any) =>
@@ -7929,6 +7944,56 @@ function getRecordTimestamp(id: string, record: any): number {
   return 0;
 }
 
+// STUDENT_ATTENDANCE_POLICY_V1: client-side GPS/selfie checks are UX only; server is authoritative.
+function parseAttendanceCoordinates(value: any): { latitude: number; longitude: number } | null {
+  const match = String(value || '').trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+  if (!match) return null;
+  const latitude = Number(match[1]);
+  const longitude = Number(match[2]);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+  return { latitude, longitude };
+}
+
+function attendanceDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (value: number) => value * Math.PI / 180;
+  const earthRadius = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * earthRadius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function validateStudentAttendancePolicy(req: any, photo: any, location: any): { status: number; message: string } | null {
+  const settings = effectiveSettingsForRequest(req) || {};
+  if (settings.requireSelfie !== false && !String(photo || '').trim()) {
+    return { status: 400, message: 'Absensi siswa wajib menyertakan foto selfie.' };
+  }
+  if (settings.requireGps !== false) {
+    const coords = parseAttendanceCoordinates(location);
+    if (!coords) {
+      return { status: 400, message: 'Absensi siswa wajib menyertakan koordinat GPS yang valid.' };
+    }
+    const geo = tenantConfigValue(
+      schoolLocationSettings,
+      req,
+      { schoolLatitude: -6.2000, schoolLongitude: 106.8166, geofenceRadius: 100 },
+      'schoolLocationSettings'
+    ) || {};
+    const schoolLat = Number(geo.schoolLatitude);
+    const schoolLng = Number(geo.schoolLongitude);
+    const radius = Math.max(1, Math.min(100000, Number(geo.geofenceRadius) || 100));
+    if (!Number.isFinite(schoolLat) || !Number.isFinite(schoolLng)) {
+      return { status: 503, message: 'Lokasi madrasah belum dikonfigurasi dengan benar.' };
+    }
+    const distance = attendanceDistanceMeters(coords.latitude, coords.longitude, schoolLat, schoolLng);
+    if (!Number.isFinite(distance) || distance > radius) {
+      return { status: 403, message: `Lokasi absensi berada di luar radius madrasah (${Math.round(distance)} m > ${Math.round(radius)} m).` };
+    }
+  }
+  return null;
+}
+
 app.get("/api/attendance", requireAuth, async (req: any, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   const authUser = req.user || getAuthUser(req);
@@ -7963,6 +8028,8 @@ app.post("/api/attendance", requireAuth, async (req: any, res) => {
     date = getJakartaTodayDateStr();
     status = 'HADIR';
     note = '';
+    const policyError = validateStudentAttendancePolicy(req, photo, location);
+    if (policyError) return res.status(policyError.status).json({ success: false, message: policyError.message });
   } else if (isClassLeader) {
     const leader = resolveTenantItemIndexById(students, authUser?.id, req, false).item;
     if (!leader) {
@@ -9703,7 +9770,18 @@ app.get("/api/exam/my-summary", (req, res) => {
     return res.status(400).json({ success: false, message: "studentId query param is required" });
   }
 
-  const allExams = (getMemoryKeyValue('exams') || exams || []).filter((ex: any) => isItemForCurrentMadrasah(ex, req));
+  const summaryStudent = findStudentForRequest(req, sId);
+  if (summaryStudent.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID siswa ambigu pada tenant ini." });
+  }
+  if (!summaryStudent.student) {
+    return res.status(404).json({ success: false, message: "Data siswa tidak ditemukan pada tenant ini." });
+  }
+  const summaryRole = String(authUser.role || '').toLowerCase();
+  const summaryIsStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(summaryRole);
+  const allExams = (getMemoryKeyValue('exams') || exams || []).filter((ex: any) =>
+    isItemForCurrentMadrasah(ex, req) && (!summaryIsStudent || studentCanAccessExam(summaryStudent.student, ex))
+  );
   const completedList: string[] = [];
   const completedMap: Record<string, any> = {};
   const activeSessionsMap: Record<string, any> = {};
@@ -9760,6 +9838,9 @@ app.get("/api/exam/my-state", (req, res) => {
   }
 
   const eId = String(examId);
+  const stateContext = getExamAttemptContext(req, authUser, sId, eId);
+  if (rejectExamAttemptContext(res, stateContext)) return;
+  const matchedExam: any = stateContext.exam;
   const key1 = resolveExamStateKey(req, sId, eId);
   const key2 = legacyExamStateKey(sId, eId);
 
@@ -9776,9 +9857,7 @@ app.get("/api/exam/my-state", (req, res) => {
   const msgPersonal = examMessages[key1] || examMessages[key2] || null;
   const latestMessage = msgPersonal || msgBroadcast || null;
 
-  // Exam info & duration extensions
-  const allExams = getMemoryKeyValue('exams') || exams || [];
-  const matchedExam = allExams.find((e: any) => String(e.id) === eId && isItemForCurrentMadrasah(e, req)) || null;
+  // Exam info & duration extensions use the already tenant/class-authorized exam above.
 
   // Server-authoritative remaining time calculation
   let remainingTime: number | null = null;
@@ -9854,16 +9933,8 @@ function getExamAttemptContext(req: any, authUser: AuthSession, studentId: strin
   }
 
   const studentRoles = ['student', 'siswa', 'class_leader', 'ketua_kelas'];
-  if (studentRoles.includes(role)) {
-    const targets = Array.isArray(exam.classes) ? exam.classes.map((v: any) => String(v)) : [];
-    const unrestricted = targets.length === 0 || targets.some((v: string) => v.toUpperCase() === 'ALL');
-    if (!unrestricted) {
-      const studentClasses = [student.classId, student.class_id, student.className, student.class]
-        .filter(Boolean).map((v: any) => String(v));
-      if (!targets.some((target: string) => studentClasses.includes(target))) {
-        return { error: { status: 403, message: 'Siswa tidak terdaftar pada kelas sasaran ujian ini.' } };
-      }
-    }
+  if (studentRoles.includes(role) && !studentCanAccessExam(student, exam)) {
+    return { error: { status: 403, message: 'Siswa tidak terdaftar pada kelas sasaran ujian ini.' } };
   }
 
   return { exam, student };
@@ -14814,6 +14885,8 @@ app.get("/api/exams", (req: any, res) => {
   const role = String(authUser?.role || '').toLowerCase();
   let list = isTeacherRequest(req) ? examsForRequest(req) : filterByMadrasah(exams, req);
   if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
+    const ownStudent = (students || []).find((student: any) => String(student.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(student, req));
+    list = ownStudent ? list.filter((exam: any) => studentCanAccessExam(ownStudent, exam)) : [];
     list = list.map(sanitizeExamForStudent);
   }
   res.json({ success: true, exams: list });
@@ -17001,6 +17074,55 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     }
     if (tenantMasterKeys.has(String(key)) && !Array.isArray(data)) {
       return res.status(400).json({ success: false, message: 'Payload master data harus berupa array.' });
+    }
+
+    if (key === 'attendance' && isStudentSyncRole) {
+      if (!Array.isArray(data)) {
+        return res.status(400).json({ success: false, message: 'Payload attendance siswa harus berupa array.' });
+      }
+      const ownResolution = findStudentForRequest(req, authUser?.id);
+      if (ownResolution.ambiguous) {
+        return res.status(409).json({ success: false, message: 'Identitas siswa ambigu pada tenant ini.' });
+      }
+      const ownStudent = ownResolution.student;
+      if (!ownStudent) {
+        return res.status(403).json({ success: false, message: 'Identitas siswa tidak ditemukan pada tenant ini.' });
+      }
+      const today = getJakartaTodayDateStr();
+      const ownClassId = ownStudent.classId || ownStudent.class_id || '';
+      const recovered: any[] = [];
+      for (const item of data.slice(0, 100)) {
+        if (!item || String(item.studentId || '') !== String(authUser?.id || '')) {
+          return res.status(403).json({ success: false, message: 'Siswa hanya dapat menyinkronkan absensi miliknya.' });
+        }
+        if (String(item.date || '').slice(0, 10) !== today) continue;
+        const policyError = validateStudentAttendancePolicy(req, item.photo, item.location);
+        if (policyError) return res.status(policyError.status).json({ success: false, message: policyError.message });
+        const subjectId = String(item.subjectId || '').slice(0, 128);
+        const existing = (attendance || []).find((record: any) =>
+          isItemForCurrentMadrasah(record, req) &&
+          String(record.studentId || '') === String(authUser?.id || '') &&
+          String(record.date || '').slice(0, 10) === today &&
+          String(record.subjectId || '') === subjectId
+        );
+        if (existing) {
+          recovered.push(existing);
+          continue;
+        }
+        recovered.push(tagNewRecord({
+          id: 'ATT_SYNC_' + Date.now() + '_' + crypto.randomBytes(5).toString('hex'),
+          studentId: String(authUser?.id || ''),
+          classId: ownClassId,
+          subjectId,
+          date: today,
+          status: 'HADIR',
+          location: String(item.location || '').slice(0, 256),
+          photo: item.photo || '',
+          note: '',
+          timestamp: Date.now()
+        }, req));
+      }
+      data = recovered;
     }
 
     // Process base64 uploads for students
