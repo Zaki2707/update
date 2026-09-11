@@ -16,6 +16,7 @@ import os from "os";
 import crypto from "crypto";
 import { AsyncLocalStorage } from "async_hooks";
 import { KeyedSerialQueue } from "./src/keyedSerialQueue.js";
+import { resolveSqlConnection, SqlConfigurationError } from "./src/db/connectionConfig.ts";
 import selfsigned from "selfsigned";
 import { GoogleGenAI } from "@google/genai";
 import { v2 as cloudinary } from "cloudinary";
@@ -1127,156 +1128,33 @@ async function determineAndInitPool() {
 
   const connectionTimeoutMillis = isOnlineMode ? 5000 : 10000;
   const candidateConfigs: Array<{ name: string; config: any }> = [];
+  let connection: ReturnType<typeof resolveSqlConnection>;
+  try {
+    connection = resolveSqlConnection(process.env, isOnlineMode);
+  } catch (err: any) {
+    activeDbSource = "NONE";
+    dbConnectionErrorMsg = err instanceof SqlConfigurationError ? err.code : 'SQL_CONFIG_INVALID';
+    console.error('[Database Required]', err instanceof SqlConfigurationError ? err.message : 'Cannot resolve SQL configuration.');
+    return;
+  }
 
-  const configuredHost = String(process.env.SQL_HOST || '').trim();
-  const configuredUser = String(
-    process.env.SQL_USER ||
-    process.env.PGUSER ||
-    process.env.SQL_ADMIN_USER ||
-    ''
-  ).trim();
-  const configuredPassword = String(
-    process.env.SQL_PASSWORD ||
-    process.env.PGPASSWORD ||
-    process.env.SQL_ADMIN_PASSWORD ||
-    ''
-  );
-  const configuredDbName = String(
-    process.env.SQL_DB_NAME ||
-    process.env.PGDATABASE ||
-    'cloud_sql_production_database'
-  ).trim();
-  const configuredConnectionName = String(
-    process.env.CLOUD_SQL_CONNECTION_NAME ||
-    process.env.INSTANCE_CONNECTION_NAME ||
-    ''
-  ).trim();
-
-  const resolveConfiguredSocketHost = (host: string): string => {
-    if (!host) return host;
-    const alternate = host.startsWith('/app/cloudsql/')
-      ? host.replace('/app/cloudsql/', '/cloudsql/')
-      : (host.startsWith('/cloudsql/') ? '/app' + host : '');
-
-    try {
-      if (fs.existsSync(host)) return host;
-      if (alternate && fs.existsSync(alternate)) return alternate;
-    } catch (_) {}
-    return host;
-  };
-
-  if (isOnlineMode) {
-    const missing: string[] = [];
-    if (!configuredUser) missing.push('SQL_USER/PGUSER');
-    if (!configuredPassword) missing.push('SQL_PASSWORD/PGPASSWORD');
-
-    if (missing.length > 0) {
-      activeDbSource = "NONE";
-      dbConnectionErrorMsg = `ONLINE_CLOUD_SQL_CONFIG_MISSING: ${missing.join(', ')}`;
-      console.error(`[Database Required] ONLINE mode requires Cloud SQL credentials: ${missing.join(', ')}.`);
-      return;
+  candidateConfigs.push({
+    name: isOnlineMode || String(process.env.SQL_HOST || '').trim() || connection.host.startsWith('/')
+      ? `SQL_HOST (${connection.host} -> ${connection.database})`
+      : "Localhost TCP PostgreSQL",
+    config: {
+      ...connection,
+      max: 10,
+      connectionTimeoutMillis: !isOnlineMode && connection.host === 'localhost' ? 2000 : connectionTimeoutMillis,
+      keepAlive: true,
+      idleTimeoutMillis: 15000,
     }
-
-    let selectedSocketHost = '';
-
-    if (configuredHost) {
-      if (!configuredHost.startsWith('/cloudsql/') && !configuredHost.startsWith('/app/cloudsql/')) {
-        activeDbSource = "NONE";
-        dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_HOST_INVALID';
-        console.error('[Database Required] ONLINE SQL_HOST must be a Cloud SQL Unix socket path.');
-        return;
-      }
-      selectedSocketHost = resolveConfiguredSocketHost(configuredHost);
-    } else if (configuredConnectionName) {
-      if (!/^[A-Za-z0-9_.:-]+$/.test(configuredConnectionName)) {
-        activeDbSource = "NONE";
-        dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_CONNECTION_NAME_INVALID';
-        console.error('[Database Required] CLOUD_SQL_CONNECTION_NAME contains invalid characters.');
-        return;
-      }
-      selectedSocketHost = resolveConfiguredSocketHost(`/cloudsql/${configuredConnectionName}`);
-    } else {
-      // Cloud Run exposes mounted Cloud SQL instances under /cloudsql. Older working
-      // deployments did not always define SQL_HOST explicitly, so retain safe
-      // auto-discovery only when it resolves to exactly one mounted instance.
-      const discoveredByConnectionName = new Map<string, string>();
-      for (const baseDir of ['/cloudsql', '/app/cloudsql']) {
-        try {
-          if (!fs.existsSync(baseDir)) continue;
-          for (const entry of fs.readdirSync(baseDir)) {
-            const candidatePath = path.join(baseDir, entry);
-            try {
-              if (!fs.statSync(candidatePath).isDirectory()) continue;
-              const existing = discoveredByConnectionName.get(entry);
-              if (!existing || candidatePath.startsWith('/cloudsql/')) {
-                discoveredByConnectionName.set(entry, candidatePath);
-              }
-            } catch (_) {}
-          }
-        } catch (_) {}
-      }
-
-      if (discoveredByConnectionName.size > 1) {
-        activeDbSource = "NONE";
-        dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_SOCKET_AMBIGUOUS';
-        console.error('[Database Required] Multiple Cloud SQL sockets are mounted. Set SQL_HOST or CLOUD_SQL_CONNECTION_NAME explicitly.');
-        return;
-      }
-      selectedSocketHost = Array.from(discoveredByConnectionName.values())[0] || '';
-    }
-
-    if (!selectedSocketHost) {
-      activeDbSource = "NONE";
-      dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_SOCKET_NOT_FOUND';
-      console.error('[Database Required] No mounted Cloud SQL Unix socket was found.');
-      return;
-    }
-
-    candidateConfigs.push({
-      name: `SQL_HOST (${selectedSocketHost} -> ${configuredDbName})`,
-      config: {
-        host: selectedSocketHost,
-        user: configuredUser,
-        password: configuredPassword,
-        database: configuredDbName,
-        max: 10,
-        connectionTimeoutMillis,
-        keepAlive: true,
-        idleTimeoutMillis: 15000,
-      }
-    });
-  } else {
-    // Offline mode keeps local PostgreSQL compatibility. It never uses DATABASE_URL.
-    if (configuredHost && configuredDbName) {
-      const socketHost = resolveConfiguredSocketHost(configuredHost);
-      candidateConfigs.push({
-        name: `SQL_HOST (${socketHost} -> ${configuredDbName})`,
-        config: {
-          host: socketHost,
-          user: configuredUser || process.env.PGUSER,
-          password: process.env.SQL_PASSWORD,
-          database: configuredDbName,
-          max: 10,
-          connectionTimeoutMillis,
-          keepAlive: true,
-          idleTimeoutMillis: 15000,
-        }
-      });
-    }
-
+  });
+  // Retain the local PostgreSQL fallback only for OFFLINE installations.
+  if (!isOnlineMode && connection.host !== 'localhost') {
     candidateConfigs.push({
       name: "Localhost TCP PostgreSQL",
-      config: {
-        host: 'localhost',
-        port: 5432,
-        user: configuredUser || process.env.PGUSER,
-        password: process.env.SQL_PASSWORD,
-        database: configuredDbName || 'cloud_sql_production_database',
-        max: 10,
-        connectionTimeoutMillis: 2000,
-        keepAlive: true,
-        idleTimeoutMillis: 15000,
-      }
+      config: { ...candidateConfigs[0].config, host: 'localhost', connectionTimeoutMillis: 2000 }
     });
   }
 
@@ -1328,7 +1206,8 @@ async function determineAndInitPool() {
       return;
     }
     console.log("[Database Fallback Active] PostgreSQL unavailable. OFFLINE mode continues with local_store.json.");
-    await ensureHydrated();
+    // Hydration awaits dbInitPromise; awaiting hydration here creates a promise cycle.
+    // OFFLINE hydration is started independently after the HTTP listener is created.
     return;
   }
 
@@ -1910,8 +1789,9 @@ async function writeKeyToPostgresDirectUnlocked(key: string) {
         return;
       }
 
-      const freshValue = getMemoryKeyValue(key);
-      if (freshValue === undefined) return;
+      const currentValue = getMemoryKeyValue(key);
+      if (currentValue === undefined) return;
+      const freshValue = structuredClone(currentValue);
 
       try {
         client = await pool.connect();
@@ -1942,10 +1822,10 @@ async function writeKeyToPostgresDirectUnlocked(key: string) {
           `, [key, JSON.stringify(freshValue)]);
         }
 
-        await client.query('COMMIT');
         if (isOnlineMode && (key === 'questions' || key === 'questionBankGroups')) {
           await verifyOnlineArrayPersistence(key, freshValue, client);
         }
+        await client.query('COMMIT');
         return; // Successful write; critical question-bank rows are read-back verified before the key queue advances.
 
       } catch (err: any) {
@@ -2019,7 +1899,7 @@ async function writeBatchToPostgresDirect(keys: string[]) {
         const snapshots = new Map<string, any>();
         for (const key of orderedKeys) {
           const value = getMemoryKeyValue(key);
-          if (value !== undefined) snapshots.set(key, value);
+          if (value !== undefined) snapshots.set(key, structuredClone(value));
         }
         if (snapshots.size === 0) return;
 
@@ -2160,9 +2040,9 @@ async function saveData(key: string, value: any, immediate = true) {
   try {
     const store = readLocalStore();
     store[key] = value;
-    // Token/madrasah balance must survive browser/server refresh even when PostgreSQL is unavailable.
-    // writeLocalStore is already throttled, so this does not create a disk-write hot path.
-    if (key === 'madrasahs') writeLocalStore(store);
+    // All OFFLINE state changes must reach the throttled disk writer, not only balances.
+    // ONLINE writeLocalStore updates the cache only; Cloud SQL remains authoritative.
+    if (!isRestoring || key === 'madrasahs') writeLocalStore(store);
   } catch (e) {}
 
   if (isRestoring) {
@@ -2171,7 +2051,16 @@ async function saveData(key: string, value: any, immediate = true) {
 
   lastDbFetchTime = Date.now();
 
-  // 2. Broadcast state update immediately (for responsive UI)
+  // ONLINE acknowledgement and notification must follow a successful SQL write.
+  // Deferred persistence is supported only by OFFLINE's durable local store.
+  if (isOnlineMode) {
+    await writeKeyToPostgresDirect(key);
+  } else if (pool && !isDbQuotaExceeded) {
+    if (immediate) await writeKeyToPostgresDirect(key);
+    else scheduleDbWrite(key);
+  }
+
+  // 2. Broadcast state update after persistence
   try {
     broadcastStateUpdate(key);
   } catch (e) {
@@ -2183,15 +2072,6 @@ async function saveData(key: string, value: any, immediate = true) {
     saveKeyToFirestore(key, value).catch(err => {
       console.error(`[Firestore Backup] Error backing up "${key}" to Firestore:`, err);
     });
-  }
-
-  // 4. Write directly or schedule write to PostgreSQL Cloud SQL
-  if (pool && !isDbQuotaExceeded) {
-    if (immediate) {
-      await writeKeyToPostgresDirect(key);
-    } else {
-      scheduleDbWrite(key);
-    }
   }
 
 }
@@ -2224,8 +2104,8 @@ async function saveDataBatch(items: { key: string; value: any }[], immediate = t
   lastDbFetchTime = Date.now();
 
   try {
-    if (pool && !isDbQuotaExceeded) {
-      if (immediate) {
+    if (isOnlineMode || (pool && !isDbQuotaExceeded)) {
+      if (isOnlineMode || immediate) {
         await writeBatchToPostgresDirect(normalizedItems.map((item) => item.key));
       } else {
         for (const item of normalizedItems) scheduleDbWrite(item.key);
@@ -2480,11 +2360,12 @@ async function updateStoreKeyWithLock(key: string, updateFn: (val: any) => any) 
       writeLocalStore(store);
     } catch (e) {}
 
+    if (isOnlineMode) await writeKeyToPostgresDirect(key);
+    else if (pool && !isDbQuotaExceeded) scheduleDbWrite(key);
+
     try {
       broadcastStateUpdate(key);
     } catch (e) {}
-
-    if (pool && !isDbQuotaExceeded) scheduleDbWrite(key);
     return newVal;
   });
 }
@@ -3513,13 +3394,13 @@ app.use(async (req, res, next) => {
     req.path === "/readyz" ||
     req.path === "/api/health";
 
+  // Liveness/diagnostics and static assets must never await database hydration.
+  if (readinessExemptPath || !req.path.startsWith("/api/")) return next();
+
   // Cloud Run must be able to observe a live port immediately, but no business API
   // may read or mutate partially hydrated in-memory state. Static assets remain
   // available so the frontend can load and retry its API calls safely.
   if (isOnlineMode && !runtimeReady) {
-    if (readinessExemptPath || !req.path.startsWith("/api/")) {
-      return next();
-    }
     res.setHeader("Retry-After", "2");
     res.setHeader("Cache-Control", "no-store");
     return res.status(503).json({
@@ -17776,6 +17657,16 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
+    // The server bundle shares dist/ with the frontend, but is never a public asset.
+    app.use((req, res, next) => {
+      let assetPath: string;
+      try { assetPath = decodeURIComponent(req.path).replace(/\\/g, '/'); }
+      catch { return res.status(400).send('Invalid asset path'); }
+      if (/(^|\/)server\.cjs(?:\.map)?\/?$/i.test(assetPath)) {
+        return res.status(404).send('Asset not found');
+      }
+      next();
+    });
     app.use(express.static(distPath, {
       etag: true,
       lastModified: true,
@@ -17892,6 +17783,10 @@ async function startServer() {
 
   if (isOnlineMode) {
     startOnlineRuntimeInitializationLoop();
+  } else {
+    void ensureHydrated().catch((err: any) => {
+      console.error('[Startup] OFFLINE hydration failed:', err?.message || err);
+    });
   }
 }
 

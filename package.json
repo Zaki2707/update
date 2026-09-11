@@ -11,7 +11,7 @@
     "clean": "node scripts/clean.js",
     "lint": "tsc --noEmit",
     "security:audit": "node scripts/security-audit.cjs",
-    "hardening:regression": "tsx scripts/hardening-regression.ts"
+    "hardening:regression": "node --import tsx scripts/hardening-regression.ts"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.1",
