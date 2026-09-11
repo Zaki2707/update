@@ -76,6 +76,10 @@ function testServerGuards() {
   assert.match(server, /ONLINE_STARTUP_NOT_READY/);
   assert.match(server, /Retry-After", "2"/);
   assert.match(server, /function isOnlineRuntimeUsable\(\)/);
+  assert.match(server, /process\.env\.DATABASE_URL/);
+  assert.match(server, /name: "DATABASE_URL"/);
+  assert.match(server, /activeDbSource: "SQL_HOST" \| "DATABASE_URL" \| "NONE"/);
+  assert.match(server, /SQL_HOST[\s\S]*DATABASE_URL[\s\S]*Localhost TCP PostgreSQL/);
   assert.match(server, /hasHydratedPersistentState[\s\S]*pool[\s\S]*!isDbQuotaExceeded/);
   assert.match(server, /mergeLessonPlanDbSources\(/);
   assert.match(server, /madrasah_lessonPlans/);
