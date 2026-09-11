@@ -3485,6 +3485,12 @@ async function loadDataFromServer() {
             if (res.cbtTokenPrice !== undefined) {
                 appState.cbtTokenPrice = res.cbtTokenPrice;
             }
+            if (Array.isArray(res.eduGames)) {
+                appState.eduGames = res.eduGames;
+            }
+            if (Array.isArray(res.gameModes)) {
+                appState.gameModes = res.gameModes;
+            }
             if (typeof window.updateHeaderTokenBadge === 'function') {
                 window.updateHeaderTokenBadge();
             }
