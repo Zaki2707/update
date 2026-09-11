@@ -99,6 +99,11 @@ function testServerGuards() {
   assert.match(server, /LKPD_STUDENT_STATE_V1/);
   assert.match(server, /TEACHER_SYNC_SCOPE_V2/);
   assert.match(server, /TEACHER_MONITOR_SCOPE_V2/);
+  assert.match(server, /TEACHER_LIVECAM_SCOPE_V1/);
+  assert.match(server, /function teacherCanMonitorStudentRealtime\(/);
+  assert.match(server, /Guru hanya dapat membuka livecam siswa pada ujian aktif yang diampu/);
+  assert.match(server, /Guru hanya dapat membuka livecam untuk ujian mata pelajaran\/bank soal yang diampu/);
+  assert.match(server, /teacherCanMonitorStudentRealtime\(wsReq, user, target\)/);
   assert.match(server, /LKPD_STUDENT_SUBMISSION_WRITE_SCOPE/);
   assert.match(server, /LKPD_REALTIME_EVENT_V2/);
   assert.match(server, /STUDENT_ATTENDANCE_POLICY_V1/);
