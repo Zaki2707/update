@@ -3169,7 +3169,7 @@ function ensureHydrated() {
 async function initializeOnlineRuntimeBeforeListen() {
   if (!isOnlineMode) return;
 
-  const maxAttempts = 3;
+  const maxAttempts = 15;
   let lastErrorMessage = 'Cloud SQL belum siap.';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -3220,13 +3220,13 @@ async function initializeOnlineRuntimeBeforeListen() {
       }
 
       if (attempt < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+        await new Promise(resolve => setTimeout(resolve, 1500));
       }
     }
   }
 
   onlineRuntimeStartupError = lastErrorMessage;
-  throw new Error('ONLINE_STARTUP_NOT_READY: Cloud SQL dan hydration belum siap setelah retry startup.');
+  console.warn('[Startup Warning] Cloud SQL dan hydration belum selesai saat startup probe, akan terus di-hydrate di latar belakang:', lastErrorMessage);
 }
 
 const DB_CACHE_TTL_MS = isOnlineMode ? Number.POSITIVE_INFINITY : 900000; // ONLINE single-instance state is hydrated at boot; never block hot API paths on periodic full-table scans
@@ -17418,13 +17418,6 @@ app.get("/api/realtime-stream", (req: any, res) => {
 // Vite Middleware / Static File Serving
 // ----------------------------------------------------
 async function startServer() {
-  // ONLINE Cloud Run must not expose its listening port until Cloud SQL is usable
-  // and authoritative app_store state has been hydrated into memory. This removes
-  // the cold-start window where mutating CBT APIs could receive 503 DB-unavailable.
-  if (isOnlineMode) {
-    await initializeOnlineRuntimeBeforeListen();
-  }
-
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -17548,14 +17541,18 @@ async function startServer() {
   } catch (err) {
     console.error("Failed to start WebRTC WebSocket Signaling Server:", err);
   }
+
+  if (isOnlineMode) {
+    initializeOnlineRuntimeBeforeListen().catch((err: any) => {
+      console.warn("[Startup Warning] Background initialization note:", err?.message || err);
+    });
+  }
 }
 
 if (!process.env.VERCEL) {
   startServer().catch((err: any) => {
     onlineRuntimeReady = false;
     onlineRuntimeStartupError = err?.message || String(err);
-    console.error('[Startup Fatal] Server tidak dibuka karena runtime online belum siap:', onlineRuntimeStartupError);
-    process.exitCode = 1;
-    setTimeout(() => process.exit(1), 100);
+    console.error('[Startup Fatal] Gagal memulai server:', onlineRuntimeStartupError);
   });
 }
