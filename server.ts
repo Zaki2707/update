@@ -5682,7 +5682,8 @@ function enforceTenantMutationOwnership(req: any, res: any, authUser: any): bool
     ['/api/calendar-events', () => calendarEvents || []],
     ['/api/generated-exams', () => generatedExams || []],
     ['/api/lesson-plans', () => lessonPlans || []],
-    ['/api/games', () => eduGames || []]
+    ['/api/games', () => eduGames || []],
+    ['/api/import-groups', () => importGroups || []]
   ];
   for (const [collectionPath, getList] of collectionResources) {
     if (p !== collectionPath) continue;
@@ -5712,7 +5713,8 @@ function enforceTenantMutationOwnership(req: any, res: any, authUser: any): bool
     [/^\/api\/generated-exams\/([^/]+)$/, () => generatedExams || []],
     [/^\/api\/lesson-plans\/([^/]+)$/, () => lessonPlans || []],
     [/^\/api\/games\/([^/]+)$/, () => eduGames || []],
-    [/^\/api\/chats\/([^/]+)$/, () => chats || []]
+    [/^\/api\/chats\/([^/]+)$/, () => chats || []],
+    [/^\/api\/import-groups\/([^/]+)$/, () => importGroups || []]
   ];
   for (const [re, getList] of resources) {
     const m = p.match(re);
@@ -6260,12 +6262,17 @@ app.delete("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'ad
   const { id } = req.params;
   
   // 1. Find the teacher to get their profile photo
-  const teacherToDelete = (teachers || []).find(t => String(t.id) === String(id));
-  if (!teacherToDelete) {
-    return res.status(404).json({ success: false, message: "Guru tidak ditemukan." });
-  }
   const authUser = getAuthUser(req);
   const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
+  const teacherCandidates = (teachers || []).filter((t: any) => String(t.id) === String(id));
+  const teacherToDelete = teacherCandidates.find((t: any) => isItemForCurrentMadrasah(t, req)) ||
+    (isBos && teacherCandidates.length === 1 ? teacherCandidates[0] : null);
+  if (!teacherToDelete) {
+    if (isBos && teacherCandidates.length > 1) {
+      return res.status(409).json({ success: false, message: "ID guru ambigu lintas tenant; pilih tenant target secara eksplisit." });
+    }
+    return res.status(404).json({ success: false, message: "Guru tidak ditemukan pada madrasah ini." });
+  }
   if (!isBos && !isItemForCurrentMadrasah(teacherToDelete, req)) {
     return res.status(403).json({ success: false, message: "Akses ditolak: guru bukan milik madrasah Anda." });
   }
@@ -6293,7 +6300,7 @@ app.delete("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'ad
   await updateStoreKeyWithLock('teacherAttendance', (currentVal) => {
     const list = Array.isArray(currentVal) ? currentVal : [];
     list.forEach(record => {
-      if (record && String(record.teacherId) === String(id) && (isBos || isItemForCurrentMadrasah(record, req)) && record.photo) {
+      if (record && String(record.teacherId) === String(id) && isItemForCurrentMadrasah(record, req) && record.photo) {
         photoUrlsToDelete.add(record.photo);
         record.photo = ''; // clear photo
       }
@@ -6318,7 +6325,7 @@ app.delete("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'ad
   }
   
   // 4. Finally delete the teacher from list
-  teachers = teachers.filter(t => String(t.id) !== String(id));
+  teachers = teachers.filter((t: any) => !(String(t.id) === String(id) && isItemForCurrentMadrasah(t, req)));
   await saveData('teachers', teachers);
   
   res.json({ success: true, message: "Guru dan seluruh riwayat foto absensinya berhasil dihapus." });
@@ -11341,33 +11348,27 @@ app.delete("/api/lesson-plans/:id", async (req, res) => {
 
 app.get("/api/import-groups", (req, res) => {
   const { subjectId } = req.query;
-  if (subjectId) {
-    const filtered = importGroups.filter(g => String(g.subjectId) === String(subjectId));
-    return res.json({ success: true, data: filtered });
-  }
-  res.json({ success: true, data: importGroups });
+  let list = filterByMadrasah(importGroups || [], req);
+  if (subjectId) list = list.filter((g: any) => String(g.subjectId) === String(subjectId));
+  res.json({ success: true, data: list });
 });
 
 app.post("/api/import-groups", async (req, res) => {
-  const grp = req.body;
-  if (!grp.id) {
-    grp.id = "grp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
-    importGroups.push(grp);
-  } else {
-    const idx = importGroups.findIndex(g => String(g.id) === String(grp.id));
-    if (idx !== -1) {
-      importGroups[idx] = grp;
-    } else {
-      importGroups.push(grp);
-    }
-  }
+  const raw = req.body && typeof req.body === 'object' ? { ...req.body } : {};
+  delete raw.madrasahId;
+  delete raw.madrasahSlug;
+  if (!raw.id) raw.id = "grp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
+  const grp = tagNewRecord(raw, req);
+  const idx = importGroups.findIndex((g: any) => String(g.id) === String(grp.id) && isItemForCurrentMadrasah(g, req));
+  if (idx !== -1) importGroups[idx] = { ...importGroups[idx], ...grp };
+  else importGroups.push(grp);
   await saveData('importGroups', importGroups);
   res.json({ success: true, data: grp, message: "Kelompok berhasil disimpan" });
 });
 
 app.delete("/api/import-groups/:id", async (req, res) => {
   const { id } = req.params;
-  importGroups = importGroups.filter(g => String(g.id) !== String(id));
+  importGroups = importGroups.filter((g: any) => !(String(g.id) === String(id) && isItemForCurrentMadrasah(g, req)));
   await saveData('importGroups', importGroups);
   res.json({ success: true, message: "Kelompok berhasil dihapus" });
 });
