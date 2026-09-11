@@ -81,32 +81,7 @@ function testServerGuards() {
   assert.match(app, /sessionStorage\.setItem\(AUTH_SESSION_TOKEN_KEY/);
   assert.equal(app.includes("localStorage.setItem('madrasah_current_user', JSON.stringify(loggedInUser))"), false);
   assert.match(chat, /chatEscape\(msg\.text\)/);
-  assert.equal(chat.includes('
-  for (const destructive of [
-    'exams = [...otherExams, ...taggedIncoming]',
-    'rooms = [...otherRooms, ...taggedIncoming]',
-    'journals = [...otherJournals, ...taggedIncoming]',
-    'calendarEvents = [...otherEvents, ...taggedIncoming]',
-    'generatedExams = [...otherExams, ...taggedIncoming]'
-  ]) {
-    assert.equal(server.includes(destructive), false, 'destructive online batch pattern remains: ' + destructive);
-  }
-
-  for (const legacyKey of [
-    'const key = sId + "_" + eId;',
-    "const key = studentId + '_' + examId;",
-    'const key = studentId + "_" + examId;'
-  ]) {
-    assert.equal(server.includes(legacyKey), false, 'unscoped CBT key remains: ' + legacyKey);
-  }
-}
-
-await testSameKeySerializes();
-await testDifferentKeysCanProgress();
-await testFailureDoesNotPoisonKey();
-testServerGuards();
-console.log('Hardening regression passed.');
- + '{msg.text}'), false);
+  assert.equal(chat.includes('$' + '{msg.text}'), false);
   const staffAiRoutes = [
     '/api/gemini/generate-questions',
     '/api/gemini/generate-enrichment',
