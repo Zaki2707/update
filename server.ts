@@ -3471,6 +3471,34 @@ function sanitizeTeacherForStudent(teacher: any) {
   };
 }
 
+function getTenantStudentIdentitySet(req: any): Set<string> {
+  const ids = new Set<string>();
+  for (const student of filterByMadrasah(students || [], req)) {
+    if (student?.id !== undefined && student?.id !== null) ids.add(String(student.id));
+    if (student?.nis !== undefined && student?.nis !== null) ids.add(String(student.nis));
+  }
+  return ids;
+}
+
+function filterStudentKeyedObjectForRequest(source: any, req: any): Record<string, any> {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+  const allowed = getTenantStudentIdentitySet(req);
+  return Object.fromEntries(
+    Object.entries(source).filter(([key]) => allowed.has(String(key)))
+  );
+}
+
+function filterStudentLinkedListForRequest(source: any, req: any): any[] {
+  if (!Array.isArray(source)) return [];
+  const allowed = getTenantStudentIdentitySet(req);
+  return source.filter((item: any) => {
+    if (isItemForCurrentMadrasah(item, req)) return true;
+    const sid = String(item?.studentId || item?.student_id || item?.nis || item?.userId || '');
+    return sid && allowed.has(sid);
+  });
+}
+
+
 function sanitizeSettingsForClient(settings: any) {
   if (!settings || typeof settings !== 'object') return settings || null;
   const safe: any = { ...settings };
@@ -3647,15 +3675,15 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     questionBankGroups: filteredQGroups,
     questions: filteredQuestions,
     schedules: filteredSchedules,
-    savedRosters,
-    timeSlots,
+    savedRosters: Array.isArray(savedRosters) ? filterByMadrasah(savedRosters, req) : savedRosters,
+    timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : timeSlots,
     kbmDuration,
     exams: filteredExams,
     lkpdList: filteredLkpds,
     rooms: filteredRooms,
     journals: filteredJournals,
-    gradeCategories,
-    calendarEvents,
+    gradeCategories: Array.isArray(gradeCategories) ? filterByMadrasah(gradeCategories, req) : gradeCategories,
+    calendarEvents: filterByMadrasah(calendarEvents || [], req),
     generatedExams: filteredGeneratedExams,
     settings: sanitizedSettings,
     lessonPlans: filteredLessonPlans,
@@ -3663,16 +3691,16 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     teacherAttendance: isStudent ? [] : filterByMadrasah(teacherAttendance || [], req),
     customGradeColumns: isStudent ? {} : customGradeColumns,
     childguardRules: isStudent ? [] : childguardRules,
-    childguardLogs: isStudent ? [] : childguardLogs,
-    childguardLocations: isStudent ? {} : childguardLocations,
+    childguardLogs: isStudent ? [] : (isBosUser ? childguardLogs : filterStudentLinkedListForRequest(childguardLogs, req)),
+    childguardLocations: isStudent ? {} : (isBosUser ? childguardLocations : filterStudentKeyedObjectForRequest(childguardLocations, req)),
     childguardStatus: isStudent
       ? Object.fromEntries(Object.entries(childguardStatus || {}).filter(([statusKey]) => {
           const own = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
           return String(statusKey) === String(authUser?.id || '') || String(statusKey) === String(own?.nis || '');
         }))
-      : childguardStatus,
+      : (isBosUser ? childguardStatus : filterStudentKeyedObjectForRequest(childguardStatus, req)),
     madrasahs: sanitizedMadrasahs,
-    tokenRequests: isStudent ? [] : tokenRequests,
+    tokenRequests: isStudent ? [] : (isBosUser ? tokenRequests : filterByMadrasah(tokenRequests || [], req)),
     cbtTokenPrice,
     eduGames: getGamesForRequest(req),
     gameAttempts: isStudent
