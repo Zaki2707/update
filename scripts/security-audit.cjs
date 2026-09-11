@@ -34,6 +34,8 @@ const checks = [
   ['CORS origin allowlist exists', server.includes('ALLOWED_ORIGINS') && server.includes('originAllowed')],
   ['System restore image normalization exists', server.includes('persistRestoredImageData')],
   ['Student attendance privacy exists', server.includes("String(item.studentId || '') === String(authUser.id)")],
+  ['Attendance existing-record matching is tenant scoped', server.includes('isItemForCurrentMadrasah(a, req) &&\n        (String(a.studentId) === String(studentId)') && server.includes('isItemForCurrentMadrasah(a, req) &&\n        String(a.teacherId) === String(teacherId)')],
+  ['Role mutations resolve user inside tenant', server.includes('ID pengguna ambigu; pilih tenant dan akun target secara eksplisit.') && server.includes('resolveTenantItemIndexById(students, userId, req)') && server.includes('resolveTenantItemIndexById(teachers, userId, req)')],
   ['Student grade privacy exists', server.includes("item.studentId || item.student_id")],
   ['DB write throttle declarations exist', server.includes('const DB_WRITE_THROTTLE_INTERVAL = 3000;') && server.includes('const dbWriteTimeouts = new Map<string, NodeJS.Timeout>()') && server.includes('const lastDbWriteTimes = new Map<string, number>()')],
   ['LKPD role uses authenticated identity', server.includes('const authenticatedUser = req.user || getAuthUser(req)')],
