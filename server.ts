@@ -2206,6 +2206,7 @@ function updateMemoryKey(key: string, value: any) {
   else if (key === 'importGroups') importGroups = value;
   else if (key === 'photoCloudinaryMap') photoCloudinaryMap = value;
   else if (key === 'eduGames') eduGames = value;
+  else if (key === 'gameModes') gameModes = value;
   else if (key === 'gameAttempts') gameAttempts = value;
   else if (key === 'madrasahs') madrasahs = value;
   else if (key === 'tokenRequests') tokenRequests = value;
@@ -2257,6 +2258,7 @@ function getMemoryKeyValue(key: string) {
   if (key === 'importGroups') return importGroups;
   if (key === 'photoCloudinaryMap') return photoCloudinaryMap;
   if (key === 'eduGames') return eduGames;
+  if (key === 'gameModes') return gameModes;
   if (key === 'gameAttempts') return gameAttempts;
   if (key === 'madrasahs') return madrasahs;
   if (key === 'tokenRequests') return tokenRequests;
@@ -2685,16 +2687,26 @@ let examMessages = bootStore['examMessages'] || {};
 let examViolationLogs: Record<string, any[]> = bootStore['examViolationLogs'] || {};
 let importGroups: any[] = bootStore['importGroups'] || [];
 let eduGames: any[] = bootStore['eduGames'] || [];
+let gameModes: any[] = bootStore['gameModes'] || [];
 let gameAttempts: any[] = bootStore['gameAttempts'] || [];
 let childguardRules = bootStore['childguardRules'] || {};
 let childguardLogs = bootStore['childguardLogs'] || [];
 let childguardLocations = bootStore['childguardLocations'] || {};
 let childguardStatus = bootStore['childguardStatus'] || {};
+const configuredInitialAdminPassword = String(process.env.INITIAL_ADMIN_PASSWORD || '');
+const safeInitialAdminPassword = configuredInitialAdminPassword.length >= 8 && configuredInitialAdminPassword.length <= 128
+  ? configuredInitialAdminPassword
+  : '';
+
+if (!bootStore['settings'] && configuredInitialAdminPassword && !safeInitialAdminPassword) {
+  console.warn('[Security] INITIAL_ADMIN_PASSWORD diabaikan karena harus 8-128 karakter.');
+}
+
 let appSettings = bootStore['settings'] || {
   schoolName: 'Madrasah Bisa',
   adminName: 'Administrator',
   adminUser: 'admin',
-  adminPass: 'admin123',
+  adminPass: safeInitialAdminPassword,
   radius: 100,
   accuracy: 10,
   theme: 'emerald',
@@ -2823,6 +2835,7 @@ function applyExtendedDbState(dbData: Record<string, any>) {
   if (dbData['examViolationLogs'] !== undefined) examViolationLogs = dbData['examViolationLogs'];
   if (dbData['importGroups'] !== undefined) importGroups = dbData['importGroups'];
   if (dbData['eduGames'] !== undefined) eduGames = dbData['eduGames'];
+  if (dbData['gameModes'] !== undefined) gameModes = Array.isArray(dbData['gameModes']) ? dbData['gameModes'] : [];
   if (dbData['gameAttempts'] !== undefined) gameAttempts = dbData['gameAttempts'];
   if (dbData['photoCloudinaryMap'] !== undefined) photoCloudinaryMap = dbData['photoCloudinaryMap'] || {};
   if (dbData['madrasahs'] !== undefined) {
@@ -3979,6 +3992,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     tokenRequests: isStudent ? [] : (isBosUser ? tokenRequests : filterByMadrasah(tokenRequests || [], req)),
     cbtTokenPrice,
     eduGames: getGamesForRequest(req),
+    gameModes: filterByMadrasah(gameModes || [], req),
     gameAttempts: isStudent
       ? filterByMadrasah(gameAttempts || [], req).filter((attempt: any) => String(attempt?.studentId || '') === String(authUser?.id || ''))
       : filterByMadrasah(gameAttempts || [], req)
@@ -16006,7 +16020,7 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       'schedules', 'savedRosters', 'timeSlots', 'kbmDuration', 'questionBankGroups',
       'questionBank', 'questions', 'exams', 'lkpdList', 'rooms', 'journals',
       'gradeCategories', 'customGradeColumns', 'calendarEvents', 'generatedExams',
-      'lessonPlans', 'grades', 'gameModes', 'classGrades', 'childguardStatus',
+      'lessonPlans', 'grades', 'gameModes', 'childguardStatus',
       'settings', 'schoolLocations', 'schoolLocationSettings'
     ]);
     if (isStudentSyncRole && !studentSyncKeys.has(syncKey)) {
@@ -16152,6 +16166,11 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     else if (key === 'generatedExams') { generatedExams = mergeTenantCrudSyncData(generatedExams, data, req); await saveData('generatedExams', generatedExams); }
     else if (key === 'lessonPlans') { lessonPlans = mergeTenantCrudSyncData(lessonPlans, data, req); await saveData('lessonPlans', lessonPlans); }
     else if (key === 'grades') { grades = mergeTenantCrudSyncData(grades, data, req); await saveData('grades', grades); }
+    else if (key === 'gameModes') {
+      if (!Array.isArray(data)) return res.status(400).json({ success: false, message: 'gameModes harus berupa array.' });
+      gameModes = mergeTenantCrudSyncData(gameModes, data, req);
+      await saveData('gameModes', gameModes);
+    }
     else if (key === 'settings') {
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
         return res.status(400).json({ success: false, message: 'Payload settings tidak valid.' });
