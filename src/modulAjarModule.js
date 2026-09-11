@@ -2452,7 +2452,7 @@ window.saveImportGroup = async function(event, subjectId) {
     };
 
     appState.importGroups.push(newGroup);
-    localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
+    appState._importGroupsLoaded = true;
 
     try {
         await fetch('/api/import-groups', {
@@ -2540,7 +2540,7 @@ window.updateImportGroup = async function(event, groupId, subjectId) {
         if (group) {
             group.name = name;
             group.description = desc;
-            localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
+            appState._importGroupsLoaded = true;
             try {
                 await fetch('/api/import-groups', {
                     method: 'POST',
@@ -2565,7 +2565,7 @@ window.deleteImportGroup = async function(groupId, subjectId) {
 
     if (appState.importGroups) {
         appState.importGroups = appState.importGroups.filter(g => String(g.id) !== String(groupId));
-        localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
+        appState._importGroupsLoaded = true;
         try {
             await fetch(`/api/import-groups/${groupId}`, {
                 method: 'DELETE'
@@ -2601,12 +2601,9 @@ window.openDirectImportModulModal = function(subjectId, preselectedGroupId = '')
     const subjectName = subject ? subject.name : 'Mata Pelajaran';
     const canonicalSubId = subject ? subject.id : subjectId;
 
-    if (!appState.importGroups) {
-        try {
-            appState.importGroups = JSON.parse(localStorage.getItem('madrasah_import_groups')) || [];
-        } catch(e) {
-            appState.importGroups = [];
-        }
+    if (!appState._importGroupsLoaded && typeof window.loadImportGroupsFromServer === 'function') {
+        window.loadImportGroupsFromServer().then(() => window.openDirectImportModulModal(subjectId, preselectedGroupId));
+        return;
     }
     const subjectGroups = (appState.importGroups || []).filter(g => isSameSubject(g.subjectId, canonicalSubId, appState.subjects));
 
@@ -2926,7 +2923,7 @@ window.confirmDirectImportSave = async function(subjectId, subjectName) {
                 createdAt: new Date().toISOString()
             };
             appState.importGroups.push(newGrp);
-            localStorage.setItem('madrasah_import_groups', JSON.stringify(appState.importGroups));
+            appState._importGroupsLoaded = true;
             try {
                 await fetch('/api/import-groups', {
                     method: 'POST',
