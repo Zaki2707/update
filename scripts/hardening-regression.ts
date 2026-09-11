@@ -79,8 +79,14 @@ function testServerGuards() {
   assert.equal(server.includes('process.env.DATABASE_URL'), false, 'DATABASE_URL runtime fallback must stay removed');
   assert.equal(server.includes('name: "DATABASE_URL"'), false, 'DATABASE_URL candidate must stay removed');
   assert.match(server, /activeDbSource: "SQL_HOST" \| "NONE"/);
-  assert.match(server, /ONLINE mode requires Cloud SQL env/);
+  assert.match(server, /process\.env\.SQL_USER[\s\S]*process\.env\.PGUSER[\s\S]*process\.env\.SQL_ADMIN_USER/);
+  assert.match(server, /process\.env\.SQL_PASSWORD[\s\S]*process\.env\.PGPASSWORD[\s\S]*process\.env\.SQL_ADMIN_PASSWORD/);
+  assert.match(server, /process\.env\.SQL_DB_NAME[\s\S]*process\.env\.PGDATABASE[\s\S]*cloud_sql_production_database/);
+  assert.match(server, /for \(const baseDir of \['\/cloudsql', '\/app\/cloudsql'\]\)/);
   assert.match(server, /ONLINE SQL_HOST must be a Cloud SQL Unix socket path/);
+  assert.match(server, /No mounted Cloud SQL Unix socket was found/);
+  assert.match(server, /hasHydratedPersistentState = true;[\s\S]*await runOneTimeMigrations\(\)/);
+  assert.match(server, /reason,[\s\S]*readyAt: onlineRuntimeReadyAt/);
   assert.match(server, /if \(isOnlineMode\)[\s\S]*candidateConfigs\.push\(\{[\s\S]*name: `SQL_HOST/);
   assert.match(server, /else \{[\s\S]*name: "Localhost TCP PostgreSQL"/);
   assert.equal(server.includes("'cloud_sql_development_database'"), false, 'online DB name guessing must stay removed');

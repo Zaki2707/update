@@ -1129,9 +1129,28 @@ async function determineAndInitPool() {
   const candidateConfigs: Array<{ name: string; config: any }> = [];
 
   const configuredHost = String(process.env.SQL_HOST || '').trim();
-  const configuredUser = String(process.env.SQL_USER || '').trim();
-  const configuredPassword = String(process.env.SQL_PASSWORD || '');
-  const configuredDbName = String(process.env.SQL_DB_NAME || '').trim();
+  const configuredUser = String(
+    process.env.SQL_USER ||
+    process.env.PGUSER ||
+    process.env.SQL_ADMIN_USER ||
+    ''
+  ).trim();
+  const configuredPassword = String(
+    process.env.SQL_PASSWORD ||
+    process.env.PGPASSWORD ||
+    process.env.SQL_ADMIN_PASSWORD ||
+    ''
+  );
+  const configuredDbName = String(
+    process.env.SQL_DB_NAME ||
+    process.env.PGDATABASE ||
+    'cloud_sql_production_database'
+  ).trim();
+  const configuredConnectionName = String(
+    process.env.CLOUD_SQL_CONNECTION_NAME ||
+    process.env.INSTANCE_CONNECTION_NAME ||
+    ''
+  ).trim();
 
   const resolveConfiguredSocketHost = (host: string): string => {
     if (!host) return host;
@@ -1148,39 +1167,70 @@ async function determineAndInitPool() {
 
   if (isOnlineMode) {
     const missing: string[] = [];
-    if (!configuredHost) missing.push('SQL_HOST');
-    if (!configuredUser) missing.push('SQL_USER');
-    if (!configuredPassword) missing.push('SQL_PASSWORD');
-    if (!configuredDbName) missing.push('SQL_DB_NAME');
+    if (!configuredUser) missing.push('SQL_USER/PGUSER');
+    if (!configuredPassword) missing.push('SQL_PASSWORD/PGPASSWORD');
 
     if (missing.length > 0) {
       activeDbSource = "NONE";
       dbConnectionErrorMsg = `ONLINE_CLOUD_SQL_CONFIG_MISSING: ${missing.join(', ')}`;
-      console.error(`[Database Required] ONLINE mode requires Cloud SQL env: ${missing.join(', ')}.`);
+      console.error(`[Database Required] ONLINE mode requires Cloud SQL credentials: ${missing.join(', ')}.`);
       return;
     }
 
-    if (!configuredHost.startsWith('/cloudsql/') && !configuredHost.startsWith('/app/cloudsql/')) {
-      activeDbSource = "NONE";
-      dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_HOST_INVALID';
-      console.error('[Database Required] ONLINE SQL_HOST must be a Cloud SQL Unix socket path.');
-      return;
-    }
+    const socketHosts = new Set<string>();
 
-    const socketHost = resolveConfiguredSocketHost(configuredHost);
-    candidateConfigs.push({
-      name: `SQL_HOST (${socketHost} -> ${configuredDbName})`,
-      config: {
-        host: socketHost,
-        user: configuredUser,
-        password: configuredPassword,
-        database: configuredDbName,
-        max: 10,
-        connectionTimeoutMillis,
-        keepAlive: true,
-        idleTimeoutMillis: 15000,
+    if (configuredHost) {
+      if (!configuredHost.startsWith('/cloudsql/') && !configuredHost.startsWith('/app/cloudsql/')) {
+        activeDbSource = "NONE";
+        dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_HOST_INVALID';
+        console.error('[Database Required] ONLINE SQL_HOST must be a Cloud SQL Unix socket path.');
+        return;
       }
-    });
+      socketHosts.add(resolveConfiguredSocketHost(configuredHost));
+    }
+
+    if (configuredConnectionName) {
+      socketHosts.add(resolveConfiguredSocketHost(`/cloudsql/${configuredConnectionName}`));
+      socketHosts.add(resolveConfiguredSocketHost(`/app/cloudsql/${configuredConnectionName}`));
+    }
+
+    // Cloud Run exposes mounted Cloud SQL instances under /cloudsql. Older working
+    // deployments did not always define SQL_HOST explicitly, so retain safe
+    // auto-discovery while remaining Cloud-SQL-only.
+    for (const baseDir of ['/cloudsql', '/app/cloudsql']) {
+      try {
+        if (!fs.existsSync(baseDir)) continue;
+        for (const entry of fs.readdirSync(baseDir)) {
+          const candidatePath = path.join(baseDir, entry);
+          try {
+            if (fs.statSync(candidatePath).isDirectory()) socketHosts.add(candidatePath);
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    if (socketHosts.size === 0) {
+      activeDbSource = "NONE";
+      dbConnectionErrorMsg = 'ONLINE_CLOUD_SQL_SOCKET_NOT_FOUND';
+      console.error('[Database Required] No mounted Cloud SQL Unix socket was found.');
+      return;
+    }
+
+    for (const socketHost of socketHosts) {
+      candidateConfigs.push({
+        name: `SQL_HOST (${socketHost} -> ${configuredDbName})`,
+        config: {
+          host: socketHost,
+          user: configuredUser,
+          password: configuredPassword,
+          database: configuredDbName,
+          max: 10,
+          connectionTimeoutMillis,
+          keepAlive: true,
+          idleTimeoutMillis: 15000,
+        }
+      });
+    }
   } else {
     // Offline mode keeps local PostgreSQL compatibility. It never uses DATABASE_URL.
     if (configuredHost && configuredDbName) {
@@ -3203,8 +3253,16 @@ async function hydrate() {
     if (dbData['childguardStatus'] !== undefined) childguardStatus = dbData['childguardStatus'];
     applyExtendedDbState(dbData);
 
-    await runOneTimeMigrations();
     hasHydratedPersistentState = true;
+
+    try {
+      await runOneTimeMigrations();
+    } catch (migrationErr: any) {
+      console.error(
+        "[Hydration Migration] Persistent state was loaded, but a one-time migration could not be persisted:",
+        migrationErr?.message || migrationErr
+      );
+    }
 
     console.log("All data hydrated successfully from PostgreSQL.");
     try {
@@ -3486,12 +3544,20 @@ app.get("/readyz", (req, res) => {
 });
 app.get("/api/health", (req, res) => {
   const ready = isOnlineRuntimeUsable();
+  const dbConnected = Boolean(pool && !isDbQuotaExceeded);
+  const hydrated = Boolean(hasHydratedPersistentState);
+  const reason = ready
+    ? null
+    : (!dbConnected
+      ? 'CLOUD_SQL_NOT_CONNECTED'
+      : (!hydrated ? 'HYDRATION_PENDING' : 'RUNTIME_STARTING'));
   res.status(200).json({
     status: ready ? "ok" : "starting",
     ready,
     mode: storageMode,
-    dbConnected: Boolean(pool && !isDbQuotaExceeded),
-    hydrated: Boolean(hasHydratedPersistentState),
+    dbConnected,
+    hydrated,
+    reason,
     readyAt: onlineRuntimeReadyAt
   });
 });
@@ -4886,14 +4952,20 @@ app.get("/api/db-status", async (req, res) => {
 
   // 1. Check SQL (PostgreSQL/Cloud SQL)
   try {
-    const hasEnv = Boolean(
-      process.env.SQL_HOST &&
-      process.env.SQL_USER &&
-      process.env.SQL_PASSWORD &&
-      process.env.SQL_DB_NAME
+    const hasCredentials = Boolean(
+      (process.env.SQL_USER || process.env.PGUSER || process.env.SQL_ADMIN_USER) &&
+      (process.env.SQL_PASSWORD || process.env.PGPASSWORD || process.env.SQL_ADMIN_PASSWORD)
     );
+    const hasSocketHint = Boolean(
+      process.env.SQL_HOST ||
+      process.env.CLOUD_SQL_CONNECTION_NAME ||
+      process.env.INSTANCE_CONNECTION_NAME ||
+      fs.existsSync('/cloudsql') ||
+      fs.existsSync('/app/cloudsql')
+    );
+    const hasEnv = Boolean(hasCredentials && hasSocketHint);
     if (!hasEnv) {
-      status.sql.message = "Konfigurasi Cloud SQL belum lengkap. Isi SQL_HOST, SQL_USER, SQL_PASSWORD, dan SQL_DB_NAME.";
+      status.sql.message = "Konfigurasi Cloud SQL belum lengkap: credential PostgreSQL atau mount socket Cloud SQL belum tersedia.";
     } else {
       status.sql.configured = true;
       if (dbInitPromise) {
