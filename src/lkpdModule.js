@@ -31,6 +31,37 @@ function initLkpdState() {
     return window.appState.lkpdList;
 }
 
+window.syncLkpdStudentState = async function(payload = {}) {
+    try {
+        const response = await fetch('/api/lkpd/student-state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json().catch(() => ({ success: false }));
+        if (!response.ok || !data.success) {
+            if (response.status !== 401 && response.status !== 403) {
+                console.warn('LKPD student-state rejected:', data.message || response.status);
+            }
+            return { success: false, status: response.status, message: data.message || 'Gagal sinkron state LKPD.' };
+        }
+        return data;
+    } catch (err) {
+        console.warn('LKPD student-state sync error:', err);
+        return { success: false, message: 'Koneksi state LKPD terputus.' };
+    }
+};
+
+window.ackLkpdStudentMessage = async function(lkpdId) {
+    try {
+        await fetch('/api/lkpd/message/ack', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lkpdId })
+        });
+    } catch (_) {}
+};
+
 // Persist LKPD state
 window.saveLkpdState = async function() {
     if (!window.appState || !Array.isArray(window.appState.lkpdList)) return;
@@ -1762,6 +1793,8 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
     // Record active session
     if (!isTeacherPreview) {
         window.activeLkpdSession = { lkpdId: lkpd.id, studentId: stId, studentName: stName, nis: stNis };
+        window._lastLkpdStudentMessage = '';
+        window.__latestLkpdFrame = null;
         
         // Set active status on server
         const sessionKey = stId + '_' + lkpd.id;
@@ -1774,8 +1807,12 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
             totalQuestions: lkpd.markers.length,
             startedAt: new Date().toISOString()
         };
-        if (window.syncExamStateToServer) {
-            window.syncExamStateToServer({ sessionKey, sessionData: appState.activeExamSessions[sessionKey] });
+        if (window.syncLkpdStudentState) {
+            window.syncLkpdStudentState({
+                lkpdId: lkpd.id,
+                active: true,
+                answeredCount: appState.activeExamSessions[sessionKey].answeredCount
+            });
         }
 
         // Initialize Camera PIP
@@ -1837,8 +1874,13 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
                 const key = window.activeLkpdSession.studentId + '_' + window.activeLkpdSession.lkpdId;
                 if (!appState.studentOutOfTab) appState.studentOutOfTab = {};
                 appState.studentOutOfTab[key] = false;
-                if (window.syncExamStateToServer) {
-                    window.syncExamStateToServer({ outOfTab: { [key]: false } });
+                if (window.syncLkpdStudentState) {
+                    window.syncLkpdStudentState({
+                        lkpdId: window.activeLkpdSession.lkpdId,
+                        active: true,
+                        outOfTab: false,
+                        answeredCount: Object.values(window.lkpdDraftAnswers || {}).filter(v => String(v).trim().length > 0).length
+                    });
                 }
             }
         });
@@ -1856,79 +1898,73 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
         });
     }
 
-    // Setup real-time poll for message, block state, and force finish
+    // Dedicated identity-scoped LKPD heartbeat + monitoring poll.
     if (window._lkpdStudentPollInterval) clearInterval(window._lkpdStudentPollInterval);
+    window._lkpdFrameUploadTick = 0;
     window._lkpdStudentPollInterval = setInterval(async () => {
         if (!window.activeLkpdSession) {
             clearInterval(window._lkpdStudentPollInterval);
             return;
         }
-        
-        try {
-            const res = await fetch('/api/exam-monitoring-state');
-            const data = await res.json();
-            if (data.success) {
-                // 1. Check for incoming messages
-                const { lkpdId, studentId } = window.activeLkpdSession;
-                const pMsg = data.examMessages && data.examMessages[studentId + '_' + lkpdId];
-                const bMsg = data.examMessages && data.examMessages['broadcast_' + lkpdId];
-                const activeMsg = pMsg || bMsg;
-                if (activeMsg) {
-                    showToast(`PESAN GURU: "${activeMsg}"`, 'info', 8000);
-                    // Clear displayed message in local map
-                    if (data.examMessages[studentId + '_' + lkpdId]) {
-                        delete data.examMessages[studentId + '_' + lkpdId];
-                        await fetch('/api/exam-monitoring-state', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ messages: data.examMessages, replaceMessages: true })
-                        });
-                    }
-                }
-                
-                // 2. Check block status
-                const isBlocked = data.blockedStudents && (data.blockedStudents[studentId + '_' + lkpdId] === true || data.blockedStudents[lkpdId + '_' + studentId] === true);
-                if (isBlocked) {
-                    let blockOverlay = document.getElementById('lkpd-blocked-overlay');
-                    if (!blockOverlay) {
-                        blockOverlay = document.createElement('div');
-                        blockOverlay.id = 'lkpd-blocked-overlay';
-                        blockOverlay.className = 'fixed inset-0 z-[110] flex flex-col items-center justify-center bg-rose-950/95 text-white p-6 text-center space-y-4';
-                        blockOverlay.innerHTML = `
-                            <div class="w-20 h-20 bg-rose-900 rounded-full flex items-center justify-center text-4xl animate-bounce">
-                                <i class="fa-solid fa-ban"></i>
-                            </div>
-                            <h2 class="font-black text-2xl">AKSES LKPD DIBLOKIR</h2>
-                            <p class="text-xs text-rose-200 max-w-md">Layar pengerjaan Anda telah diblokir oleh guru pengawas karena terindikasi melakukan pelanggaran tata tertib.</p>
-                            <p class="text-[11px] text-rose-300">Hubungi pengawas untuk membuka kembali akses Anda.</p>
-                        `;
-                        document.body.appendChild(blockOverlay);
-                    }
-                } else {
-                    document.getElementById('lkpd-blocked-overlay')?.remove();
-                }
 
-                // 3. Update heartbeat/answered count for real-time monitoring
-                if (window.syncExamStateToServer && window.activeLkpdSession) {
-                    const { lkpdId, studentId, studentName } = window.activeLkpdSession;
-                    const sessionKey = studentId + '_' + lkpdId;
-                    const answeredCount = Object.values(window.lkpdDraftAnswers || {}).filter(v => String(v).trim().length > 0).length;
-                    
-                    // Simple heartbeat update
-                    window.syncExamStateToServer({
-                        sessionKey,
-                        sessionData: {
-                            ...(appState.activeExamSessions?.[sessionKey] || {}),
-                            studentId,
-                            studentName,
-                            lkpdId,
-                            answeredCount,
-                            lastActiveAt: new Date().toISOString()
-                        }
-                    });
-                }
+        const { lkpdId, studentId } = window.activeLkpdSession;
+        const answeredCount = Object.values(window.lkpdDraftAnswers || {}).filter(v => String(v).trim().length > 0).length;
+        const payload = { lkpdId, active: true, answeredCount };
+
+        window._lkpdFrameUploadTick = (Number(window._lkpdFrameUploadTick || 0) + 1) % 3;
+        if (window._lkpdFrameUploadTick === 0 && window.__latestLkpdFrame) {
+            payload.livecamFrame = window.__latestLkpdFrame;
+        }
+
+        const data = window.syncLkpdStudentState ? await window.syncLkpdStudentState(payload) : null;
+        if (!data || !data.success) return;
+
+        const sessionKey = studentId + '_' + lkpdId;
+        if (!appState.activeExamSessions) appState.activeExamSessions = {};
+        if (data.session) {
+            appState.activeExamSessions[sessionKey] = {
+                ...(appState.activeExamSessions[sessionKey] || {}),
+                ...data.session,
+                studentId,
+                lkpdId
+            };
+        }
+        if (!appState.studentTabSwitches) appState.studentTabSwitches = {};
+        if (!appState.studentOutOfTab) appState.studentOutOfTab = {};
+        if (!appState.blockedStudents) appState.blockedStudents = {};
+        appState.studentTabSwitches[sessionKey] = Number(data.tabSwitches || 0);
+        appState.studentOutOfTab[sessionKey] = data.outOfTab === true;
+        appState.blockedStudents[sessionKey] = data.blocked === true;
+
+        const activeMsg = data.messagePersonal || data.messageBroadcast;
+        const messageToken = activeMsg ? String(activeMsg) : '';
+        if (activeMsg && window._lastLkpdStudentMessage !== messageToken) {
+            window._lastLkpdStudentMessage = messageToken;
+            showToast(`PESAN GURU: "${activeMsg}"`, 'info', 8000);
+            if (data.messagePersonal && window.ackLkpdStudentMessage) {
+                window.ackLkpdStudentMessage(lkpdId);
             }
-        } catch(e) {}
+        }
+
+        if (data.blocked) {
+            let blockOverlay = document.getElementById('lkpd-blocked-overlay');
+            if (!blockOverlay) {
+                blockOverlay = document.createElement('div');
+                blockOverlay.id = 'lkpd-blocked-overlay';
+                blockOverlay.className = 'fixed inset-0 z-[110] flex flex-col items-center justify-center bg-rose-950/95 text-white p-6 text-center space-y-4';
+                blockOverlay.innerHTML = `
+                    <div class="w-20 h-20 bg-rose-900 rounded-full flex items-center justify-center text-4xl animate-bounce">
+                        <i class="fa-solid fa-ban"></i>
+                    </div>
+                    <h2 class="font-black text-2xl">AKSES LKPD DIBLOKIR</h2>
+                    <p class="text-xs text-rose-200 max-w-md">Layar pengerjaan Anda telah diblokir oleh guru pengawas karena terindikasi melakukan pelanggaran tata tertib.</p>
+                    <p class="text-[11px] text-rose-300">Hubungi pengawas untuk membuka kembali akses Anda.</p>
+                `;
+                document.body.appendChild(blockOverlay);
+            }
+        } else {
+            document.getElementById('lkpd-blocked-overlay')?.remove();
+        }
     }, 5000);
 };
 
@@ -1962,12 +1998,14 @@ window.closeStudentLkpdWorksheetModal = function() {
         if (studentId !== 'TEACHER_PREVIEW') {
             const sessionKey = studentId + '_' + lkpdId;
             if (appState.activeExamSessions) delete appState.activeExamSessions[sessionKey];
-            if (window.syncExamStateToServer) {
-                window.syncExamStateToServer({ sessionKey, sessionData: null });
+            if (window.syncLkpdStudentState) {
+                window.syncLkpdStudentState({ lkpdId, active: false });
             }
         }
     }
     window.activeLkpdSession = null;
+    window._lastLkpdStudentMessage = '';
+    window.__latestLkpdFrame = null;
     window.isTeacherPreviewMode = false;
 
     try {
@@ -2040,9 +2078,7 @@ window.initStudentLkpdCamera = function(lkpdId, studentId) {
                         if (!appState.runtimeLivecamFrames) appState.runtimeLivecamFrames = {};
                         appState.runtimeLivecamFrames[key] = frameData;
                         
-                        if (window.syncExamStateToServer) {
-                            window.syncExamStateToServer({ livecamFrame: { key, frame: frameData } });
-                        }
+                        window.__latestLkpdFrame = frameData;
                     } catch(e) {}
                 }
             }, 4000);
@@ -2069,10 +2105,17 @@ window.triggerLkpdViolation = function(reason) {
 
     showToast(`PERINGATAN: ${reason} (${count}x)!`, 'error');
 
-    if (window.syncExamStateToServer) {
-        window.syncExamStateToServer({
-            tabSwitches: { [key]: count },
-            outOfTab: { [key]: true }
+    if (window.syncLkpdStudentState) {
+        window.syncLkpdStudentState({
+            lkpdId,
+            active: true,
+            outOfTab: true,
+            violationReason: reason,
+            answeredCount: Object.values(window.lkpdDraftAnswers || {}).filter(v => String(v).trim().length > 0).length
+        }).then(data => {
+            if (data && data.success && Number.isFinite(Number(data.tabSwitches))) {
+                appState.studentTabSwitches[key] = Number(data.tabSwitches);
+            }
         });
     }
 
