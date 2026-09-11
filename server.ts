@@ -3675,6 +3675,11 @@ function sanitizeExamForStudent(exam: any) {
   return safe;
 }
 
+function normalizeStudentStoredRole(role: any): 'student' | 'class_leader' {
+  const normalized = String(role || '').trim().toLowerCase();
+  return normalized === 'class_leader' || normalized === 'ketua_kelas' ? 'class_leader' : 'student';
+}
+
 function sanitizeLkpdForStudent(lkpd: any, studentId: string) {
   if (!lkpd || typeof lkpd !== 'object') return lkpd;
   const safe = { ...lkpd };
@@ -5416,7 +5421,7 @@ app.post("/api/login", async (req, res) => {
       nis: student.nis,
       classId: student.classId,
       class_id: student.classId,
-      role: student.role || "student",
+      role: normalizeStudentStoredRole(student.role),
       madrasahId: student.madrasahId || requestedTenant?.id || student.madrasahSlug || 'default',
       madrasahSlug: student.madrasahSlug || requestedTenant?.slug || student.madrasahId || 'default',
       photo: student.photo,
@@ -6919,7 +6924,7 @@ app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos
     password: convertedPassword,
     photo: req.body.photo || "",
     no_hp: req.body.no_hp || "",
-    role: req.body.role || "student"
+    role: normalizeStudentStoredRole(req.body.role)
   }, req);
   students.push(newStudent);
   await saveData('teachers', teachers);
@@ -7049,7 +7054,7 @@ app.post("/api/students", requireAuth, requireRole(['teacher', 'guru', 'admin', 
     password: hashed,
     photo: photo || "",
     no_hp: no_hp || "",
-    role: req.body.role || "student"
+    role: normalizeStudentStoredRole(req.body.role)
   }, req);
   students.push(newStudent);
   await saveData('students', students);
@@ -7276,7 +7281,7 @@ app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
     photo: req.body.photo !== undefined ? photo : st.photo,
     photoHistory: historyArr !== undefined ? historyArr : (st.photoHistory || []),
     no_hp: req.body.no_hp !== undefined ? req.body.no_hp : st.no_hp,
-    role: req.body.role ?? st.role
+    role: normalizeStudentStoredRole(req.body.role ?? st.role)
   };
   delete (updatedStudent as any).passwordRaw;
   students[idx] = updatedStudent;
@@ -9129,7 +9134,14 @@ function lkpdLegacyStateKeysForRequest(req: any, studentId: any, lkpdId: any): s
     legacyExamStateKey(studentId, lkpdId),
     legacyExamStateKey(lkpdId, studentId)
   ];
-  return Array.from(new Set(candidates)).filter((candidate) => Boolean(parseLkpdStateKeyForRequest(req, candidate)));
+  return Array.from(new Set(candidates)).filter((candidate) => {
+    const parsed = parseLkpdStateKeyForRequest(req, candidate);
+    return Boolean(
+      parsed &&
+      parsed.studentId === String(studentId) &&
+      parsed.lkpdId === String(lkpdId)
+    );
+  });
 }
 
 function lkpdStateCandidateKeys(req: any, studentId: any, lkpdId: any): string[] {
@@ -9594,6 +9606,7 @@ app.post("/api/lkpd/student-state", requireAuth, requireRole(['student', 'siswa'
     madrasahId: lkpdStateTenant(req, studentId, lkpdId),
     lkpdId,
     studentId,
+    active,
     answeredCount: Number(session?.answeredCount || 0),
     totalQuestions: Number(session?.totalQuestions || 0),
     lastSeenAt: Number(session?.lastSeenAt || now),
@@ -14815,6 +14828,26 @@ app.get("/api/lkpds", (req: any, res) => {
     list = list.map((lkpd: any) => sanitizeLkpdForStudent(lkpd, String(authUser?.id || '')));
   }
   res.json({ success: true, lkpdList: list });
+});
+
+app.delete("/api/lkpds/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  const resolved = resolveTenantItemIndexById(lkpdList, req.params.id, req, false);
+  if (resolved.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID LKPD ambigu lintas tenant." });
+  }
+  if (resolved.index < 0) {
+    return res.status(404).json({ success: false, message: "LKPD tidak ditemukan pada madrasah ini." });
+  }
+  if (isTeacherRequest(req) && !teacherCanUseLkpdPayload(req, resolved.item)) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat menghapus LKPD mata pelajaran yang diampu." });
+  }
+
+  lkpdList.splice(resolved.index, 1);
+  await saveData('lkpdList', lkpdList);
+  res.json({
+    success: true,
+    lkpdList: isTeacherRequest(req) ? lkpdsForRequest(req) : filterByMadrasah(lkpdList, req)
+  });
 });
 app.post("/api/exams", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const mId = getRequestMadrasahId(req);

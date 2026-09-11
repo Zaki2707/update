@@ -103,6 +103,14 @@ function testServerGuards() {
   assert.match(server, /saveDeltaBatchDb/);
   assert.match(server, /monitoringStateKeyAllowedForActor/);
   assert.match(server, /teacherCanUseLkpdPayload/);
+  assert.match(server, /function normalizeStudentStoredRole\(/);
+  assert.match(server, /role: normalizeStudentStoredRole\(student\.role\)/);
+  assert.equal(server.includes('role: student.role || "student"'), false);
+  assert.equal(server.includes('role: req.body.role || "student"'), false);
+  assert.equal(server.includes('role: req.body.role ?? st.role'), false);
+  assert.match(server, /app\.delete\("\/api\/lkpds\/:id", requireAuth, requireRole/);
+  assert.match(server, /parsed\.studentId === String\(studentId\)/);
+  assert.match(server, /parsed\.lkpdId === String\(lkpdId\)/);
   assert.equal(server.includes('Guru hanya dapat memonitor ujian mata pelajaran/bank soal yang diampu'), true);
   assert.match(server, /function lkpdStateKey\(/);
   assert.match(server, /function lkpdBroadcastStateKey\(/);
@@ -120,6 +128,9 @@ function testServerGuards() {
   assert.equal(lkpdModule.includes("fetch('/api/exam-monitoring-state')"), false);
   assert.match(lkpdModule, /LKPD_REALTIME_CLIENT_V2/);
   assert.equal(lkpdModule.includes("fetch('/api/lkpds')"), true);
+  assert.match(lkpdModule, /fetch\('\/api\/lkpds\/' \+ encodeURIComponent\(lkpdId\), \{ method: 'DELETE' \}\)/);
+  assert.match(lkpdModule, /payload\.active === false/);
+  assert.equal((lkpdModule.match(/Date\.now\(\) - lastSeenAt < 30000/g) || []).length >= 2, true);
   assert.equal(app.includes("/api/sync-state?key=lkpdList"), false);
   assert.match(app, /payload.type === 'lkpd_progress'/);
 
