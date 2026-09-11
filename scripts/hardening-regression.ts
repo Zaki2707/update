@@ -123,18 +123,15 @@ console.log('Hardening regression passed.');
     '/api/gemini/generate-rpp',
     '/api/gemini/generate-device'
   ];
+  const staffMiddlewareMarker = ", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin'])";
   for (const route of staffAiRoutes) {
-    assert.equal(
-      server.includes(`app.post("${route}", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin'])`),
-      true,
-      'AI/module route is not explicitly staff-only: ' + route
-    );
+    assert.equal(server.includes('app.post("' + route + '"' + staffMiddlewareMarker), true, 'AI/module route is not explicitly staff-only: ' + route);
   }
   assert.match(server, /ID ujian ambigu lintas tenant\. Pilih madrasah target terlebih dahulu\./);
   assert.match(server, /ID LKPD ambigu lintas tenant\. Pilih madrasah target terlebih dahulu\./);
   assert.match(server, /=== examTenant/);
   assert.match(server, /=== lkpdTenant/);
-  assert.equal(server.includes('const store = readLocalStore();\n    let lkpdList = store.lkpdList || [];'), false);
+  assert.equal(server.includes("const store = readLocalStore();\n    let lkpdList = store.lkpdList || [];"), false);
   assert.match(server, /default-src 'none'; style-src 'none'; script-src 'none'; sandbox/);
 
   for (const destructive of [
