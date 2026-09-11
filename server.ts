@@ -15252,6 +15252,20 @@ function mergeTenantScopedSyncRecords(globalList: any[], incomingData: any[], re
   return [...otherItems, ...Array.from(currentMap.values())];
 }
 
+function mergeTenantCrudSyncData(globalList: any[], incomingData: any[], req: any): any[] {
+  // Browser state may be filtered, stale, or partially loaded online. For CRUD entity
+  // collections, omission is therefore never a delete signal. Explicit DELETE routes
+  // remain the only destructive path. Offline keeps the legacy replace-list behavior.
+  if (!isOnlineMode) return mergeTenantListData(globalList, incomingData, req);
+  if (!Array.isArray(incomingData)) return Array.isArray(globalList) ? globalList : [];
+  return mergeTenantScopedSyncRecords(
+    globalList,
+    incomingData,
+    req,
+    (item: any) => String(item?.id || '').trim()
+  );
+}
+
 app.post("/api/sync-state", requireAuth, async (req, res) => {
   try {
     let { key, data } = req.body;
@@ -15394,12 +15408,12 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       kbmDuration = setTenantConfigValue(kbmDuration, req, Number.isFinite(parsed) && parsed > 0 ? parsed : 40, 40, 'kbmDuration');
       await saveData('kbmDuration', kbmDuration);
     }
-    else if (key === 'questionBankGroups') { questionBankGroups = mergeTenantListData(questionBankGroups, data, req); await saveData('questionBankGroups', questionBankGroups); }
-    else if (key === 'questionBank' || key === 'questions') { questions = mergeTenantListData(questions, data, req); await saveData('questions', questions); }
-    else if (key === 'exams') { exams = mergeTenantListData(exams, data, req); await saveData('exams', exams); }
+    else if (key === 'questionBankGroups') { questionBankGroups = mergeTenantCrudSyncData(questionBankGroups, data, req); await saveData('questionBankGroups', questionBankGroups); }
+    else if (key === 'questionBank' || key === 'questions') { questions = mergeTenantCrudSyncData(questions, data, req); await saveData('questions', questions); }
+    else if (key === 'exams') { exams = mergeTenantCrudSyncData(exams, data, req); await saveData('exams', exams); }
     else if (key === 'lkpdList') { lkpdList = mergeLkpdListDataSmart(lkpdList, data, req); await saveData('lkpdList', lkpdList); }
-    else if (key === 'rooms') { rooms = mergeTenantListData(rooms, data, req); await saveData('rooms', rooms); }
-    else if (key === 'journals') { journals = mergeTenantListData(journals, data, req); await saveData('journals', journals); }
+    else if (key === 'rooms') { rooms = mergeTenantCrudSyncData(rooms, data, req); await saveData('rooms', rooms); }
+    else if (key === 'journals') { journals = mergeTenantCrudSyncData(journals, data, req); await saveData('journals', journals); }
     else if (key === 'gradeCategories') {
       if (!Array.isArray(data)) return res.status(400).json({ success: false, message: 'gradeCategories harus berupa array.' });
       const cleanCategories = Array.from(new Set(data.map((c: any) => String(c).trim()).filter(Boolean)));
@@ -15411,10 +15425,10 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       customGradeColumns = setTenantConfigValue(customGradeColumns, req, data, {}, 'customGradeColumns');
       await saveData('customGradeColumns', customGradeColumns);
     }
-    else if (key === 'calendarEvents') { calendarEvents = mergeTenantListData(calendarEvents, data, req); await saveData('calendarEvents', calendarEvents); }
-    else if (key === 'generatedExams') { generatedExams = mergeTenantListData(generatedExams, data, req); await saveData('generatedExams', generatedExams); }
-    else if (key === 'lessonPlans') { lessonPlans = mergeTenantListData(lessonPlans, data, req); await saveData('lessonPlans', lessonPlans); }
-    else if (key === 'grades') { grades = mergeTenantListData(grades, data, req); await saveData('grades', grades); }
+    else if (key === 'calendarEvents') { calendarEvents = mergeTenantCrudSyncData(calendarEvents, data, req); await saveData('calendarEvents', calendarEvents); }
+    else if (key === 'generatedExams') { generatedExams = mergeTenantCrudSyncData(generatedExams, data, req); await saveData('generatedExams', generatedExams); }
+    else if (key === 'lessonPlans') { lessonPlans = mergeTenantCrudSyncData(lessonPlans, data, req); await saveData('lessonPlans', lessonPlans); }
+    else if (key === 'grades') { grades = mergeTenantCrudSyncData(grades, data, req); await saveData('grades', grades); }
     else if (key === 'settings') {
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
         return res.status(400).json({ success: false, message: 'Payload settings tidak valid.' });
