@@ -9,6 +9,14 @@ const firestoreRules = fs.readFileSync('firestore.rules', 'utf8');
 const trackedFiles = new Set(execFileSync('git', ['ls-files'], { encoding: 'utf8' }).trim().split(/\r?\n/).filter(Boolean));
 const trackedRuntimeUploads = [...trackedFiles].filter((p) => p.startsWith('uploads/') && !p.endsWith('/.gitkeep') && p !== 'uploads/.gitkeep');
 
+const dbPullStart = server.indexOf('app.post("/api/db-pull-cloud"');
+const dbPullEnd = server.indexOf('function isCloudServer', dbPullStart);
+const dbPullRoute = dbPullStart >= 0 ? server.slice(dbPullStart, dbPullEnd > dbPullStart ? dbPullEnd : undefined) : '';
+const syncStateStart = server.indexOf('app.post("/api/sync-state"');
+const syncStateEnd = server.indexOf('// Real-time Event Stream', syncStateStart);
+const syncStateRoute = syncStateStart >= 0 ? server.slice(syncStateStart, syncStateEnd > syncStateStart ? syncStateEnd : undefined) : '';
+const gameSubmitRouteCount = (server.match(/app\.post\("\/api\/games\/:id\/submit"/g) || []).length;
+
 const checks = [
   ['JWT query bearer removed', !server.includes('req.query.token')],
   ['Realtime ticket endpoint exists', server.includes("/api/realtime-token")],
@@ -42,6 +50,23 @@ const checks = [
   ['Local-store legacy key is environment-only', !server.includes('const LEGACY_ENCRYPTION_SECRET = "') && server.includes("readConfiguredSecret('LOCAL_STORE_LEGACY_SECRET')")],
   ['Token-lock legacy key is environment-only', !server.includes('const LEGACY_TOKEN_LOCK_SECRET = "') && server.includes("readConfiguredSecret('TOKEN_LOCK_LEGACY_SECRET')")],
   ['Online runtime secrets fail closed', server.includes('Cloud/online deployments must never silently fall back') && server.includes("resolveRuntimeSecret('LOCAL_STORE_SECRET'") && server.includes("resolveRuntimeSecret('TOKEN_LOCK_SECRET'")],
+  ['Online DB pull is Cloud SQL authoritative', dbPullRoute.includes('ONLINE_DB_PULL_CLOUD_SQL_ONLY') && dbPullRoute.indexOf('if (isOnlineMode)') >= 0 && dbPullRoute.indexOf('if (isOnlineMode)') < dbPullRoute.indexOf('tryLocalBackupRestore') && dbPullRoute.includes("mode: 'online-cloud-sql-authoritative'")],
+  ['Online sync-state uses explicit role allowlists', syncStateRoute.includes('onlineStudentSyncKeys') && syncStateRoute.includes('onlineStaffSyncKeys') && syncStateRoute.includes('State sinkronisasi tidak diizinkan.')],
+  ['Student attendance sync is identity scoped', syncStateRoute.includes('Siswa hanya dapat menyinkronkan absensi miliknya.') && syncStateRoute.includes('mergeTenantScopedSyncRecords')],
+  ['Generic settings sync cannot replace server secrets', syncStateRoute.includes("const safeSettings = { ...data }") && syncStateRoute.includes("'LICENSE_PRIVATE_KEY'") && syncStateRoute.includes('appSettings = { ...appSettings, ...safeSettings }')],
+  ['Tenant list sync retags client supplied tenant identity', server.includes('Tenant identity is server-authoritative') && server.includes('delete clean.madrasahId') && server.includes('delete clean.madrasahSlug')],
+  ['Student LKPD merge only accepts own submissions', server.includes("String(sub.studentId) !== String(authenticatedUser?.id || '')")],
+  ['Chat mutations are tenant scoped', server.includes("Siswa hanya dapat menandai pesan yang diterimanya sendiri.") && server.includes("Pesan tidak ditemukan pada madrasah ini.") && server.includes("filterByMadrasah(students || [], req)")],
+  ['Game ephemeral state is tenant namespaced', server.includes('function gameStudentStorageKey') && server.includes('function gameBroadcastStorageKey') && server.includes("madrasahId: gameTenantNamespace(req)")],
+  ['Game without authoritative key never awards XP by default', server.includes('No authoritative answer key: never award XP by default.')],
+  ['Randomized CBT auto-correction uses per-student master packet', server.includes('async function getAutoGradeAttempt') && server.includes('studentExamMasterQuestions[key]') && server.includes('attempt.essayQuestions')],
+  ['Online restore is add-only and conflict-safe', server.includes("mode: 'online-add-only-v1'") && server.includes('nonDestructive: true') && server.includes('buildOnlineSafeRestorePlan')],
+  ['Recovery capability remains strict v2', server.includes("capability: 'master-recovery-missing-only-v2'")],
+  ['Only one canonical game submit route exists', gameSubmitRouteCount === 1],
+  ['No wildcard frame-ancestors override remains', !server.includes('frame-ancestors *')],
+  ['LiveKit online fails closed before dev fallback', server.includes('LiveKit online belum dikonfigurasi dengan aman.') && server.includes('if (isOnlineMode && (!apiKey || !apiSecret || !serverUrl')],
+  ['WebSocket admin identity is tenant namespaced', server.includes("'admin::' + tenant")],
+  ['Chunk restore is bound to owner and tenant', server.includes('session.owner !== owner || session.tenant !== tenant') && server.includes('15 * 60 * 1000')],
 ];
 
 let failed = false;
