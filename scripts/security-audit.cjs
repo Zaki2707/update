@@ -91,7 +91,7 @@ const checks = [
   ['Student LKPD merge only accepts own submissions', server.includes("String(sub.studentId) !== String(authenticatedUser?.id || '')")],
   ['Chat mutations are tenant scoped', server.includes("Siswa hanya dapat menandai pesan yang diterimanya sendiri.") && server.includes("Pesan tidak ditemukan pada madrasah ini.") && server.includes("filterByMadrasah(students || [], req)")],
   ['Game ephemeral state is tenant namespaced', server.includes('function gameStudentStorageKey') && server.includes('function gameBroadcastStorageKey') && server.includes("madrasahId: gameTenantNamespace(req)")],
-  ['Game without authoritative key never awards XP by default', server.includes('No authoritative answer key: never award XP by default.')],
+  ['Game rewards are replay-bounded and serialized', server.includes('rewardAlreadyClaimed') && server.includes('game-reward::') && server.includes('storeMutationQueue.run(rewardLockKey') && server.includes("game-submit:") && server.includes('State sesi game terlalu besar.')],
   ['Randomized CBT auto-correction uses per-student master packet', server.includes('async function getAutoGradeAttempt') && server.includes('studentExamMasterQuestions[key]') && server.includes('attempt.essayQuestions')],
   ['Online restore is add-only and conflict-safe', server.includes("mode: 'online-add-only-v1'") && server.includes('nonDestructive: true') && server.includes('buildOnlineSafeRestorePlan')],
   ['Recovery capability remains strict v2', server.includes("capability: 'master-recovery-missing-only-v2'")],
@@ -114,6 +114,15 @@ const checks = [
   ['Time slots and KBM are tenant scoped', server.includes('timeSlots = mergeTenantListData(timeSlots, newSlots, req)') && server.includes("tenantConfigValue(kbmDuration, req, 40, 'kbmDuration')")],
   ['Grade categories and custom columns are tenant scoped', server.includes("setTenantConfigValue(gradeCategories, req") && server.includes("setTenantConfigValue(customGradeColumns, req") && app.includes("endpoint = '/api/custom-grade-columns'")],
   ['Chunk restore is bound to owner and tenant', server.includes('session.owner !== owner || session.tenant !== tenant') && server.includes('15 * 60 * 1000')],
+  ['Auto-grade exam resolves tenant and class explicitly', server.includes('resolveTenantItemIndexById(exams, examId, req)') && server.includes('Ujian dan kelas harus berasal dari tenant yang sama.')],
+  ['Auto-grade LKPD uses authoritative memory, not local snapshot', server.includes('resolveTenantItemIndexById(lkpdList, lkpdId, req)') && server.includes('LKPD dan kelas harus berasal dari tenant yang sama.') && !/auto-koreksi-lkpd[\s\S]{0,2000}const store = readLocalStore\(\)/.test(server))],
+  ['Token request evidence is staff-only', server.includes('app.get("/api/token-requests", requireAuth, requireRole')],
+  ['Non-BOSS madrasah view hides admin account metadata', server.includes('function sanitizeMadrasahMemberView') && server.includes('ownMadrasahs.map(sanitizeMadrasahMemberView)')],
+  ['ChildGuard student sync is scoped in all modes', !server.includes('if (isOnlineMode && isStudentSyncRole)') && server.includes('const scopedStudents = filterByMadrasah(students || [], req)')],
+  ['Exam monitoring resolves tenant-safe exam identity', server.includes("const resolvedExam = resolveTenantItemIndexById(examSource, eId, req)") && server.includes('ID ujian ambigu lintas tenant. Pilih tenant target secara eksplisit.')],
+  ['CBT student event endpoints validate attempt context', (server.match(/const context = getExamAttemptContext\(req, authUser, sId, eId\);/g) || []).length >= 5 && server.includes('Jawaban terlalu besar. Maksimal 64 KB per soal.') && server.includes('Format frame livecam tidak valid.')],
+  ['Atomic multi-key Cloud SQL persistence exists', server.includes('function runWithDbKeyLocks') && server.includes('async function writeBatchToPostgresDirect') && server.includes("await client.query('BEGIN')") && server.includes("await client.query('COMMIT')") && server.includes('await writeBatchToPostgresDirect(normalizedItems.map((item) => item.key))') && !/async function saveDataBatch[\s\S]*?for \(const item of items\) \{\s*await writeKeyToPostgresDirect\(item.key\)/.test(server))],
+  ['Critical token mutations use copy-on-write', server.includes('const nextTokenRequests = tokenRequests.map') && server.includes('const nextMadrasahs = madrasahs.map') && server.includes('const nextTeachers = teachers.map')],
 ];
 
 let failed = false;
