@@ -38,6 +38,16 @@ function lkpdSafeImageSrc(value) {
     }
 }
 
+function lkpdSafeHexColor(value, fallback) {
+    const raw = String(value || '').trim();
+    return /^#[0-9a-f]{6}$/i.test(raw) ? raw : fallback;
+}
+
+function lkpdSafeNumber(value, fallback, min, max) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
 window.getLkpdStorageKey = function() {
     const appState = window.appState || {};
     const activeMId = (appState.currentUser && (appState.currentUser.madrasahId || appState.currentUser.madrasahSlug)) || window.__activeTenant?.id || window.__activeTenant?.slug || 'default';
@@ -309,8 +319,8 @@ const LKPD_THEME_SVGS = {
 function getStudentAnswerStyle(lkpd) {
     if (!lkpd) lkpd = {};
     const styleMode = lkpd.studentAnsStyle || 'green';
-    const customBg = lkpd.studentAnsBg || '#059669';
-    const customTextColor = lkpd.studentAnsTextColor || '#ffffff';
+    const customBg = lkpdSafeHexColor(lkpd.studentAnsBg, '#059669');
+    const customTextColor = lkpdSafeHexColor(lkpd.studentAnsTextColor, '#ffffff');
 
     if (styleMode === 'transparent') {
         return {
@@ -352,15 +362,18 @@ function renderLkpdCanvasComponent(lkpd, options = {}) {
     const markers = Array.isArray(lkpd.markers) ? lkpd.markers : [];
     
     // Customization values
-    const imgScale = lkpd.imageScale || 100;
-    const mSize = lkpd.markerSize || 44;
-    const mColor = lkpd.markerColor || '#4f46e5';
+    const imgScale = lkpdSafeNumber(lkpd.imageScale, 100, 25, 200);
+    const mSize = lkpdSafeNumber(lkpd.markerSize, 44, 16, 120);
+    const mColor = lkpd.markerColor === 'transparent' ? 'transparent' : lkpdSafeHexColor(lkpd.markerColor, '#4f46e5');
     const mStyle = lkpd.markerStyle || 'standard';
 
     let canvasBackground = '';
     const isCustom = !!lkpd.customImage;
     if (isCustom) {
-        canvasBackground = `<img src="${lkpd.customImage}" alt="${lkpdEscapeHtml(lkpd.title)}" class="max-w-full h-auto block max-h-[70vh] select-none pointer-events-none rounded-2xl mx-auto" style="object-fit: contain; width: ${imgScale}%;" />`;
+        const safeCustomImage = lkpdSafeImageSrc(lkpd.customImage);
+        canvasBackground = safeCustomImage
+            ? `<img src="${lkpdEscapeAttr(safeCustomImage)}" alt="${lkpdEscapeAttr(lkpd.title)}" class="max-w-full h-auto block max-h-[70vh] select-none pointer-events-none rounded-2xl mx-auto" style="object-fit: contain; width: ${imgScale}%;" />`
+            : '<div class="p-8 text-center text-slate-400">Gambar LKPD tidak valid.</div>';
     } else {
         const svgContent = LKPD_THEME_SVGS[lkpd.theme] || LKPD_THEME_SVGS.biology;
         canvasBackground = `
@@ -3086,7 +3099,7 @@ window.openImportLkpdToHarianModal = function(classId, lkpdId) {
     const clsStudents = window.appState.students.filter(st => String(st.classId) === String(classId));
     const gradedCount = submissions.filter(s => s.isGraded).length;
 
-    const defaultTitle = `Nilai LKPD ${lkpdEscapeHtml(lkpd.title)}`;
+    const defaultTitle = `Nilai LKPD ${String(lkpd.title || '')}`;
     const defaultSubject = lkpd.subject || (window.appState.subjects && window.appState.subjects[0] ? window.appState.subjects[0].name : 'Mata Pelajaran');
 
     const modal = document.getElementById('modal-container');
@@ -3440,7 +3453,7 @@ window.exportNilaiExcelLkpdEvaluasi = function(classId, lkpdId) {
             { wch: 5 }, { wch: 12 }, { wch: Math.max(max_width, 22) }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 16 }
         ];
 
-        XLSX.writeFile(workbook, `Nilai_Evaluasi_LKPD_${lkpdEscapeHtml(cls.name)}_${lkpd.title.replace(/\s+/g, '_')}.xlsx`);
+        XLSX.writeFile(workbook, `Nilai_Evaluasi_LKPD_${String(cls.name || '').replace(/[^A-Za-z0-9._ -]/g, '_')}_${lkpd.title.replace(/\s+/g, '_')}.xlsx`);
         showToast('File Excel Nilai LKPD berhasil diunduh!', 'success');
     } else {
         let csvContent = "data:text/csv;charset=utf-8,No,NIS,Nama Siswa,Kelas,Judul LKPD,Status,Nilai Akhir\n";
@@ -3450,7 +3463,7 @@ window.exportNilaiExcelLkpdEvaluasi = function(classId, lkpdId) {
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
         link.setAttribute("href", encodedUri);
-        link.setAttribute("download", `Nilai_Evaluasi_LKPD_${lkpdEscapeHtml(cls.name)}_${lkpd.title.replace(/\s+/g, '_')}.csv`);
+        link.setAttribute("download", `Nilai_Evaluasi_LKPD_${String(cls.name || '').replace(/[^A-Za-z0-9._ -]/g, '_')}_${lkpd.title.replace(/\s+/g, '_')}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
