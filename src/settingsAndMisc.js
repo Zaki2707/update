@@ -1221,9 +1221,15 @@ function updateSettingsLogoPreview() {
     // Apply background color style
     previewContainer.style.backgroundColor = bg;
     
-    const logo = appState.tempLogo || appState.settings.schoolLogo || 'fa-moon';
-    if (logo.startsWith('data:image/') || logo.startsWith('http://') || logo.startsWith('https://')) {
-        previewContainer.innerHTML = `<img src="${logo}" class="w-full h-full object-cover" referrerPolicy="no-referrer" alt="Logo">`;
+    const logo = String(appState.tempLogo || appState.settings.schoolLogo || 'fa-moon');
+    previewContainer.replaceChildren();
+    if (window.isSafeDisplayImageUrl && window.isSafeDisplayImageUrl(logo)) {
+        const img = document.createElement('img');
+        img.src = logo;
+        img.className = 'w-full h-full object-cover';
+        img.referrerPolicy = 'no-referrer';
+        img.alt = 'Logo';
+        previewContainer.appendChild(img);
         typeLabel.innerText = 'Tipe: Gambar';
         
         const urlInput = document.getElementById('settings-logo-url');
@@ -1231,7 +1237,10 @@ function updateSettingsLogoPreview() {
             urlInput.value = logo;
         }
     } else {
-        previewContainer.innerHTML = `<i class="fa-solid ${logo}"></i>`;
+        const icon = document.createElement('i');
+        icon.classList.add('fa-solid');
+        icon.classList.add(/^fa-[a-z0-9-]+$/i.test(logo) ? logo : 'fa-moon');
+        previewContainer.appendChild(icon);
         typeLabel.innerText = 'Tipe: Ikon';
     }
 }
