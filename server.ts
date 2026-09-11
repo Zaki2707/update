@@ -10355,6 +10355,78 @@ function computeIndonesianTextSimilarity(studentAnswer: string, keyAnswer: strin
   };
 }
 
+async function getAutoGradeAttempt(student: any, ex: any, examId: string) {
+  const key = String(student.id) + '_' + examId;
+  let masterQuestions = studentExamMasterQuestions[key];
+  if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
+    masterQuestions = await recoverMissingExamMasterQuestions(key, ex);
+  }
+  if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) return null;
+
+  const persisted = studentExamAnswers[key] && typeof studentExamAnswers[key] === 'object'
+    ? studentExamAnswers[key]
+    : {};
+  const live = activeExamSessions[key]?.answers && typeof activeExamSessions[key].answers === 'object'
+    ? activeExamSessions[key].answers
+    : {};
+  const answers = { ...persisted, ...live };
+  return {
+    key,
+    masterQuestions,
+    answers,
+    essayQuestions: masterQuestions.filter((q: any) => q.type === 'esay' || q.type === 'essay')
+  };
+}
+
+function buildNonAiEssayGrades(attempt: any) {
+  const grades: Record<string, number> = {};
+  const explanations: Record<string, string> = {};
+  for (const q of attempt.essayQuestions) {
+    const studentAnswer = attempt.answers[q.id] !== undefined
+      ? attempt.answers[q.id]
+      : (attempt.answers[String(q.id)] || "");
+    const result = computeUniversalEssaySimilarity(studentAnswer, q.answer || "");
+    grades[String(q.id)] = result.similarity;
+    explanations[String(q.id)] = result.explanations;
+  }
+  return { grades, explanations };
+}
+
+function saveAutoGradeResult(student: any, ex: any, classId: string, attempt: any, grades: Record<string, number>, explanations: Record<string, string>) {
+  const pg = scoreMasterMultipleChoice(attempt.masterQuestions, attempt.answers);
+  const existing = studentExamGrades[attempt.key] || {};
+  const gradeObj: any = {
+    ...existing,
+    id: existing.id || ('G' + Date.now() + '_' + student.id),
+    studentId: student.id,
+    examId: ex.id,
+    classId,
+    pgQuestionsCount: pg.totalPGCount,
+    correctPGCount: pg.correctPGCount,
+    correctPgCount: pg.correctPGCount,
+    pgScore: pg.pgScore,
+    essayGrades: { ...(existing.essayGrades || {}), ...grades },
+    essayExplanations: { ...(existing.essayExplanations || {}), ...explanations },
+    isGraded: true
+  };
+
+  let essayTotal = 0;
+  for (const q of attempt.essayQuestions) {
+    essayTotal += Number(gradeObj.essayGrades[String(q.id)] ?? gradeObj.essayGrades[q.id] ?? 0) || 0;
+  }
+  gradeObj.essayScore = attempt.essayQuestions.length
+    ? Math.round(essayTotal / attempt.essayQuestions.length)
+    : 0;
+
+  const weightPg = ex.weightPg !== undefined ? Number(ex.weightPg) : 50;
+  const weightEssay = ex.weightEssay !== undefined ? Number(ex.weightEssay) : 50;
+  gradeObj.finalScore = Math.round(
+    (gradeObj.pgScore * weightPg / 100) +
+    (gradeObj.essayScore * weightEssay / 100)
+  );
+  studentExamGrades[attempt.key] = gradeObj;
+}
+
 app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
     const { classId, examId, studentId, method = 'ai' } = req.body;
@@ -10363,273 +10435,109 @@ app.post("/api/gemini/auto-koreksi", requireAuth, requireRole(['teacher', 'guru'
     }
 
     const ex = exams.find((e: any) => String(e.id) === String(examId));
-    if (!ex) {
-      return res.status(404).json({ success: false, message: "Jadwal ujian tidak ditemukan." });
-    }
+    if (!ex) return res.status(404).json({ success: false, message: "Jadwal ujian tidak ditemukan." });
 
     const authUser = getAuthUser(req);
     const isBos = authUser?.role === 'bos' || authUser?.role === 'superadmin';
-
     if (!isBos && !isItemForCurrentMadrasah(ex, req)) {
       return res.status(403).json({ success: false, message: "Akses ditolak." });
     }
 
-    const examQuestions = getExamQuestionsServer(ex);
-    const essayQuestions = examQuestions.filter((q: any) => q.type === 'esay' || q.type === 'essay');
-    if (essayQuestions.length === 0) {
-      return res.json({ success: false, message: "Ujian ini tidak memiliki soal esay untuk dikoreksi." });
-    }
-
-    const classStudents = students.filter((s: any) => 
-      String(s.classId) === String(classId) && 
-      (isBos || isItemForCurrentMadrasah(s, req))
-    );
-    let completedStudents = classStudents.filter((st: any) => {
-      const key = st.id + '_' + examId;
+    let targets = students.filter((st: any) =>
+      String(st.classId) === String(classId) &&
+      (isBos || isItemForCurrentMadrasah(st, req))
+    ).filter((st: any) => {
+      const key = String(st.id) + '_' + String(examId);
       return Boolean(completedExams[key]) || studentExamAnswers[key] !== undefined;
     });
 
-    if (studentId) {
-      completedStudents = completedStudents.filter((st: any) => String(st.id) === String(studentId));
+    if (studentId) targets = targets.filter((st: any) => String(st.id) === String(studentId));
+    if (targets.length === 0) {
+      return res.json({ success: false, message: "Belum ada siswa yang dapat dikoreksi." });
     }
 
-    if (completedStudents.length === 0) {
-      return res.json({ success: false, message: studentId ? "Siswa belum selesai mengerjakan ujian atau jawaban esay tidak ditemukan." : "Belum ada siswa di kelas ini yang mengerjakan ujian ini." });
-    }
-
-    // METHOD KEYWORD / NON-AI SIMILARITY AUTOMATION
-    if (method === 'keyword') {
-      let successCount = 0;
-      for (const st of completedStudents) {
-        const key1 = st.id + '_' + examId;
-        const key2 = String(st.id) + '_' + String(examId);
-
-        const studentAnswers = studentExamAnswers[key1] || studentExamAnswers[key2] || {};
-
-        const grades: Record<string, number> = {};
-        const explanations: Record<string, string> = {};
-
-        for (const q of essayQuestions) {
-          const studentAns = studentAnswers[q.id] !== undefined ? studentAnswers[q.id] : (studentAnswers[String(q.id)] || "");
-          const keyAns = q.answer || "";
-
-          const result = computeUniversalEssaySimilarity(studentAns, keyAns);
-          grades[q.id] = result.similarity;
-          explanations[q.id] = result.explanations;
-        }
-
-        const gradeObj = studentExamGrades[key1] || studentExamGrades[key2] || {
-          id: 'G' + Date.now() + '_' + st.id,
-          studentId: st.id,
-          examId: examId,
-          classId: classId,
-          pgQuestionsCount: examQuestions.filter((q: any) => q.type !== 'esay' && q.type !== 'essay').length,
-          correctPgCount: 0,
-          pgScore: 100,
-          essayScore: 0,
-          finalScore: 100,
-          essayGrades: {},
-          essayExplanations: {}
-        };
-
-        gradeObj.essayGrades = { ...(gradeObj.essayGrades || {}), ...grades };
-        gradeObj.essayExplanations = { ...(gradeObj.essayExplanations || {}), ...explanations };
-
-        // Re-calculate average essay score
-        let sum = 0;
-        essayQuestions.forEach((q: any) => {
-          const val = gradeObj.essayGrades[q.id] !== undefined ? gradeObj.essayGrades[q.id] : (gradeObj.essayGrades[String(q.id)] || 0);
-          sum += Number(val) || 0;
-        });
-        gradeObj.essayScore = Math.round(sum / essayQuestions.length);
-        gradeObj.isGraded = true;
-
-        // Re-calculate final score
-        const weightPg = ex.weightPg !== undefined ? Number(ex.weightPg) : 50;
-        const weightEssay = ex.weightEssay !== undefined ? Number(ex.weightEssay) : 50;
-        gradeObj.finalScore = Math.round(((gradeObj.pgScore || 0) * weightPg / 100) + (gradeObj.essayScore * weightEssay / 100));
-
-        studentExamGrades[key1] = gradeObj;
-        studentExamGrades[key2] = gradeObj;
-        successCount++;
-      }
-
-      await saveData('studentExamGrades', studentExamGrades);
-
-      return res.json({
-        success: true,
-        message: `Proses koreksi otomatis Non-AI selesai. Berhasil mencocokkan & menilai ${successCount} siswa secara instan tanpa API key.`
-      });
-    }
-
-    // ORIGINAL AI METHOD (Requires GEMINI_API_KEY)
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return res.status(400).json({
-        success: false,
-        message: "GEMINI_API_KEY environment variable is missing on server. Gunakan metode Koreksi Non-AI."
-      });
-    }
-
-    const ai = new GoogleGenAI({
-      apiKey: apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build"
-        }
-      }
-    });
+    const useAi = method !== 'keyword' && Boolean(apiKey);
+    const ai = useAi ? new GoogleGenAI({
+      apiKey: apiKey!,
+      httpOptions: { headers: { "User-Agent": "aistudio-build" } }
+    }) : null;
 
     let successCount = 0;
-    let failCount = 0;
+    let skippedCount = 0;
+    let fallbackCount = 0;
 
-    for (const st of completedStudents) {
-      const key1 = st.id + '_' + examId;
-      const key2 = String(st.id) + '_' + String(examId);
+    for (const st of targets) {
+      const attempt = await getAutoGradeAttempt(st, ex, String(examId));
+      if (!attempt || attempt.essayQuestions.length === 0) {
+        skippedCount++;
+        continue;
+      }
 
-      const studentAnswers = studentExamAnswers[key1] || studentExamAnswers[key2] || {};
-
-      const prompt = `
-Anda adalah seorang pendidik penyelia yang ahli dan objektif dalam mengoreksi ujian esay siswa.
-Tugas Anda adalah menilai jawaban esay siswa berdasarkan Pertanyaan dan Kunci Jawaban / Rujukan Guru yang disediakan.
-
-Berikan nilai integer antara 0 sampai 100 (0 jika tidak menjawab/ngawur, 100 jika sempurna sesuai rujukan).
-Berikan penjelasan yang singkat, padat, dan konstruktif dalam bahasa Indonesia (maksimal 2 kalimat) mengapa siswa tersebut mendapatkan nilai tersebut berdasarkan jawabannya.
-
-Format respon yang Anda berikan HARUS berupa JSON murni dengan struktur berikut (tanpa markdown formatting, tanpa \`\`\`json):
-{
-  "grades": {
-    "question_id": <nilai_integer_0_sampai_100>
-  },
-  "explanations": {
-    "question_id": "<penjelasan_singkat_indonesia>"
-  }
-}
-
-Berikut adalah data esay siswa:
-Nama Siswa: ${st.name}
-Mata Pelajaran: ${ex.subject}
-Ujian: ${ex.title}
-
-Daftar Pertanyaan, Kunci Jawaban, dan Jawaban Siswa:
-${essayQuestions.map((q: any, i: number) => {
-  const studentAns = studentAnswers[q.id] !== undefined ? studentAnswers[q.id] : (studentAnswers[String(q.id)] || "");
-  return `
-[Soal ${i + 1}]
-ID Soal: ${q.id}
-Pertanyaan: ${q.question}
-Kunci Jawaban Guru / Rujukan: ${q.answer || "-"}
-Jawaban Siswa: ${studentAns || "(Tidak menjawab)"}
-`;
-}).join("\n---")}`;
+      if (!ai) {
+        const result = buildNonAiEssayGrades(attempt);
+        saveAutoGradeResult(st, ex, String(classId), attempt, result.grades, result.explanations);
+        successCount++;
+        continue;
+      }
 
       try {
+        const prompt = `Nilai setiap jawaban esai siswa berdasarkan kunci jawaban guru. Beri nilai integer 0 sampai 100.
+Balas JSON murni tanpa markdown dengan format:
+{"grades":{"question_id":0},"explanations":{"question_id":"penjelasan singkat"}}
+
+Nama Siswa: ${st.name}
+Mata Pelajaran: ${ex.subject || ""}
+Ujian: ${ex.title || ""}
+
+${attempt.essayQuestions.map((q: any, i: number) => {
+  const studentAnswer = attempt.answers[q.id] !== undefined
+    ? attempt.answers[q.id]
+    : (attempt.answers[String(q.id)] || "");
+  return `[Soal ${i + 1}]
+ID: ${q.id}
+Pertanyaan: ${q.question}
+Kunci: ${q.answer || "-"}
+Jawaban: ${studentAnswer || "(Tidak menjawab)"}`;
+}).join("\n---\n")}`;
+
         const response = await generateGeminiContent(ai, {
           model: "gemini-3.7-flash",
           contents: prompt
         });
+        const parsed = extractJsonFromText(response.text || "");
+        if (!parsed?.grades) throw new Error("Respons AI tidak memiliki grades.");
 
-        const textResponse = response.text || "";
-        const parsed = extractJsonFromText(textResponse);
-
-        if (parsed && parsed.grades) {
-          const gradeObj = studentExamGrades[key1] || studentExamGrades[key2] || {
-            id: 'G' + Date.now() + '_' + st.id,
-            studentId: st.id,
-            examId: examId,
-            classId: classId,
-            pgQuestionsCount: examQuestions.filter((q: any) => q.type !== 'esay' && q.type !== 'essay').length,
-            correctPgCount: 0,
-            pgScore: 100,
-            essayScore: 0,
-            finalScore: 100,
-            essayGrades: {},
-            essayExplanations: {}
-          };
-
-          // Merge grades and explanations
-          gradeObj.essayGrades = { ...(gradeObj.essayGrades || {}), ...parsed.grades };
-          gradeObj.essayExplanations = { ...(gradeObj.essayExplanations || {}), ...parsed.explanations };
-
-          // Re-calculate average essay score
-          let sum = 0;
-          essayQuestions.forEach((q: any) => {
-            const val = gradeObj.essayGrades[q.id] !== undefined ? gradeObj.essayGrades[q.id] : (gradeObj.essayGrades[String(q.id)] || 0);
-            sum += Number(val) || 0;
-          });
-          gradeObj.essayScore = Math.round(sum / essayQuestions.length);
-          gradeObj.isGraded = true;
-
-          // Re-calculate final score
-          const weightPg = ex.weightPg !== undefined ? Number(ex.weightPg) : 50;
-          const weightEssay = ex.weightEssay !== undefined ? Number(ex.weightEssay) : 50;
-          gradeObj.finalScore = Math.round(((gradeObj.pgScore || 0) * weightPg / 100) + (gradeObj.essayScore * weightEssay / 100));
-
-          studentExamGrades[key1] = gradeObj;
-          studentExamGrades[key2] = gradeObj;
-          successCount++;
-        } else {
-          failCount++;
+        const grades: Record<string, number> = {};
+        const explanations: Record<string, string> = {};
+        for (const q of attempt.essayQuestions) {
+          const id = String(q.id);
+          const rawScore = Number(parsed.grades[id]);
+          if (!Number.isFinite(rawScore)) throw new Error("Nilai AI tidak lengkap untuk paket siswa.");
+          grades[id] = Math.max(0, Math.min(100, Math.round(rawScore)));
+          explanations[id] = String(parsed.explanations?.[id] || "").slice(0, 1000);
         }
-      } catch (err: any) {
-        console.warn(`[Auto Koreksi] AI gagal memproses siswa ${st.name}, beralih ke metode kecocokan cerdas (Non-AI fallback):`, err?.message || err);
-        try {
-          const grades: Record<string, number> = {};
-          const explanations: Record<string, string> = {};
 
-          for (const q of essayQuestions) {
-            const studentAns = studentAnswers[q.id] !== undefined ? studentAnswers[q.id] : (studentAnswers[String(q.id)] || "");
-            const keyAns = q.answer || "";
-            const result = computeUniversalEssaySimilarity(studentAns, keyAns);
-            grades[q.id] = result.similarity;
-            explanations[q.id] = result.explanations;
-          }
-
-          const gradeObj = studentExamGrades[key1] || studentExamGrades[key2] || {
-            id: 'G' + Date.now() + '_' + st.id,
-            studentId: st.id,
-            examId: examId,
-            classId: classId,
-            pgQuestionsCount: examQuestions.filter((q: any) => q.type !== 'esay' && q.type !== 'essay').length,
-            correctPgCount: 0,
-            pgScore: 100,
-            essayScore: 0,
-            finalScore: 100,
-            essayGrades: {},
-            essayExplanations: {}
-          };
-
-          gradeObj.essayGrades = { ...(gradeObj.essayGrades || {}), ...grades };
-          gradeObj.essayExplanations = { ...(gradeObj.essayExplanations || {}), ...explanations };
-
-          let sum = 0;
-          essayQuestions.forEach((q: any) => {
-            const val = gradeObj.essayGrades[q.id] !== undefined ? gradeObj.essayGrades[q.id] : (gradeObj.essayGrades[String(q.id)] || 0);
-            sum += Number(val) || 0;
-          });
-          gradeObj.essayScore = Math.round(sum / essayQuestions.length);
-          gradeObj.isGraded = true;
-
-          const weightPg = ex.weightPg !== undefined ? Number(ex.weightPg) : 50;
-          const weightEssay = ex.weightEssay !== undefined ? Number(ex.weightEssay) : 50;
-          gradeObj.finalScore = Math.round(((gradeObj.pgScore || 0) * weightPg / 100) + (gradeObj.essayScore * weightEssay / 100));
-
-          studentExamGrades[key1] = gradeObj;
-          studentExamGrades[key2] = gradeObj;
-          successCount++;
-        } catch (fbErr) {
-          failCount++;
-        }
+        saveAutoGradeResult(st, ex, String(classId), attempt, grades, explanations);
+        successCount++;
+      } catch (aiErr: any) {
+        console.warn(`[Auto Koreksi] AI gagal untuk siswa ${st.id}; fallback Non-AI: ${aiErr?.message || aiErr}`);
+        const result = buildNonAiEssayGrades(attempt);
+        saveAutoGradeResult(st, ex, String(classId), attempt, result.grades, result.explanations);
+        successCount++;
+        fallbackCount++;
       }
     }
 
-    await saveData('studentExamGrades', studentExamGrades);
-
-    res.json({
-      success: true,
-      message: `Proses auto koreksi AI selesai. Berhasil mengoreksi ${successCount} siswa.${failCount > 0 ? ` Gagal memproses ${failCount} siswa.` : ''}`
+    if (successCount > 0) await saveData('studentExamGrades', studentExamGrades);
+    return res.json({
+      success: successCount > 0,
+      message: `Koreksi selesai. Berhasil ${successCount}, dilewati ${skippedCount}${fallbackCount ? `, fallback Non-AI ${fallbackCount}` : ''}.`,
+      successCount,
+      skippedCount,
+      fallbackCount,
+      perStudentAuthoritativePacket: true
     });
-
   } catch (error: any) {
     console.error("[Auto Koreksi Error]:", error);
     res.status(500).json({ success: false, message: error.message });
