@@ -2374,6 +2374,7 @@ app.use((req: any, res, next) => {
   if (isMutation && (exactStaffWrite || staffWritePrefixes.some(prefix => p.startsWith(prefix))) && !staffRoles.has(role)) {
     return res.status(403).json({ success: false, message: 'Aksi ini hanya dapat dilakukan guru atau administrator.' });
   }
+  if (isMutation && !enforceTenantMutationOwnership(req, res, authUser)) return;
 
   if (p === '/api/realtime-token') {
     if (!enforceApiRateLimit(req, res, `realtime:${authUser.id}`, 120, 10 * 60 * 1000)) return;
@@ -5439,6 +5440,37 @@ function isItemForCurrentMadrasah(item: any, req: any): boolean {
   const defId = defaultM ? defaultM.id : 'default';
   const defSlug = defaultM ? defaultM.slug : 'default';
   return imId === 'default' || imId === defId || imId === defSlug || imSlug === 'default' || imSlug === defSlug || imSlug === defId || (!item.madrasahId && !item.madrasahSlug);
+}
+
+function enforceTenantMutationOwnership(req: any, res: any, authUser: any): boolean {
+  const role = String(authUser?.role || '').toLowerCase();
+  if (role === 'bos' || role === 'superadmin') return true;
+  const p = String(req.path || '');
+  const resources: Array<[RegExp, () => any[]]> = [
+    [/^\/api\/question-bank-groups\/([^/]+)$/, () => questionBankGroups || []],
+    [/^\/api\/questions\/([^/]+)$/, () => questions || []],
+    [/^\/api\/schedules\/([^/]+)$/, () => schedules || []],
+    [/^\/api\/exams\/([^/]+)$/, () => exams || []],
+    [/^\/api\/lkpds\/([^/]+)$/, () => lkpdList || []],
+    [/^\/api\/rooms\/([^/]+)$/, () => rooms || []],
+    [/^\/api\/journals\/([^/]+)$/, () => journals || []],
+    [/^\/api\/calendar-events\/([^/]+)$/, () => calendarEvents || []],
+    [/^\/api\/generated-exams\/([^/]+)$/, () => generatedExams || []],
+    [/^\/api\/lesson-plans\/([^/]+)$/, () => lessonPlans || []],
+    [/^\/api\/games\/([^/]+)$/, () => eduGames || []],
+    [/^\/api\/chats\/([^/]+)$/, () => chats || []]
+  ];
+  for (const [re, getList] of resources) {
+    const m = p.match(re);
+    if (!m) continue;
+    const item = getList().find((x: any) => String(x?.id) === String(m[1]));
+    if (item && !isItemForCurrentMadrasah(item, req)) {
+      res.status(403).json({ success: false, message: 'Akses ditolak: data bukan milik madrasah Anda.' });
+      return false;
+    }
+    return true;
+  }
+  return true;
 }
 
 function mergeTenantListData(globalList: any[], incomingData: any[], req: any): any[] {
@@ -9254,100 +9286,96 @@ app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru',
 
 // WebRTC Signaling API for Livecam Exam Monitoring (P2P zero-storage streaming)
 let examSignalingMessages: any = {};
+function isStudentAuthRole(role: string) { return ['student','siswa','class_leader','ketua_kelas'].includes(String(role || '').toLowerCase()); }
+function isStaffAuthRole(role: string) { return ['teacher','guru','admin','bos','superadmin'].includes(String(role || '').toLowerCase()); }
+function signalingAdminKey(req: any, user: any) {
+  return 'admin::' + String(getRequestMadrasahId(req) || user?.madrasahId || user?.madrasahSlug || 'default');
+}
 
-app.post("/api/exam/signaling", requireAuth, (req, res) => {
-  const authUser = (req as any).user || getAuthUser(req);
-  if (!authUser) {
-    return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
+  const user = req.user || getAuthUser(req);
+  const recipientId = String(req.body?.recipientId || ''), signal = req.body?.signal;
+  if (!user || !recipientId || signal === undefined) return res.status(400).json({ success: false, message: "Invalid signaling payload" });
+  const role = String(user.role || '').toLowerCase(), student = isStudentAuthRole(role), boss = role === 'bos' || role === 'superadmin';
+  if (!student && !isStaffAuthRole(role)) return res.status(403).json({ success: false, message: "Akses signaling ditolak." });
+
+  let targetKey = recipientId;
+  if (student) {
+    if (recipientId !== 'admin') return res.status(403).json({ success: false, message: "Siswa hanya dapat signaling ke pengawas." });
+    targetKey = signalingAdminKey(req, user);
+  } else if (recipientId === 'admin') {
+    targetKey = signalingAdminKey(req, user);
+  } else {
+    const target = (students || []).find((x: any) => String(x.id) === recipientId);
+    if (!target) return res.status(404).json({ success: false, message: "Siswa tujuan tidak ditemukan." });
+    if (!boss && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa tujuan bukan milik madrasah Anda." });
   }
-  const { recipientId, signal } = req.body;
-  if (!recipientId || !signal) {
-    return res.status(400).json({ success: false, message: "recipientId and signal required" });
-  }
-  if (!examSignalingMessages[recipientId]) {
-    examSignalingMessages[recipientId] = {};
-  }
-  const sId = authUser.id;
-  if (!examSignalingMessages[recipientId][sId]) {
-    examSignalingMessages[recipientId][sId] = [];
-  }
-  examSignalingMessages[recipientId][sId].push({ senderId: sId, signal, timestamp: Date.now() });
-  if (examSignalingMessages[recipientId][sId].length > 25) {
-    examSignalingMessages[recipientId][sId].shift();
-  }
+
+  const senderId = String(user.id);
+  const box = examSignalingMessages[targetKey] || (examSignalingMessages[targetKey] = {});
+  const queue = box[senderId] || (box[senderId] = []);
+  queue.push({ senderId, signal, timestamp: Date.now() });
+  if (queue.length > 25) queue.shift();
   res.json({ success: true });
 });
 
-app.get("/api/exam/signaling", requireAuth, (req, res) => {
-  const authUser = (req as any).user || getAuthUser(req);
-  if (!authUser) {
-    return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
-  }
-  const recipientId = String(req.query.recipientId || '');
-  const senderId = String(req.query.senderId || '');
-  if (!recipientId) {
-    return res.json({ success: true, signals: [] });
-  }
-  
-  const recipientData = examSignalingMessages[recipientId];
-  if (!recipientData) {
-    return res.json({ success: true, signals: [] });
-  }
-
-  let allSignals: any[] = [];
-  if (senderId && recipientData[senderId]) {
-    allSignals = [...recipientData[senderId]];
-    recipientData[senderId] = [];
-  } else if (!senderId) {
-    for (const sId of Object.keys(recipientData)) {
-      if (Array.isArray(recipientData[sId])) {
-        allSignals.push(...recipientData[sId]);
-      }
+app.get("/api/exam/signaling", requireAuth, (req: any, res) => {
+  const user = req.user || getAuthUser(req);
+  if (!user) return res.status(401).json({ success: false, message: "Silakan login." });
+  const requested = String(req.query.recipientId || ''), senderId = String(req.query.senderId || '');
+  const role = String(user.role || '').toLowerCase(), student = isStudentAuthRole(role), boss = role === 'bos' || role === 'superadmin';
+  let key = requested;
+  if (student) {
+    if (requested !== String(user.id)) return res.status(403).json({ success: false, message: "Siswa hanya dapat membaca signaling miliknya." });
+    key = String(user.id);
+  } else if (isStaffAuthRole(role)) {
+    if (requested !== 'admin') return res.status(403).json({ success: false, message: "Pengawas hanya dapat membaca antrean pengawas." });
+    key = signalingAdminKey(req, user);
+    if (senderId && !boss) {
+      const target = (students || []).find((x: any) => String(x.id) === senderId);
+      if (!target || !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Pengirim bukan siswa madrasah Anda." });
     }
-    examSignalingMessages[recipientId] = {};
-  } else {
-    allSignals = [];
-  }
+  } else return res.status(403).json({ success: false, message: "Akses signaling ditolak." });
 
-  res.json({ success: true, signals: allSignals });
+  const box = examSignalingMessages[key];
+  if (!box) return res.json({ success: true, signals: [] });
+  let signals: any[] = [];
+  if (senderId && box[senderId]) { signals = [...box[senderId]]; box[senderId] = []; }
+  else if (!senderId) { for (const id of Object.keys(box)) if (Array.isArray(box[id])) signals.push(...box[id]); examSignalingMessages[key] = {}; }
+  res.json({ success: true, signals });
 });
 
-// LiveKit SFU Token Generation API
-app.post("/api/exam/livekit-token", requireAuth, async (req, res) => {
+// LiveKit grants are derived from authenticated role, never client isPublisher.
+app.post("/api/exam/livekit-token", requireAuth, async (req: any, res) => {
   try {
-    const authUser = (req as any).user || getAuthUser(req);
-    if (!authUser) {
-      return res.status(401).json({ success: false, message: "Akses ditolak: Silakan login terlebih dahulu." });
+    const user = req.user || getAuthUser(req), roomName = String(req.body?.roomName || '');
+    const m = roomName.match(/^room_exam_(.+)$/);
+    if (!user || !m) return res.status(400).json({ success: false, message: "roomName ujian tidak valid." });
+    const examId = String(m[1]);
+    const exam = (getMemoryKeyValue('exams') || exams || []).find((x: any) => String(x.id) === examId);
+    if (!exam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan." });
+    const role = String(user.role || '').toLowerCase(), student = isStudentAuthRole(role), staff = isStaffAuthRole(role), boss = role === 'bos' || role === 'superadmin';
+    if (!student && !staff) return res.status(403).json({ success: false, message: "Role LiveKit ditolak." });
+    if (!boss && !isItemForCurrentMadrasah(exam, req)) return res.status(403).json({ success: false, message: "Ujian bukan milik madrasah Anda." });
+    if (student) {
+      const context = getExamAttemptContext(req, user, String(user.id), examId);
+      if (rejectExamAttemptContext(res, context)) return;
     }
-    const { roomName, isPublisher } = req.body;
-    if (!roomName) {
-      return res.status(400).json({ success: false, message: "roomName is required" });
+
+    const apiKey = appSettings.livekitApiKey || process.env.LIVEKIT_API_KEY || '';
+    const apiSecret = appSettings.livekitApiSecret || process.env.LIVEKIT_API_SECRET || '';
+    const serverUrl = appSettings.livekitUrl || process.env.LIVEKIT_URL || '';
+    if (isOnlineMode && (!apiKey || !apiSecret || !serverUrl || /localhost|127\.0\.0\.1/i.test(serverUrl))) {
+      return res.status(503).json({ success: false, message: "LiveKit online belum dikonfigurasi dengan aman." });
     }
-
-    const secureIdentity = authUser.id + "_" + (authUser.name || authUser.username || "student");
-
-    // Get LiveKit credentials from appSettings or env
-    const apiKey = appSettings.livekitApiKey || process.env.LIVEKIT_API_KEY || "devkey";
-    const apiSecret = appSettings.livekitApiSecret || process.env.LIVEKIT_API_SECRET || "secret";
-    const serverUrl = appSettings.livekitUrl || process.env.LIVEKIT_URL || "ws://localhost:7880";
-
-    const at = new AccessToken(apiKey, apiSecret, {
-      identity: secureIdentity,
-      ttl: "2h",
+    const at = new AccessToken(apiKey || "devkey", apiSecret || "secret", {
+      identity: student ? ('student_' + String(user.id)) : ('staff_' + String(user.id)),
+      ttl: "2h"
     });
-
-    at.addGrant({
-      room: String(roomName),
-      roomJoin: true,
-      canPublish: isPublisher === true,
-      canSubscribe: isPublisher !== true, // Student only publishes, Admin only subscribes
-    });
-
-    const token = await at.toJwt();
-    res.json({ success: true, token, serverUrl });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
-  }
+    at.addGrant({ room: roomName, roomJoin: true, canPublish: student, canSubscribe: staff });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, token: await at.toJwt(), serverUrl: serverUrl || "ws://localhost:7880" });
+  } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
 
 // 10. Chats API
@@ -14900,82 +14928,45 @@ async function startServer() {
     const clients = wsClients;
 
     wss.on("connection", (ws: any) => {
-      let registeredClientId: string | null = null;
-      let registeredUser: any = null;
-
+      let storageKey: string | null = null, publicId: string | null = null, user: any = null;
       ws.on("message", (message: any) => {
         try {
           const data = JSON.parse(message.toString());
           if (data.type === "register") {
-            const authUser = verifyAuthToken(String(data.token || ''));
-            if (!authUser) {
-              ws.close(4001, 'Unauthorized');
-              return;
+            const auth = verifyAuthToken(String(data.token || ''));
+            if (!auth) { ws.close(4001, 'Unauthorized'); return; }
+            const requested = String(data.clientId || ''), role = String(auth.role || '').toLowerCase();
+            const student = isStudentAuthRole(role), staff = isStaffAuthRole(role);
+            if ((!student && !staff) || (student && requested !== String(auth.id)) ||
+                (staff && requested !== 'admin' && requested !== String(auth.id))) {
+              ws.close(4003, 'Client identity mismatch'); return;
             }
-            const requestedClientId = String(data.clientId || '');
-            const role = String(authUser.role || '').toLowerCase();
-            const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
-            const isStaff = ['teacher', 'guru', 'admin', 'bos', 'superadmin'].includes(role);
-
-            if (isStudent && requestedClientId !== String(authUser.id)) {
-              ws.close(4003, 'Client identity mismatch');
-              return;
-            }
-            if (requestedClientId === 'admin' && !isStaff) {
-              ws.close(4003, 'Staff role required');
-              return;
-            }
-
-            registeredUser = authUser;
-            registeredClientId = requestedClientId || String(authUser.id);
-            clients.set(registeredClientId, ws);
-            console.log(`Signaling WS: authenticated client registered - ${registeredClientId}`);
+            user = auth; publicId = requested || String(auth.id);
+            const tenant = String(auth.madrasahId || auth.madrasahSlug || 'default');
+            storageKey = publicId === 'admin' ? ('admin::' + tenant) : publicId;
+            const previous = clients.get(storageKey);
+            if (previous && previous !== ws && previous.readyState === 1) try { previous.close(4000, 'Replaced'); } catch (_) {}
+            clients.set(storageKey, ws);
           } else if (data.type === "signal") {
-            if (!registeredUser || !registeredClientId) {
-              ws.close(4001, 'Register first');
-              return;
+            if (!user || !storageKey || !publicId) { ws.close(4001, 'Register first'); return; }
+            const recipient = String(data.recipientId || ''), role = String(user.role || '').toLowerCase();
+            const student = isStudentAuthRole(role), boss = role === 'bos' || role === 'superadmin';
+            const tenant = String(user.madrasahId || user.madrasahSlug || 'default');
+            let targetKey = recipient;
+            if (student) { if (recipient !== 'admin') return; targetKey = 'admin::' + tenant; }
+            else if (recipient === 'admin') targetKey = 'admin::' + tenant;
+            else {
+              const target = (students || []).find((x: any) => String(x.id) === recipient);
+              if (!target) return;
+              if (!boss && String(target.madrasahId || target.madrasahSlug || 'default') !== tenant) return;
             }
-            const recipientId = String(data.recipientId || '');
-            const signal = data.signal;
-            if (!recipientId || signal === undefined) return;
-
-            const role = String(registeredUser.role || '').toLowerCase();
-            const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
-            const isBoss = role === 'bos' || role === 'superadmin';
-            if (isStudent && recipientId !== 'admin') return;
-
-            if (!isStudent && recipientId !== 'admin' && !isBoss) {
-              const targetStudent = (students || []).find((st: any) => String(st.id) === recipientId);
-              if (targetStudent) {
-                const targetTenant = String(targetStudent.madrasahId || targetStudent.tenant || 'default');
-                if (targetTenant !== String(registeredUser.madrasahId || 'default')) return;
-              }
-            }
-
-            const recipientWs = clients.get(recipientId);
-            if (recipientWs && recipientWs.readyState === 1) {
-              recipientWs.send(JSON.stringify({
-                type: "signal",
-                senderId: registeredClientId,
-                signal
-              }));
-            }
+            const targetWs = clients.get(targetKey);
+            if (targetWs?.readyState === 1) targetWs.send(JSON.stringify({ type: "signal", senderId: publicId, signal: data.signal }));
           }
-        } catch (e) {
-          console.error("Signaling WS message error:", e);
-        }
+        } catch (e) { console.error("Signaling WS message error:", e); }
       });
-
-      ws.on("close", () => {
-        if (registeredClientId && clients.get(registeredClientId) === ws) {
-          clients.delete(registeredClientId);
-          console.log(`Signaling WS: Client disconnected - ${registeredClientId}`);
-        }
-      });
-
-      ws.on("error", (err: any) => {
-        console.error(`Signaling WS error for ${registeredClientId}:`, err);
-      });
+      ws.on("close", () => { if (storageKey && clients.get(storageKey) === ws) clients.delete(storageKey); });
+      ws.on("error", (err: any) => console.error(`Signaling WS error for ${publicId || storageKey}`, err));
     });
     console.log("WebRTC WebSocket Signaling Server initialized successfully!");
   } catch (err) {
