@@ -1900,6 +1900,102 @@ async function writeKeyToPostgresDirect(key: string) {
   return dbWriteQueue.run(key, () => writeKeyToPostgresDirectUnlocked(key));
 }
 
+function runWithDbKeyLocks<T>(keys: string[], task: () => Promise<T>): Promise<T> {
+  const ordered = Array.from(new Set(keys.filter(Boolean))).sort();
+  const acquire = (index: number): Promise<T> => {
+    if (index >= ordered.length) return task();
+    return dbWriteQueue.run(ordered[index], () => acquire(index + 1));
+  };
+  return acquire(0);
+}
+
+async function writeBatchToPostgresDirect(keys: string[]) {
+  const orderedKeys = Array.from(new Set(keys.filter(Boolean))).sort();
+  if (orderedKeys.length === 0) return;
+
+  return runWithDbKeyLocks(orderedKeys, async () => {
+    for (const key of orderedKeys) {
+      const timeout = dbWriteTimeouts.get(key);
+      if (timeout) clearTimeout(timeout);
+      dbWriteTimeouts.delete(key);
+      lastDbWriteTimes.set(key, Date.now());
+    }
+
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let client: any = null;
+      let clientError: any = null;
+      try {
+        if (dbInitPromise) await dbInitPromise;
+        if (!pool || isDbQuotaExceeded) {
+          if (isOnlineMode) throw new Error('ONLINE_DATABASE_UNAVAILABLE: cannot persist atomic batch');
+          return;
+        }
+
+        const snapshots = new Map<string, any>();
+        for (const key of orderedKeys) {
+          const value = getMemoryKeyValue(key);
+          if (value !== undefined) snapshots.set(key, value);
+        }
+        if (snapshots.size === 0) return;
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+
+        for (const [key, freshValue] of snapshots) {
+          if (Array.isArray(freshValue) && (key === 'attendance' || key === 'teacherAttendance' || key === 'chats')) {
+            const { active, archives } = partitionAndSaveKey(key, freshValue);
+            await client.query(`
+              INSERT INTO app_store (key, value) VALUES ($1, $2)
+              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            `, [key, JSON.stringify(active)]);
+            for (const [archiveKey, archiveItems] of Object.entries(archives)) {
+              await client.query(`
+                INSERT INTO app_store (key, value) VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+              `, [archiveKey, JSON.stringify(archiveItems)]);
+            }
+          } else {
+            await client.query(`
+              INSERT INTO app_store (key, value) VALUES ($1, $2)
+              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            `, [key, JSON.stringify(freshValue)]);
+          }
+        }
+
+        await client.query('COMMIT');
+
+        for (const [key, freshValue] of snapshots) {
+          if (isOnlineMode && (key === 'questions' || key === 'questionBankGroups')) {
+            await verifyOnlineArrayPersistence(key, freshValue, client);
+          }
+        }
+        return;
+      } catch (err: any) {
+        clientError = err;
+        if (client) {
+          try { await client.query('ROLLBACK'); } catch (_) {}
+        }
+        const msg = err?.message || String(err);
+        const transient = msg.includes('terminated') || msg.includes('closed') || msg.includes('timeout') ||
+          msg.includes('ECONNRESET') || msg.includes('socket');
+        if (transient && attempt < maxAttempts) {
+          triggerPoolRecreation();
+          await new Promise(resolve => setTimeout(resolve, 600));
+          continue;
+        }
+        handleDbError('Atomic PostgreSQL batch write failed', err);
+        if (isOnlineMode) throw err;
+        return;
+      } finally {
+        if (client) {
+          try { client.release(clientError); } catch (_) {}
+        }
+      }
+    }
+  });
+}
+
 function scheduleDbWrite(key: string) {
   if (dbWriteTimeouts.has(key)) {
     // Already scheduled, let the scheduled one write the latest memory state
@@ -2016,22 +2112,25 @@ async function saveData(key: string, value: any, immediate = true) {
 }
 
 async function saveDataBatch(items: { key: string; value: any }[], immediate = true) {
+  const normalizedItems = items.filter((item) => item && String(item.key || '').trim());
+  if (normalizedItems.length === 0) return;
+
   if (isOnlineMode && !isRestoring) {
     if (dbInitPromise) await dbInitPromise;
     if (!pool || isDbQuotaExceeded) {
       throw new Error('ONLINE_DATABASE_UNAVAILABLE: cannot persist batch');
     }
   }
-  for (const item of items) {
+
+  const previousValues = new Map<string, any>();
+  for (const item of normalizedItems) {
+    if (!previousValues.has(item.key)) previousValues.set(item.key, getMemoryKeyValue(item.key));
     updateMemoryKey(item.key, item.value);
   }
 
-  // 1. Write to local disk cache instantly (for reliability)
   try {
     const store = readLocalStore();
-    for (const item of items) {
-      store[item.key] = item.value;
-    }
+    for (const item of normalizedItems) store[item.key] = item.value;
     writeLocalStore(store);
   } catch (e) {
     console.error("Skipping write to local_store.json for batch update:", e);
@@ -2039,37 +2138,43 @@ async function saveDataBatch(items: { key: string; value: any }[], immediate = t
 
   lastDbFetchTime = Date.now();
 
-  // 2. Broadcast state updates immediately (for responsive UI)
   try {
-    items.forEach(item => {
-      broadcastStateUpdate(item.key);
-    });
+    if (pool && !isDbQuotaExceeded) {
+      if (immediate) {
+        // ATOMIC_BATCH_PERSISTENCE: all logical keys commit or roll back together.
+        await writeBatchToPostgresDirect(normalizedItems.map((item) => item.key));
+      } else {
+        for (const item of normalizedItems) scheduleDbWrite(item.key);
+      }
+    }
+  } catch (err) {
+    if (isOnlineMode) {
+      for (const [key, previous] of previousValues) updateMemoryKey(key, previous);
+      try {
+        const store = readLocalStore();
+        for (const [key, previous] of previousValues) {
+          if (previous === undefined) delete store[key];
+          else store[key] = previous;
+        }
+        writeLocalStore(store);
+      } catch (_) {}
+    }
+    throw err;
+  }
+
+  try {
+    normalizedItems.forEach((item) => broadcastStateUpdate(item.key));
   } catch (e) {
     console.error("Broadcast state batch update error:", e);
   }
 
-  // 3. Sync to Firestore (Backup persistent layer)
   if (db) {
-    for (const item of items) {
+    for (const item of normalizedItems) {
       saveKeyToFirestore(item.key, item.value).catch(err => {
         console.error(`[Firestore Backup] Batch error backing up "${item.key}" to Firestore:`, err);
       });
     }
   }
-
-  // 4. Write directly or schedule writes for each key
-  if (pool && !isDbQuotaExceeded) {
-    if (immediate) {
-      for (const item of items) {
-        await writeKeyToPostgresDirect(item.key);
-      }
-    } else {
-      for (const item of items) {
-        scheduleDbWrite(item.key);
-      }
-    }
-  }
-
 }
 
 // --- GRACEFUL SHUTDOWN INTEGRATION ---
