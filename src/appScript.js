@@ -779,7 +779,7 @@ async function syncKeyFromServer(key) {
     else if (key === 'generatedExams') endpoint = '/api/generated-exams';
     else if (key === 'lessonPlans') endpoint = '/api/lesson-plans';
     else if (key === 'grades') endpoint = '/api/grades';
-    else if (key === 'lkpdList') endpoint = '/api/sync-state?key=lkpdList';
+    else if (key === 'lkpdList') endpoint = '/api/lkpds';
     else if (key === 'activeExamSessions') {
         if (appState.role === 'student' || appState.role === 'siswa') return;
         endpoint = '/api/exam-monitoring-state';
@@ -1060,6 +1060,10 @@ function initRealtimeSync() {
                 } else if (payload && (payload.type === 'exam_progress' || payload.type === 'student_heartbeat' || payload.type === 'exam_violation' || payload.type === 'exam_finish' || payload.type === 'exam_started' || payload.type === 'exam_presence')) {
                     if (typeof window.__onExamMonitoringEvent === 'function') {
                         window.__onExamMonitoringEvent(payload);
+                    }
+                } else if (payload && (payload.type === 'lkpd_progress' || payload.type === 'lkpd_violation' || payload.type === 'lkpd_frame')) {
+                    if (typeof window.__onLkpdMonitoringEvent === 'function') {
+                        window.__onLkpdMonitoringEvent(payload);
                     }
                 }
             } catch (e) {

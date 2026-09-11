@@ -2327,6 +2327,40 @@ window.submitStudentLkpdAnswers = async function(lkpdId, studentId, studentName,
 // ============================================================================
 // 5. MONITORING LKPD SECTION
 // ============================================================================
+// LKPD_REALTIME_CLIENT_V2: consume small per-student events instead of refetching global monitoring state.
+window.__onLkpdMonitoringEvent = function(payload) {
+    if (!payload || !payload.studentId || !payload.lkpdId) return;
+    const appState = window.appState || {};
+    const sessionKey = String(payload.studentId) + '_' + String(payload.lkpdId);
+    if (!appState.activeExamSessions) appState.activeExamSessions = {};
+    if (!appState.studentTabSwitches) appState.studentTabSwitches = {};
+    if (!appState.studentOutOfTab) appState.studentOutOfTab = {};
+    if (!appState.blockedStudents) appState.blockedStudents = {};
+    if (!appState.runtimeLivecamFrames) appState.runtimeLivecamFrames = {};
+    appState.activeExamSessions[sessionKey] = {
+        ...(appState.activeExamSessions[sessionKey] || {}),
+        studentId: String(payload.studentId),
+        lkpdId: String(payload.lkpdId),
+        answeredCount: Number(payload.answeredCount || 0),
+        totalQuestions: Number(payload.totalQuestions || 0),
+        lastSeenAt: Number(payload.lastSeenAt || Date.now())
+    };
+    appState.studentTabSwitches[sessionKey] = Number(payload.tabSwitches || 0);
+    appState.studentOutOfTab[sessionKey] = payload.outOfTab === true;
+    appState.blockedStudents[sessionKey] = payload.blocked === true;
+    if (payload.type === 'lkpd_frame' && typeof payload.frame === 'string' && payload.frame.startsWith('data:image/')) {
+        appState.runtimeLivecamFrames[sessionKey] = payload.frame;
+    }
+    if (String(appState.activeMonitoringLkpdId || '') === String(payload.lkpdId)) {
+        clearTimeout(window.__lkpdRealtimeRenderTimer);
+        window.__lkpdRealtimeRenderTimer = setTimeout(() => {
+            const container = document.getElementById('lkpd-monitoring-container');
+            if (container && typeof window.renderLkpdMonitoringSection === 'function') {
+                window.renderLkpdMonitoringSection(container, payload.lkpdId);
+            }
+        }, 250);
+    }
+};
 window.switchToLkpdMonitoring = function(lkpdId) {
     window.appState.activeMonitoringLkpdId = lkpdId;
     if (typeof window.renderAssessmentModule === 'function') {
@@ -3015,7 +3049,7 @@ window.runLkpdAutoKoreksiNonAI = async function(classId, lkpdId) {
         if (res && res.success) {
             showToast(res.message, 'success');
             try {
-                const updatedStore = await fetch('/api/exam-monitoring-state').then(r => r.json());
+                const updatedStore = await fetch('/api/lkpds').then(r => r.json());
                 if (updatedStore && updatedStore.lkpdList) {
                     window.appState.lkpdList = updatedStore.lkpdList;
                     const storageKey = typeof window.getLkpdStorageKey === 'function' ? window.getLkpdStorageKey() : 'madrasah_lkpdList';
@@ -3061,7 +3095,7 @@ window.runLkpdAutoKoreksiAI = async function(classId, lkpdId) {
         if (res && res.success) {
             showToast(res.message, 'success');
             try {
-                const updatedStore = await fetch('/api/exam-monitoring-state').then(r => r.json());
+                const updatedStore = await fetch('/api/lkpds').then(r => r.json());
                 if (updatedStore && updatedStore.lkpdList) {
                     window.appState.lkpdList = updatedStore.lkpdList;
                     const storageKey = typeof window.getLkpdStorageKey === 'function' ? window.getLkpdStorageKey() : 'madrasah_lkpdList';

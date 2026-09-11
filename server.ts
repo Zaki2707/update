@@ -3944,6 +3944,39 @@ function examsForRequest(req: any): any[] {
     : tenantExams;
 }
 
+// TEACHER_MONITOR_SCOPE_V2: all academic monitoring/sync paths reuse the same assignment boundary.
+function teacherCanUseLkpdPayload(req: any, lkpdPayload: any): boolean {
+  if (!isTeacherRequest(req)) return true;
+  if (!lkpdPayload || typeof lkpdPayload !== 'object') return false;
+  const subjectRef = lkpdPayload.subjectId || lkpdPayload.subjectName || lkpdPayload.subject;
+  return Boolean(subjectRef && teacherCanAccessSubjectRef(req, subjectRef));
+}
+
+function lkpdsForRequest(req: any): any[] {
+  const tenantLkpds = filterByMadrasah(lkpdList || [], req);
+  return isTeacherRequest(req)
+    ? tenantLkpds.filter((lkpd: any) => teacherCanUseLkpdPayload(req, lkpd))
+    : tenantLkpds;
+}
+
+function gradePayloadAllowedForTeacher(req: any, gradePayload: any): boolean {
+  if (!isTeacherRequest(req)) return true;
+  if (!gradePayload || typeof gradePayload !== 'object') return false;
+  const subjectRef = gradePayload.subjectId || gradePayload.subjectName || gradePayload.subject;
+  return Boolean(subjectRef && teacherCanAccessSubjectRef(req, subjectRef));
+}
+
+function studentCanAccessLkpd(student: any, lkpd: any): boolean {
+  if (!student || !lkpd) return false;
+  const targets = Array.isArray(lkpd.classes)
+    ? lkpd.classes.map((value: any) => String(value))
+    : [lkpd.classId, lkpd.class_id, lkpd.className].filter(Boolean).map((value: any) => String(value));
+  if (targets.length === 0 || targets.some((value: string) => value.toUpperCase() === 'ALL')) return true;
+  const studentClasses = [student.classId, student.class_id, student.className, student.class]
+    .filter(Boolean).map((value: any) => String(value));
+  return targets.some((target: string) => studentClasses.includes(target));
+}
+
 function effectiveSettingsForRequest(req: any): any {
   const base = globalSettingsBase();
   if (!isOnlineMode) return base;
@@ -6646,115 +6679,118 @@ app.post('/api/system/recover-master-missing', requireAuth, requireRole(['admin'
 });
 
 function mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any): any[] {
-  if (!Array.isArray(incomingData)) return globalList;
+  if (!Array.isArray(incomingData)) return Array.isArray(globalList) ? globalList : [];
   if (!Array.isArray(globalList)) globalList = [];
 
   const authenticatedUser = req.user || getAuthUser(req);
   const userRole = String(authenticatedUser?.role || 'student').trim().toLowerCase();
   const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(userRole);
+  const isTeacher = ['teacher', 'guru'].includes(userRole);
+  const currentSchoolExisting = globalList.filter(item => isItemForCurrentMadrasah(item, req));
+  const otherItems = globalList.filter(item => !isItemForCurrentMadrasah(item, req));
+  if (incomingData.length === 0) return globalList;
 
-  // 1. Tag incoming items with the current madrasah
-  const taggedIncoming = incomingData.map(item => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-    const clean = { ...item };
+  const existingMap = new Map<string, any>();
+  for (const item of currentSchoolExisting) {
+    if (item?.id !== undefined && item?.id !== null) existingMap.set(String(item.id), { ...item });
+  }
+  const mergedItemsMap = new Map(existingMap);
+  const authenticatedStudent = isStudent
+    ? (students || []).find((item: any) => String(item.id) === String(authenticatedUser?.id || '') && isItemForCurrentMadrasah(item, req))
+    : null;
+
+  for (const rawIncoming of incomingData) {
+    if (!rawIncoming || typeof rawIncoming !== 'object' || Array.isArray(rawIncoming) || rawIncoming.id === undefined || rawIncoming.id === null) continue;
+    const clean = { ...rawIncoming };
     delete clean.madrasahId;
     delete clean.madrasahSlug;
-    return tagNewRecord(clean, req);
-  });
-
-  // 2. Separate global items into: other schools vs current school
-  const otherItems = globalList.filter(item => !isItemForCurrentMadrasah(item, req));
-  const currentSchoolExisting = globalList.filter(item => isItemForCurrentMadrasah(item, req));
-
-  // 3. Safety Lock: If incoming data is empty:
-  //    - If student, we ignore it completely to prevent wiping.
-  //    - If teacher, we also preserve the existing items to be completely safe from accidental wipes.
-  if (taggedIncoming.length === 0) {
-    return globalList;
-  }
-
-  // 4. Create Map of existing items
-  const mergedItemsMap = new Map<string, any>();
-  currentSchoolExisting.forEach(existingItem => {
-    if (existingItem && existingItem.id) {
-      mergedItemsMap.set(String(existingItem.id), { ...existingItem });
-    }
-  });
-
-  // 5. Merge incoming items
-  taggedIncoming.forEach(incomingItem => {
-    if (!incomingItem || !incomingItem.id) return;
+    const incomingItem = tagNewRecord(clean, req);
     const key = String(incomingItem.id);
-    const existing = mergedItemsMap.get(key);
+    const existing = existingMap.get(key);
+
+    if (isStudent) {
+      // LKPD_STUDENT_SUBMISSION_WRITE_SCOPE: students can only submit answers for their own targeted LKPD.
+      if (!existing || !authenticatedStudent || !studentCanAccessLkpd(authenticatedStudent, existing)) continue;
+      const incomingSubs = Array.isArray(incomingItem.submissions) ? incomingItem.submissions : [];
+      const ownIncoming = incomingSubs.find((sub: any) => String(sub?.studentId || '') === String(authenticatedUser.id));
+      if (!ownIncoming) continue;
+
+      const existingSubs = Array.isArray(existing.submissions) ? existing.submissions : [];
+      const existingOwn = existingSubs.find((sub: any) => String(sub?.studentId || '') === String(authenticatedUser.id));
+      const markerIds = new Set((Array.isArray(existing.markers) ? existing.markers : []).map((m: any) => String(m?.id || '')).filter(Boolean));
+      const rawAnswers = ownIncoming.answers && typeof ownIncoming.answers === 'object' && !Array.isArray(ownIncoming.answers) ? ownIncoming.answers : {};
+      const safeAnswers: Record<string, any> = {};
+      let answerCount = 0;
+      for (const [answerKey, answerValue] of Object.entries(rawAnswers)) {
+        if (answerCount >= 1000 || !markerIds.has(String(answerKey))) continue;
+        const value = String(answerValue ?? '');
+        if (Buffer.byteLength(value, 'utf8') > 64 * 1024) continue;
+        safeAnswers[String(answerKey)] = value;
+        answerCount++;
+      }
+
+      const classRecord = (classes || []).find((c: any) =>
+        isItemForCurrentMadrasah(c, req) &&
+        [authenticatedStudent.classId, authenticatedStudent.class_id].filter(Boolean).some((id: any) => String(c.id) === String(id))
+      );
+      const safeSubmission = {
+        ...(existingOwn || {}),
+        studentId: String(authenticatedStudent.id),
+        studentName: authenticatedStudent.name || existingOwn?.studentName || '',
+        nis: authenticatedStudent.nis || existingOwn?.nis || '',
+        classId: authenticatedStudent.classId || authenticatedStudent.class_id || existingOwn?.classId || existing.classId || '',
+        className: classRecord?.name || authenticatedStudent.className || existingOwn?.className || existing.className || '',
+        submittedAt: existingOwn?.submittedAt || new Date().toISOString(),
+        answers: { ...(existingOwn?.answers || {}), ...safeAnswers },
+        // Grading fields are always server/teacher authoritative.
+        scores: existingOwn?.scores || {},
+        feedback: existingOwn?.feedback || {},
+        totalScore: Number(existingOwn?.totalScore || 0),
+        isGraded: existingOwn?.isGraded === true,
+        gradedBy: existingOwn?.gradedBy || '',
+        gradedAt: existingOwn?.gradedAt || ''
+      };
+      const nextSubs = existingSubs.filter((sub: any) => String(sub?.studentId || '') !== String(authenticatedUser.id));
+      nextSubs.push(safeSubmission);
+      mergedItemsMap.set(key, { ...existing, submissions: nextSubs });
+      continue;
+    }
+
+    if (isTeacher && !teacherCanUseLkpdPayload(req, existing ? { ...existing, ...incomingItem } : incomingItem)) {
+      continue;
+    }
 
     if (!existing) {
-      // Only allow teachers/admins to create new LKPDs
-      if (!isStudent) {
-        mergedItemsMap.set(key, incomingItem);
-      }
-    } else {
-      // Merge existing with incoming
-      const mergedSubmissionsMap = new Map<string, any>();
-      
-      // Seed existing submissions from database
-      const existingSubs = Array.isArray(existing.submissions) ? existing.submissions : [];
-      existingSubs.forEach((sub: any) => {
-        if (sub && sub.studentId) {
-          mergedSubmissionsMap.set(String(sub.studentId), sub);
-        }
-      });
+      mergedItemsMap.set(key, incomingItem);
+      continue;
+    }
 
-      // Merge incoming submissions
-      const incomingSubs = Array.isArray(incomingItem.submissions) ? incomingItem.submissions : [];
-      incomingSubs.forEach((sub: any) => {
-        if (sub && sub.studentId) {
-          if (isStudent && String(sub.studentId) !== String(authenticatedUser?.id || '')) return;
-          const existingSub = mergedSubmissionsMap.get(String(sub.studentId));
-          if (!existingSub) {
-            mergedSubmissionsMap.set(String(sub.studentId), sub);
-          } else {
-            // Keep existing and merge fields
-            mergedSubmissionsMap.set(String(sub.studentId), {
-              ...existingSub,
-              ...sub,
-              answers: { ...(existingSub.answers || {}), ...(sub.answers || {}) },
-              scores: { ...(existingSub.scores || {}), ...(sub.scores || {}) },
-              feedback: { ...(existingSub.feedback || {}), ...(sub.feedback || {}) }
-            });
-          }
-        }
-      });
+    const mergedSubmissionsMap = new Map<string, any>();
+    for (const sub of (Array.isArray(existing.submissions) ? existing.submissions : [])) {
+      if (sub?.studentId) mergedSubmissionsMap.set(String(sub.studentId), sub);
+    }
+    for (const sub of (Array.isArray(incomingItem.submissions) ? incomingItem.submissions : [])) {
+      if (!sub?.studentId) continue;
+      const existingSub = mergedSubmissionsMap.get(String(sub.studentId));
+      mergedSubmissionsMap.set(String(sub.studentId), existingSub ? {
+        ...existingSub,
+        ...sub,
+        answers: { ...(existingSub.answers || {}), ...(sub.answers || {}) },
+        scores: { ...(existingSub.scores || {}), ...(sub.scores || {}) },
+        feedback: { ...(existingSub.feedback || {}), ...(sub.feedback || {}) }
+      } : sub);
+    }
+    mergedItemsMap.set(key, { ...existing, ...incomingItem, submissions: Array.from(mergedSubmissionsMap.values()) });
+  }
 
-      // Update definition
-      if (isStudent) {
-        // If student, preserve the metadata/questions/markers/classes of the teacher's original LKPD,
-        // and only update the submissions.
-        mergedItemsMap.set(key, {
-          ...existing,
-          submissions: Array.from(mergedSubmissionsMap.values())
-        });
-      } else {
-        // If teacher, they can update metadata/questions/markers/classes
-        mergedItemsMap.set(key, {
-          ...existing,
-          ...incomingItem,
-          submissions: Array.from(mergedSubmissionsMap.values())
-        });
+  // Preserve omitted LKPDs that the actor is not authorized to delete.
+  if (isStudent || isTeacher) {
+    for (const existing of currentSchoolExisting) {
+      if (!existing?.id) continue;
+      if (isStudent || !teacherCanUseLkpdPayload(req, existing)) {
+        mergedItemsMap.set(String(existing.id), existing);
       }
     }
-  });
-
-  // 6. Handle Deletions:
-  // If an LKPD is missing from taggedIncoming:
-  // - If student: we MUST preserve it (do not delete).
-  // - If teacher/admin: we allow deleting it.
-  if (isStudent) {
-    // Keep any existing item that was not in taggedIncoming
-    currentSchoolExisting.forEach(existingItem => {
-      if (existingItem && existingItem.id && !mergedItemsMap.has(String(existingItem.id))) {
-        mergedItemsMap.set(String(existingItem.id), existingItem);
-      }
-    });
   }
 
   return [...otherItems, ...Array.from(mergedItemsMap.values())];
@@ -9103,6 +9139,36 @@ function lkpdStateCandidateKeys(req: any, studentId: any, lkpdId: any): string[]
   ]));
 }
 
+function monitoringStateKeyAllowedForActor(req: any, rawKey: string): boolean {
+  const raw = String(rawKey || '');
+  const role = String((req.user || getAuthUser(req))?.role || '').toLowerCase();
+  const teacher = role === 'teacher' || role === 'guru';
+  const examAllowed = (examId: string) => {
+    const item = (exams || []).find((candidate: any) => String(candidate.id) === String(examId) && isItemForCurrentMadrasah(candidate, req));
+    return Boolean(item && (!teacher || teacherCanUseExamPayload(req, item)));
+  };
+  const lkpdAllowed = (lkpdId: string) => {
+    const item = (lkpdList || []).find((candidate: any) => String(candidate.id) === String(lkpdId) && isItemForCurrentMadrasah(candidate, req));
+    return Boolean(item && (!teacher || teacherCanUseLkpdPayload(req, item)));
+  };
+
+  const parsedExam = parseExamStateKeyForRequest(req, raw);
+  if (parsedExam) return examAllowed(parsedExam.examId);
+  const parsedLkpd = parseLkpdStateKeyForRequest(req, raw);
+  if (parsedLkpd) return lkpdAllowed(parsedLkpd.lkpdId);
+
+  const examBcast = parseNamespacedExamBroadcastKey(raw);
+  if (examBcast) return canonicalRealtimeTenant(examBcast.tenant) === examStateTenant(req, undefined, examBcast.examId) && examAllowed(examBcast.examId);
+  const lkpdBcast = parseNamespacedLkpdBroadcastKey(raw);
+  if (lkpdBcast) return canonicalRealtimeTenant(lkpdBcast.tenant) === lkpdStateTenant(req, undefined, lkpdBcast.lkpdId) && lkpdAllowed(lkpdBcast.lkpdId);
+  if (raw.startsWith('broadcast_')) {
+    const targetId = raw.slice('broadcast_'.length);
+    return examAllowed(targetId) || lkpdAllowed(targetId);
+  }
+  const tenantStudent = (students || []).some((student: any) => String(student.id) === raw && isItemForCurrentMadrasah(student, req));
+  return tenantStudent && !teacher;
+}
+
 function resolveLkpdStudentContext(req: any, authUser: any, lkpdId: any) {
   const studentId = String(authUser?.id || '');
   const role = String(authUser?.role || '').toLowerCase();
@@ -9125,16 +9191,8 @@ function resolveLkpdStudentContext(req: any, authUser: any, lkpdId: any) {
 
   const student = studentMatches[0];
   const lkpd = lkpdMatches[0];
-  const targets = Array.isArray(lkpd.classes)
-    ? lkpd.classes.map((value: any) => String(value))
-    : [lkpd.classId, lkpd.class_id, lkpd.className].filter(Boolean).map((value: any) => String(value));
-  const unrestricted = targets.length === 0 || targets.some((value: string) => value.toUpperCase() === 'ALL');
-  if (!unrestricted) {
-    const studentClasses = [student.classId, student.class_id, student.className, student.class]
-      .filter(Boolean).map((value: any) => String(value));
-    if (!targets.some((target: string) => studentClasses.includes(target))) {
-      return { error: { status: 403, message: 'Siswa tidak terdaftar pada kelas sasaran LKPD ini.' } };
-    }
+  if (!studentCanAccessLkpd(student, lkpd)) {
+    return { error: { status: 403, message: 'Siswa tidak terdaftar pada kelas sasaran LKPD ini.' } };
   }
   return { student, lkpd, studentId };
 }
@@ -9344,6 +9402,7 @@ function filterExamStateMapForRequest(mapObj: any, req: any): any {
   );
 
   for (const key of Object.keys(mapObj)) {
+    if (!monitoringStateKeyAllowedForActor(req, key)) continue;
     const lkpdBroadcast = parseNamespacedLkpdBroadcastKey(key);
     if (lkpdBroadcast) {
       const expectedTenant = lkpdStateTenant(req, undefined, lkpdBroadcast.lkpdId);
@@ -9391,22 +9450,58 @@ app.post("/api/lkpd/student-state", requireAuth, requireRole(['student', 'siswa'
   const context = resolveLkpdStudentContext(req, authUser, lkpdId);
   if (context.error) return res.status(context.error.status).json({ success: false, message: context.error.message });
 
+  let validatedLivecamFrame = '';
+  if (req.body?.livecamFrame) {
+    validatedLivecamFrame = String(req.body.livecamFrame);
+    if (Buffer.byteLength(validatedLivecamFrame, 'utf8') > 2 * 1024 * 1024) {
+      return res.status(413).json({ success: false, message: 'Frame livecam LKPD terlalu besar.' });
+    }
+    if (!parseSafeRasterDataUrl(validatedLivecamFrame)) {
+      return res.status(400).json({ success: false, message: 'Format frame livecam LKPD tidak valid.' });
+    }
+  }
+
   const studentId = context.studentId;
   const lkpd = context.lkpd;
   const key = lkpdStateKey(req, studentId, lkpdId);
   const existingKey = resolveLkpdStateKey(req, studentId, lkpdId);
   const legacyKeys = lkpdLegacyStateKeysForRequest(req, studentId, lkpdId).filter((candidate) => candidate !== key);
-  const writes: Promise<any>[] = [];
+  const candidateKeys = Array.from(new Set([key, existingKey, ...legacyKeys]));
   const active = req.body?.active !== false;
   const now = Date.now();
+  const violationReason = String(req.body?.violationReason || '').trim().slice(0, 500);
+  const deltaWrites: Array<{ storeName: string; itemKey: string; value: any }> = [];
+  const affectedStores = [
+    { store: activeExamSessions, name: 'activeExamSessions' },
+    { store: studentTabSwitches, name: 'studentTabSwitches' },
+    { store: studentOutOfTab, name: 'studentOutOfTab' },
+    { store: blockedStudents, name: 'blockedStudents' }
+  ];
+  const snapshot = affectedStores.map(({ store, name }) => ({
+    store, name,
+    entries: new Map(candidateKeys.map((candidate) => [candidate, {
+      exists: Object.prototype.hasOwnProperty.call(store || {}, candidate),
+      value: store?.[candidate]
+    }]))
+  }));
+  const restoreSnapshot = () => {
+    for (const state of snapshot) {
+      for (const [candidate, entry] of state.entries) {
+        if (entry.exists) state.store[candidate] = entry.value;
+        else delete state.store[candidate];
+      }
+    }
+  };
+  const queueDelta = (storeName: string, itemKey: string, value: any) => {
+    deltaWrites.push({ storeName, itemKey, value });
+  };
 
   const migrateDeltaState = (store: any, storeName: string) => {
-    const hasNamespaced = Object.prototype.hasOwnProperty.call(store || {}, key);
-    if (!hasNamespaced) {
+    if (!Object.prototype.hasOwnProperty.call(store || {}, key)) {
       for (const legacyKey of legacyKeys) {
         if (Object.prototype.hasOwnProperty.call(store || {}, legacyKey)) {
           store[key] = store[legacyKey];
-          writes.push(saveDeltaDb(storeName, key, store[key]));
+          queueDelta(storeName, key, store[key]);
           break;
         }
       }
@@ -9414,22 +9509,21 @@ app.post("/api/lkpd/student-state", requireAuth, requireRole(['student', 'siswa'
     for (const legacyKey of legacyKeys) {
       if (Object.prototype.hasOwnProperty.call(store || {}, legacyKey)) {
         delete store[legacyKey];
-        writes.push(saveDeltaDb(storeName, legacyKey, null));
+        queueDelta(storeName, legacyKey, null);
       }
     }
   };
 
-  // Preserve teacher-controlled state while moving legacy LKPD keys to the tenant namespace.
   migrateDeltaState(studentTabSwitches, 'studentTabSwitches');
   migrateDeltaState(studentOutOfTab, 'studentOutOfTab');
   migrateDeltaState(blockedStudents, 'blockedStudents');
 
   if (!active) {
     delete activeExamSessions[key];
-    writes.push(saveDeltaDb('activeExamSessions', key, null));
+    queueDelta('activeExamSessions', key, null);
     for (const legacyKey of legacyKeys) {
-      if (Object.prototype.hasOwnProperty.call(activeExamSessions || {}, legacyKey)) delete activeExamSessions[legacyKey];
-      writes.push(saveDeltaDb('activeExamSessions', legacyKey, null));
+      delete activeExamSessions[legacyKey];
+      queueDelta('activeExamSessions', legacyKey, null);
     }
   } else {
     const existingSession = activeExamSessions[key] || activeExamSessions[existingKey] || {};
@@ -9446,68 +9540,81 @@ app.post("/api/lkpd/student-state", requireAuth, requireRole(['student', 'siswa'
       lastSeenAt: now
     };
     activeExamSessions[key] = session;
-    writes.push(saveDeltaDb('activeExamSessions', key, session));
+    queueDelta('activeExamSessions', key, session);
     for (const legacyKey of legacyKeys) {
-      if (Object.prototype.hasOwnProperty.call(activeExamSessions || {}, legacyKey)) delete activeExamSessions[legacyKey];
-      writes.push(saveDeltaDb('activeExamSessions', legacyKey, null));
+      delete activeExamSessions[legacyKey];
+      queueDelta('activeExamSessions', legacyKey, null);
     }
   }
 
   if (typeof req.body?.outOfTab === 'boolean') {
     studentOutOfTab[key] = req.body.outOfTab;
     if (existingKey !== key) delete studentOutOfTab[existingKey];
-    writes.push(saveDeltaDb('studentOutOfTab', key, req.body.outOfTab));
+    queueDelta('studentOutOfTab', key, req.body.outOfTab);
   }
-
-  const violationReason = String(req.body?.violationReason || '').trim().slice(0, 500);
   if (violationReason) {
-    const currentCount = Number(studentTabSwitches[existingKey] || studentTabSwitches[key] || 0);
+    const currentCount = Number(studentTabSwitches[key] || studentTabSwitches[existingKey] || 0);
     studentTabSwitches[key] = currentCount + 1;
     studentOutOfTab[key] = true;
     if (existingKey !== key) {
       delete studentTabSwitches[existingKey];
       delete studentOutOfTab[existingKey];
     }
-    writes.push(saveDeltaDb('studentTabSwitches', key, studentTabSwitches[key]));
-    writes.push(saveDeltaDb('studentOutOfTab', key, true));
+    queueDelta('studentTabSwitches', key, studentTabSwitches[key]);
+    queueDelta('studentOutOfTab', key, true);
   }
 
-  if (req.body?.livecamFrame) {
-    const frameText = String(req.body.livecamFrame);
-    if (Buffer.byteLength(frameText, 'utf8') > 2 * 1024 * 1024) return res.status(413).json({ success: false, message: 'Frame livecam LKPD terlalu besar.' });
-    if (!parseSafeRasterDataUrl(frameText)) return res.status(400).json({ success: false, message: 'Format frame livecam LKPD tidak valid.' });
-    studentLivecamFrames[key] = frameText;
+  try {
+    await saveDeltaBatchDb(deltaWrites);
+  } catch (err: any) {
+    restoreSnapshot();
+    return res.status(503).json({ success: false, message: safeServerError(err, 'State LKPD belum dapat disimpan. Silakan coba lagi.') });
+  }
+
+  if (validatedLivecamFrame) {
+    studentLivecamFrames[key] = validatedLivecamFrame;
     if (existingKey !== key) delete studentLivecamFrames[existingKey];
   }
-
-  await Promise.all(writes);
-  if (writes.length > 0) {
-    broadcastStateUpdate('activeExamSessions');
-    broadcastStateUpdate('studentTabSwitches');
-    broadcastStateUpdate('studentOutOfTab');
-  }
-  if (req.body?.livecamFrame) broadcastStateUpdate('studentLivecamFrames');
 
   const personalKeys = lkpdStateCandidateKeys(req, studentId, lkpdId);
   const broadcastKey = lkpdBroadcastStateKey(req, lkpdId);
   const legacyBroadcast = 'broadcast_' + lkpdId;
   const blocked = personalKeys.some((candidate) => blockedStudents[candidate] === true);
+  const outOfTabValue = personalKeys.some((candidate) => studentOutOfTab[candidate] === true);
+  const tabSwitchCount = Math.max(0, ...personalKeys.map((candidate) => Number(studentTabSwitches[candidate] || 0)));
   const messagePersonalKey = personalKeys.find((candidate) => Object.prototype.hasOwnProperty.call(examMessages || {}, candidate));
   const messagePersonal = messagePersonalKey ? examMessages[messagePersonalKey] : null;
   const messageBroadcast = examMessages[broadcastKey] ??
     (((lkpdList || []).filter((item: any) => String(item.id) === lkpdId).length === 1) ? examMessages[legacyBroadcast] : null);
 
+  const session = activeExamSessions[key] || null;
+  // LKPD_REALTIME_EVENT_V2: no full-state invalidation on 5-second student heartbeats.
+  broadcastExamEvent({
+    type: validatedLivecamFrame ? 'lkpd_frame' : (violationReason ? 'lkpd_violation' : 'lkpd_progress'),
+    madrasahId: lkpdStateTenant(req, studentId, lkpdId),
+    lkpdId,
+    studentId,
+    answeredCount: Number(session?.answeredCount || 0),
+    totalQuestions: Number(session?.totalQuestions || 0),
+    lastSeenAt: Number(session?.lastSeenAt || now),
+    outOfTab: outOfTabValue,
+    tabSwitches: tabSwitchCount,
+    blocked,
+    violationReason: violationReason || undefined,
+    frame: validatedLivecamFrame || undefined
+  });
+
   return res.json({
     success: true,
     blocked,
-    outOfTab: personalKeys.some((candidate) => studentOutOfTab[candidate] === true),
-    tabSwitches: Math.max(0, ...personalKeys.map((candidate) => Number(studentTabSwitches[candidate] || 0))),
+    outOfTab: outOfTabValue,
+    tabSwitches: tabSwitchCount,
     messagePersonal,
     messageBroadcast,
-    session: activeExamSessions[key] ? {
-      answeredCount: activeExamSessions[key].answeredCount || 0,
-      totalQuestions: activeExamSessions[key].totalQuestions || 0,
-      lastSeenAt: activeExamSessions[key].lastSeenAt || now
+    session: session ? {
+      answeredCount: session.answeredCount || 0,
+      totalQuestions: session.totalQuestions || 0,
+      lastSeenAt: session.lastSeenAt || now
     } : null
   });
 });
@@ -9551,9 +9658,9 @@ app.get("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'guru
     });
   }
 
-  const tenantExams = (getMemoryKeyValue('exams') || exams || []).filter((e: any) =>
-    isItemForCurrentMadrasah(e, req)
-  );
+  const tenantExams = isTeacherRequest(req)
+    ? examsForRequest(req)
+    : (getMemoryKeyValue('exams') || exams || []).filter((e: any) => isItemForCurrentMadrasah(e, req));
 
   res.json({
     success: true,
@@ -10723,6 +10830,9 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
   }
   const activeExam = resolvedExam.item;
   if (!activeExam) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan pada tenant yang diizinkan." });
+  if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, activeExam)) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat memonitor ujian mata pelajaran/bank soal yang diampu." });
+  }
 
   const examTenant = canonicalRealtimeTenant(activeExam.madrasahId || activeExam.madrasahSlug || 'default');
   let studentList = getMemoryKeyValue('students') || students || [];
@@ -10791,6 +10901,50 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
   });
 });
 
+type DeltaBatchWrite = { storeName: string; itemKey: string; value: any };
+
+async function saveDeltaBatchDb(items: DeltaBatchWrite[]) {
+  const deduped = new Map<string, DeltaBatchWrite>();
+  for (const item of items || []) {
+    if (!item?.storeName || !item?.itemKey) continue;
+    deduped.set(`delta::${item.storeName}::${item.itemKey}`, item);
+  }
+  if (deduped.size === 0) return;
+  if (isOnlineMode) {
+    if (dbInitPromise) await dbInitPromise;
+    if (!pool || isDbQuotaExceeded) throw new Error('ONLINE_DATABASE_UNAVAILABLE: cannot persist atomic delta batch');
+  }
+  if (!pool || isDbQuotaExceeded) return;
+
+  const dbKeys = Array.from(deduped.keys());
+  await runWithDbKeyLocks(dbKeys, async () => {
+    let client: any = null;
+    let clientError: any = null;
+    try {
+      client = await pool.connect();
+      await client.query('BEGIN');
+      for (const [dbKey, item] of deduped.entries()) {
+        if (item.value === null || item.value === undefined) {
+          await client.query('DELETE FROM app_store WHERE key = $1', [dbKey]);
+        } else {
+          await client.query(`
+            INSERT INTO app_store (key, value) VALUES ($1, $2)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+          `, [dbKey, JSON.stringify(item.value)]);
+        }
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      clientError = err;
+      if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
+      if (isOnlineMode) throw err;
+      console.error('Atomic delta batch write error:', err);
+    } finally {
+      if (client) { try { client.release(clientError); } catch (_) {} }
+    }
+  });
+}
+
 async function saveDeltaDb(deltaType: string, itemKey: string, value: any) {
   if (isOnlineMode) {
     if (dbInitPromise) await dbInitPromise;
@@ -10829,18 +10983,7 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
   if (!isBos) {
     const validateKey = (rawKey: string) => {
       if (!rawKey) return true;
-      const raw = String(rawKey);
-      if (parseExamStateKeyForRequest(req, raw) || parseLkpdStateKeyForRequest(req, raw)) return true;
-      const examBcast = parseNamespacedExamBroadcastKey(raw);
-      if (examBcast) return (exams || []).some((item: any) => String(item.id) === examBcast.examId && isItemForCurrentMadrasah(item, req));
-      const lkpdBcast = parseNamespacedLkpdBroadcastKey(raw);
-      if (lkpdBcast) return (lkpdList || []).some((item: any) => String(item.id) === lkpdBcast.lkpdId && isItemForCurrentMadrasah(item, req));
-      if (raw.startsWith('broadcast_')) {
-        const targetId = raw.slice('broadcast_'.length);
-        return (exams || []).some((item: any) => String(item.id) === targetId && isItemForCurrentMadrasah(item, req)) ||
-          (lkpdList || []).some((item: any) => String(item.id) === targetId && isItemForCurrentMadrasah(item, req));
-      }
-      return false;
+      return monitoringStateKeyAllowedForActor(req, String(rawKey));
     };
 
     const testKeys = [
@@ -12580,6 +12723,9 @@ app.post("/api/gemini/auto-koreksi-lkpd", requireAuth, requireRole(['teacher', '
 
     if (!lkpd) {
       return res.status(404).json({ success: false, message: "LKPD tidak ditemukan pada tenant yang diizinkan." });
+    }
+    if (isTeacherRequest(req) && !teacherCanUseLkpdPayload(req, lkpd)) {
+      return res.status(403).json({ success: false, message: "Guru hanya dapat mengoreksi LKPD mata pelajaran yang diampu." });
     }
 
     const lkpdTenant = canonicalRealtimeTenant(lkpd?.madrasahId || lkpd?.madrasahSlug || 'default');
@@ -14662,8 +14808,10 @@ app.get("/api/exams", (req: any, res) => {
 app.get("/api/lkpds", (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
   const role = String(authUser?.role || '').toLowerCase();
-  let list = filterByMadrasah(lkpdList, req);
+  let list = isTeacherRequest(req) ? lkpdsForRequest(req) : filterByMadrasah(lkpdList, req);
   if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
+    const ownStudent = (students || []).find((student: any) => String(student.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(student, req));
+    list = ownStudent ? list.filter((lkpd: any) => studentCanAccessLkpd(ownStudent, lkpd)) : [];
     list = list.map((lkpd: any) => sanitizeLkpdForStudent(lkpd, String(authUser?.id || '')));
   }
   res.json({ success: true, lkpdList: list });
@@ -16770,6 +16918,7 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     const role = String(authUser?.role || '').toLowerCase();
     const syncKey = String(key);
     const isStudentSyncRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+    const isTeacherSyncRole = role === 'teacher' || role === 'guru';
     const studentSyncKeys = new Set(['attendance', 'lkpdList', 'childguardStatus']);
     const staffSyncKeys = new Set([
       'teachers', 'students', 'classes', 'subjects', 'attendance', 'teacherAttendance',
@@ -16787,6 +16936,30 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     }
     if ((syncKey === 'settings' || syncKey === 'schoolLocations' || syncKey === 'schoolLocationSettings') && !adminRoles.has(role)) {
       return res.status(403).json({ success: false, message: 'Pengaturan sistem hanya dapat diubah administrator.' });
+    }
+    // TEACHER_SYNC_SCOPE_V2: generic sync must never bypass dedicated master-data RBAC.
+    const teacherAdminOwnedKeys = new Set(['teachers', 'students', 'classes', 'subjects', 'gradeCategories', 'customGradeColumns']);
+    if (isTeacherSyncRole && teacherAdminOwnedKeys.has(syncKey)) {
+      return res.status(403).json({ success: false, message: 'Master data tersebut hanya dapat diubah administrator melalui endpoint khusus.' });
+    }
+    if (isTeacherSyncRole && ['questionBankGroups', 'questionBank', 'questions', 'exams', 'grades'].includes(syncKey) && !Array.isArray(data)) {
+      return res.status(400).json({ success: false, message: 'Payload sinkronisasi akademik guru harus berupa array.' });
+    }
+    if (isTeacherSyncRole && syncKey === 'questionBankGroups') {
+      const denied = data.some((item: any) => !questionBankGroupAllowedForTeacher(req, tagNewRecord({ ...item, madrasahId: undefined, madrasahSlug: undefined }, req)));
+      if (denied) return res.status(403).json({ success: false, message: 'Guru hanya dapat menyinkronkan grup bank soal mata pelajaran yang diampu.' });
+    }
+    if (isTeacherSyncRole && (syncKey === 'questionBank' || syncKey === 'questions')) {
+      const denied = data.some((item: any) => !questionPayloadAllowedForTeacher(req, item));
+      if (denied) return res.status(403).json({ success: false, message: 'Guru hanya dapat menyinkronkan soal mata pelajaran yang diampu.' });
+    }
+    if (isTeacherSyncRole && syncKey === 'exams') {
+      const denied = data.some((item: any) => !teacherCanUseExamPayload(req, item));
+      if (denied) return res.status(403).json({ success: false, message: 'Guru hanya dapat menyinkronkan ujian mata pelajaran/bank soal yang diampu.' });
+    }
+    if (isTeacherSyncRole && syncKey === 'grades') {
+      const denied = data.some((item: any) => !gradePayloadAllowedForTeacher(req, item));
+      if (denied) return res.status(403).json({ success: false, message: 'Guru hanya dapat menyinkronkan nilai mata pelajaran yang diampu.' });
     }
     key = syncKey;
     const tenantMasterKeys = new Set(['teachers', 'students', 'classes', 'subjects']);
@@ -16901,9 +17074,18 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       kbmDuration = setTenantConfigValue(kbmDuration, req, Number.isFinite(parsed) && parsed > 0 ? parsed : 40, 40, 'kbmDuration');
       await saveData('kbmDuration', kbmDuration);
     }
-    else if (key === 'questionBankGroups') { questionBankGroups = mergeTenantCrudSyncData(questionBankGroups, data, req); await saveData('questionBankGroups', questionBankGroups); }
-    else if (key === 'questionBank' || key === 'questions') { questions = mergeTenantCrudSyncData(questions, data, req); await saveData('questions', questions); }
-    else if (key === 'exams') { exams = mergeTenantCrudSyncData(exams, data, req); await saveData('exams', exams); }
+    else if (key === 'questionBankGroups') {
+      questionBankGroups = isTeacherSyncRole ? mergeTenantScopedSyncRecords(questionBankGroups, data, req, (item: any) => String(item?.id || '').trim()) : mergeTenantCrudSyncData(questionBankGroups, data, req);
+      await saveData('questionBankGroups', questionBankGroups);
+    }
+    else if (key === 'questionBank' || key === 'questions') {
+      questions = isTeacherSyncRole ? mergeTenantScopedSyncRecords(questions, data, req, (item: any) => String(item?.id || '').trim()) : mergeTenantCrudSyncData(questions, data, req);
+      await saveData('questions', questions);
+    }
+    else if (key === 'exams') {
+      exams = isTeacherSyncRole ? mergeTenantScopedSyncRecords(exams, data, req, (item: any) => String(item?.id || '').trim()) : mergeTenantCrudSyncData(exams, data, req);
+      await saveData('exams', exams);
+    }
     else if (key === 'lkpdList') { lkpdList = mergeLkpdListDataSmart(lkpdList, data, req); await saveData('lkpdList', lkpdList); }
     else if (key === 'rooms') { rooms = mergeTenantCrudSyncData(rooms, data, req); await saveData('rooms', rooms); }
     else if (key === 'journals') { journals = mergeTenantCrudSyncData(journals, data, req); await saveData('journals', journals); }
@@ -16921,7 +17103,10 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     else if (key === 'calendarEvents') { calendarEvents = mergeTenantCrudSyncData(calendarEvents, data, req); await saveData('calendarEvents', calendarEvents); }
     else if (key === 'generatedExams') { generatedExams = mergeTenantCrudSyncData(generatedExams, data, req); await saveData('generatedExams', generatedExams); }
     else if (key === 'lessonPlans') { lessonPlans = mergeTenantCrudSyncData(lessonPlans, data, req); await saveData('lessonPlans', lessonPlans); }
-    else if (key === 'grades') { grades = mergeTenantCrudSyncData(grades, data, req); await saveData('grades', grades); }
+    else if (key === 'grades') {
+      grades = isTeacherSyncRole ? mergeTenantScopedSyncRecords(grades, data, req, (item: any) => String(item?.id || '').trim()) : mergeTenantCrudSyncData(grades, data, req);
+      await saveData('grades', grades);
+    }
     else if (key === 'settings') {
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
         return res.status(400).json({ success: false, message: 'Payload settings tidak valid.' });
