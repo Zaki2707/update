@@ -3796,7 +3796,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
           }
         }
       } else {
-        isCorrect = true; // Fallback if no target key required
+        isCorrect = false; // No authoritative answer key: never award XP by default.
       }
     }
 
@@ -3829,7 +3829,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
       }
 
       newTotalXp = student.gameXp;
-      saveData("students", students);
+      await saveData("students", students);
     }
 
     const attemptLog = {
@@ -3842,7 +3842,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
       timestamp: getJakartaIsoString()
     };
     gameAttempts.push(attemptLog);
-    saveData("gameAttempts", gameAttempts);
+    await saveData("gameAttempts", gameAttempts);
 
     res.json({
       success: true,
@@ -3890,10 +3890,23 @@ app.get("/api/games/leaderboard", (req, res) => {
 let gameMessages: Record<string, any[]> = {};
 let activeGameSessionsServer: Record<string, any> = {};
 
+function gameTenantNamespace(req: any): string {
+  return String(getRequestMadrasahId(req) || 'default');
+}
+function gameStudentStorageKey(req: any, studentId: any): string {
+  return `${gameTenantNamespace(req)}::student::${String(studentId || '')}`;
+}
+function gameBroadcastStorageKey(req: any): string {
+  return `${gameTenantNamespace(req)}::broadcast`;
+}
+
 app.get("/api/game/active-sessions", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
   const allowed = new Set((filterByMadrasah(students || [], req) || []).map((x: any) => String(x.id)));
   const scoped: Record<string, any> = {};
-  for (const [id, value] of Object.entries(activeGameSessionsServer || {})) if (allowed.has(String(id))) scoped[id] = value;
+  for (const id of allowed) {
+    const value = activeGameSessionsServer[gameStudentStorageKey(req, id)];
+    if (value !== undefined) scoped[id] = value;
+  }
   res.json({ success: true, sessions: scoped });
 });
 
@@ -3909,11 +3922,14 @@ app.post("/api/game/active-sessions", (req: any, res) => {
     const target = (students || []).find((x: any) => String(x.id) === studentId);
     if (target && role !== 'bos' && role !== 'superadmin' && !isItemForCurrentMadrasah(target, req)) return res.status(403).json({ success: false, message: "Siswa bukan milik madrasah Anda." });
     if (studentId) {
+      const storageKey = gameStudentStorageKey(req, studentId);
       if (sessionData === null) {
-        delete activeGameSessionsServer[studentId];
+        delete activeGameSessionsServer[storageKey];
       } else {
-        activeGameSessionsServer[studentId] = {
+        activeGameSessionsServer[storageKey] = {
           ...sessionData,
+          studentId,
+          madrasahId: gameTenantNamespace(req),
           updatedAt: Date.now()
         };
       }
@@ -3931,11 +3947,24 @@ app.get("/api/game/messages", (req: any, res) => {
   const requested = String(req.query.studentId || '');
   const studentId = self ? String(authUser?.id || '') : requested;
   if (self && requested && requested !== studentId) return res.status(403).json({ success: false, message: "Siswa hanya dapat membaca pesan miliknya." });
-  if (studentId) return res.json({ success: true, messages: [...(gameMessages[studentId] || []), ...(gameMessages['BROADCAST'] || [])] });
+  if (studentId) {
+    return res.json({
+      success: true,
+      messages: [
+        ...(gameMessages[gameStudentStorageKey(req, studentId)] || []),
+        ...(gameMessages[gameBroadcastStorageKey(req)] || [])
+      ]
+    });
+  }
   if (!['teacher','guru','admin','bos','superadmin'].includes(role)) return res.status(403).json({ success: false, message: "Akses ditolak." });
   const allowed = new Set((filterByMadrasah(students || [], req) || []).map((x: any) => String(x.id)));
   const scoped: Record<string, any[]> = {};
-  for (const [id, value] of Object.entries(gameMessages || {})) if (id === 'BROADCAST' || allowed.has(String(id))) scoped[id] = Array.isArray(value) ? value : [];
+  for (const id of allowed) {
+    const value = gameMessages[gameStudentStorageKey(req, id)];
+    if (Array.isArray(value)) scoped[id] = value;
+  }
+  const broadcasts = gameMessages[gameBroadcastStorageKey(req)];
+  if (Array.isArray(broadcasts)) scoped.BROADCAST = broadcasts;
   res.json({ success: true, messages: scoped });
 });
 
@@ -3962,11 +3991,13 @@ app.post("/api/game/messages", requireAuth, requireRole(['teacher', 'guru', 'adm
     };
 
     if (recipientId && recipientId !== 'BROADCAST') {
-      if (!gameMessages[recipientId]) gameMessages[recipientId] = [];
-      gameMessages[recipientId].push(msgObj);
+      const storageKey = gameStudentStorageKey(req, recipientId);
+      if (!gameMessages[storageKey]) gameMessages[storageKey] = [];
+      gameMessages[storageKey].push({ ...msgObj, madrasahId: gameTenantNamespace(req) });
     } else {
-      if (!gameMessages['BROADCAST']) gameMessages['BROADCAST'] = [];
-      gameMessages['BROADCAST'].push(msgObj);
+      const storageKey = gameBroadcastStorageKey(req);
+      if (!gameMessages[storageKey]) gameMessages[storageKey] = [];
+      gameMessages[storageKey].push({ ...msgObj, madrasahId: gameTenantNamespace(req) });
     }
 
     res.json({ success: true, message: msgObj });
@@ -3984,8 +4015,9 @@ app.post("/api/game/messages/dismiss", (req: any, res) => {
     const studentId = self ? String(authUser?.id || '') : requested;
     const messageId = req.body?.messageId;
     if (self && requested && requested !== studentId) return res.status(403).json({ success: false, message: "Siswa hanya dapat menutup pesan miliknya." });
-    if (studentId && gameMessages[studentId]) {
-      gameMessages[studentId] = gameMessages[studentId].filter((m: any) => m.id !== messageId);
+    const storageKey = gameStudentStorageKey(req, studentId);
+    if (studentId && gameMessages[storageKey]) {
+      gameMessages[storageKey] = gameMessages[storageKey].filter((m: any) => m.id !== messageId);
     }
     res.json({ success: true });
   } catch (err: any) {
@@ -4183,6 +4215,52 @@ app.post("/api/cloudinary/repair-missing", requireAuth, requireRole(['admin', 'b
 
 // 1c. Force Reconnect & Pull data from Google Cloud SQL to local JSON store
 app.post("/api/db-pull-cloud", async (req, res) => {
+  // ONLINE_DB_PULL_CLOUD_SQL_ONLY: Cloud SQL is authoritative online. Never recover from
+  // ephemeral local_store files and never push a Cloud Run disk snapshot back to Cloud SQL.
+  if (isOnlineMode) {
+    try {
+      console.log("[DB Pull] ONLINE authoritative refresh from Cloud SQL...");
+      await determineAndInitPool();
+      if (!pool || isDbQuotaExceeded) {
+        return res.status(503).json({
+          success: false,
+          code: 'ONLINE_DATABASE_UNAVAILABLE',
+          message: 'Cloud SQL belum tersedia. Tidak ada fallback ke filesystem Cloud Run.'
+        });
+      }
+      await pool.query("SELECT 1");
+      lastDbFetchTime = 0;
+      await refreshInmemoryState(true);
+      if (!pool || isDbQuotaExceeded) {
+        return res.status(503).json({
+          success: false,
+          code: 'ONLINE_DATABASE_UNAVAILABLE',
+          message: 'Cloud SQL gagal direfresh. State lokal tidak digunakan sebagai sumber pemulihan online.'
+        });
+      }
+      await pool.query("SELECT 1");
+      return res.json({
+        success: true,
+        mode: 'online-cloud-sql-authoritative',
+        message: 'Data aktif berhasil dimuat ulang dari Cloud SQL.',
+        details: {
+          teachersCount: Array.isArray(teachers) ? teachers.length : 0,
+          studentsCount: Array.isArray(students) ? students.length : 0,
+          classesCount: Array.isArray(classes) ? classes.length : 0,
+          attendanceCount: Array.isArray(attendance) ? attendance.length : 0,
+          questionsCount: Array.isArray(questions) ? questions.length : 0
+        }
+      });
+    } catch (err: any) {
+      handleDbError('ONLINE DB Pull', err);
+      return res.status(503).json({
+        success: false,
+        code: 'ONLINE_DATABASE_UNAVAILABLE',
+        message: 'Gagal memuat ulang data dari Cloud SQL. Filesystem Cloud Run tidak digunakan sebagai fallback.'
+      });
+    }
+  }
+
   const tryLocalBackupRestore = () => {
     const candidates = [LOCAL_STORE_FILE + ".backup", LOCAL_STORE_FILE];
     for (const filePath of candidates) {
@@ -5447,6 +5525,10 @@ function enforceTenantMutationOwnership(req: any, res: any, authUser: any): bool
   if (role === 'bos' || role === 'superadmin') return true;
   const p = String(req.path || '');
   const resources: Array<[RegExp, () => any[]]> = [
+    [/^\/api\/teachers\/([^/]+)$/, () => teachers || []],
+    [/^\/api\/students\/([^/]+)$/, () => students || []],
+    [/^\/api\/classes\/([^/]+)$/, () => classes || []],
+    [/^\/api\/subjects\/([^/]+)$/, () => subjects || []],
     [/^\/api\/question-bank-groups\/([^/]+)$/, () => questionBankGroups || []],
     [/^\/api\/questions\/([^/]+)$/, () => questions || []],
     [/^\/api\/schedules\/([^/]+)$/, () => schedules || []],
@@ -5463,8 +5545,8 @@ function enforceTenantMutationOwnership(req: any, res: any, authUser: any): bool
   for (const [re, getList] of resources) {
     const m = p.match(re);
     if (!m) continue;
-    const item = getList().find((x: any) => String(x?.id) === String(m[1]));
-    if (item && !isItemForCurrentMadrasah(item, req)) {
+    const matchingItems = getList().filter((x: any) => String(x?.id) === String(m[1]));
+    if (matchingItems.length > 0 && !matchingItems.some((item: any) => isItemForCurrentMadrasah(item, req))) {
       res.status(403).json({ success: false, message: 'Akses ditolak: data bukan milik madrasah Anda.' });
       return false;
     }
@@ -5479,11 +5561,12 @@ function mergeTenantListData(globalList: any[], incomingData: any[], req: any): 
 
   // Tag incoming items with the current madrasah
   const taggedIncoming = incomingData.map(item => {
-    // Preserve existing tags if present, otherwise tag them
-    if (item && (item.madrasahId || item.madrasahSlug)) {
-      return item;
-    }
-    return tagNewRecord({ ...item }, req);
+    // Tenant identity is server-authoritative. Never trust madrasah tags supplied by a normal client.
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const clean = { ...item };
+    delete clean.madrasahId;
+    delete clean.madrasahSlug;
+    return tagNewRecord(clean, req);
   });
 
   // Partition the global list into items NOT for current madrasah
@@ -5764,10 +5847,11 @@ function mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any
 
   // 1. Tag incoming items with the current madrasah
   const taggedIncoming = incomingData.map(item => {
-    if (item && (item.madrasahId || item.madrasahSlug)) {
-      return item;
-    }
-    return tagNewRecord({ ...item }, req);
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const clean = { ...item };
+    delete clean.madrasahId;
+    delete clean.madrasahSlug;
+    return tagNewRecord(clean, req);
   });
 
   // 2. Separate global items into: other schools vs current school
@@ -5816,6 +5900,7 @@ function mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any
       const incomingSubs = Array.isArray(incomingItem.submissions) ? incomingItem.submissions : [];
       incomingSubs.forEach((sub: any) => {
         if (sub && sub.studentId) {
+          if (isStudent && String(sub.studentId) !== String(authenticatedUser?.id || '')) return;
           const existingSub = mergedSubmissionsMap.get(String(sub.studentId));
           if (!existingSub) {
             mergedSubmissionsMap.set(String(sub.studentId), sub);
@@ -9430,13 +9515,19 @@ app.post("/api/chats", requireAuth, async (req: any, res) => {
   }
 });
 
-app.delete("/api/chats/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.delete("/api/chats/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
+    let deleted = 0;
     await updateStoreKeyWithLock('chats', (currentVal) => {
       const list = Array.isArray(currentVal) ? currentVal : [];
-      return list.filter((c: any) => String(c.id) !== String(req.params.id));
+      return list.filter((c: any) => {
+        const match = String(c.id) === String(req.params.id) && isItemForCurrentMadrasah(c, req);
+        if (match) deleted++;
+        return !match;
+      });
     });
-    res.json({ success: true });
+    if (!deleted) return res.status(404).json({ success: false, message: 'Pesan tidak ditemukan pada madrasah ini.' });
+    res.json({ success: true, deleted });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -9465,36 +9556,48 @@ app.post("/api/chats/clear", async (req: any, res) => {
   }
 });
 
-app.put("/api/chats/read", async (req, res) => {
-  const { senderId, receiverId } = req.body;
+app.put("/api/chats/read", requireAuth, async (req: any, res) => {
+  const { senderId, receiverId } = req.body || {};
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+  if (!senderId || !receiverId) return res.status(400).json({ success: false, message: 'Missing ids' });
+  if (isStudent && String(receiverId) !== String(authUser?.id || '')) {
+    return res.status(403).json({ success: false, message: 'Siswa hanya dapat menandai pesan yang diterimanya sendiri.' });
+  }
   try {
+    let updated = 0;
     await updateStoreKeyWithLock('chats', (currentVal) => {
       const chatList = Array.isArray(currentVal) ? currentVal : [];
-      chatList.forEach((c: any) => {
-        if (String(c.senderId) === String(senderId) && String(c.receiverId) === String(receiverId) && !c.read) {
+      for (const c of chatList) {
+        if (isItemForCurrentMadrasah(c, req) &&
+            String(c.senderId) === String(senderId) &&
+            String(c.receiverId) === String(receiverId) &&
+            !c.read) {
           c.read = true;
+          updated++;
         }
-      });
+      }
       return chatList;
     });
-    res.json({ success: true });
+    res.json({ success: true, updated });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
 
-app.post("/api/chats/broadcast-apk", async (req, res) => {
+app.post("/api/chats/broadcast-apk", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
   try {
-    const { text, attachment } = req.body;
-    const studentsList = students || [];
+    const { text, attachment } = req.body || {};
+    const studentsList = filterByMadrasah(students || [], req);
     const now = Date.now();
     const newChats: any[] = [];
-    studentsList.forEach((s: any) => {
-      newChats.push({
+    studentsList.forEach((student: any) => {
+      const chat = tagNewRecord({
         id: (now + Math.random()).toString(),
-        senderId: 'admin',
-        receiverId: s.id,
+        senderId: String((req.user || getAuthUser(req))?.id || 'admin'),
+        receiverId: student.id,
         text: text || "Bapak/Ibu Orangtua dan Siswa, berikut adalah berkas instalasi Layanan Monitoring ChildGuard Madrasah Bisa. Silakan unduh, instal, dan aktifkan izin aksesibilitas serta overlay perangkat agar fitur pemantauan berjalan dengan baik.",
         timestamp: now,
         read: false,
@@ -9503,7 +9606,8 @@ app.post("/api/chats/broadcast-apk", async (req, res) => {
           name: 'childguard_v2.1.0_prod.apk',
           data: '/public/childguard.apk'
         }
-      });
+      }, req);
+      newChats.push(chat);
     });
 
     await updateStoreKeyWithLock('chats', (currentVal) => {
@@ -14745,6 +14849,29 @@ app.post("/api/system/restore/chunk", async (req: any, res) => {
 });
 
 // Sync State API for generic app state persistence
+function mergeTenantScopedSyncRecords(globalList: any[], incomingData: any[], req: any, getKey: (item: any) => string): any[] {
+  const base = Array.isArray(globalList) ? globalList : [];
+  const otherItems = base.filter((item: any) => !isItemForCurrentMadrasah(item, req));
+  const currentItems = base.filter((item: any) => isItemForCurrentMadrasah(item, req));
+  const currentMap = new Map<string, any>();
+  for (const item of currentItems) {
+    if (!item || typeof item !== 'object') continue;
+    const k = getKey(item);
+    if (k) currentMap.set(k, item);
+  }
+  for (const raw of Array.isArray(incomingData) ? incomingData : []) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const clean = { ...raw };
+    delete clean.madrasahId;
+    delete clean.madrasahSlug;
+    const tagged = tagNewRecord(clean, req);
+    const k = getKey(tagged);
+    if (!k) continue;
+    currentMap.set(k, { ...(currentMap.get(k) || {}), ...tagged });
+  }
+  return [...otherItems, ...Array.from(currentMap.values())];
+}
+
 app.post("/api/sync-state", requireAuth, async (req, res) => {
   try {
     let { key, data } = req.body;
@@ -14752,6 +14879,29 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
 
     const authUser = (req as any).user || getAuthUser(req);
     const role = String(authUser?.role || '').toLowerCase();
+    const syncKey = String(key);
+    const isStudentSyncRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+    const onlineStudentSyncKeys = new Set(['attendance', 'lkpdList', 'childguardStatus']);
+    const onlineStaffSyncKeys = new Set([
+      'teachers', 'students', 'classes', 'subjects', 'attendance', 'teacherAttendance',
+      'schedules', 'savedRosters', 'timeSlots', 'kbmDuration', 'questionBankGroups',
+      'questionBank', 'questions', 'exams', 'lkpdList', 'rooms', 'journals',
+      'gradeCategories', 'customGradeColumns', 'calendarEvents', 'generatedExams',
+      'lessonPlans', 'grades', 'gameModes', 'classGrades', 'childguardStatus',
+      'settings', 'schoolLocations', 'schoolLocationSettings'
+    ]);
+    if (isOnlineMode) {
+      if (isStudentSyncRole && !onlineStudentSyncKeys.has(syncKey)) {
+        return res.status(403).json({ success: false, message: 'Siswa tidak diizinkan menyinkronkan state tersebut.' });
+      }
+      if (!isStudentSyncRole && (!staffRoles.has(role) || !onlineStaffSyncKeys.has(syncKey))) {
+        return res.status(403).json({ success: false, message: 'State sinkronisasi tidak diizinkan.' });
+      }
+      if ((syncKey === 'settings' || syncKey === 'schoolLocations' || syncKey === 'schoolLocationSettings') && !adminRoles.has(role)) {
+        return res.status(403).json({ success: false, message: 'Pengaturan sistem hanya dapat diubah administrator.' });
+      }
+    }
+    key = syncKey;
     const tenantMasterKeys = new Set(['teachers', 'students', 'classes', 'subjects']);
     if (tenantMasterKeys.has(String(key)) && !staffRoles.has(role)) {
       return res.status(403).json({ success: false, message: 'Aksi master data hanya dapat dilakukan guru atau administrator.' });
@@ -14818,39 +14968,40 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       await saveData('subjects', subjects);
     }
     else if (key === 'attendance') {
+      if (isOnlineMode && !Array.isArray(data)) {
+        return res.status(400).json({ success: false, message: 'Payload attendance harus berupa array.' });
+      }
       if (Array.isArray(data)) {
-        if (data.length === 0 && Array.isArray(attendance) && attendance.length > 0) {
-          // Do not wipe non-empty attendance with empty array
-        } else {
-          const aMap = new Map((Array.isArray(attendance) ? attendance : []).map((a: any) => [String(a.id || `${a.studentId}_${a.date}_${a.subjectId||''}`), a]));
-          for (const item of data) {
-            if (item) {
-              const k = String(item.id || `${item.studentId}_${item.date}_${item.subjectId||''}`);
-              aMap.set(k, { ...(aMap.get(k) || {}), ...item });
-            }
-          }
-          attendance = Array.from(aMap.values());
+        if (isStudentSyncRole) {
+          const foreign = data.some((item: any) => item && String(item.studentId || '') !== String(authUser?.id || ''));
+          if (foreign) return res.status(403).json({ success: false, message: 'Siswa hanya dapat menyinkronkan absensi miliknya.' });
         }
-      } else if (data) {
+        attendance = mergeTenantScopedSyncRecords(
+          attendance,
+          data,
+          req,
+          (item: any) => String(item.id || `${item.studentId}_${item.date}_${item.subjectId || ''}`)
+        );
+      } else if (data && !isOnlineMode) {
         attendance = data;
       }
       await saveData('attendance', attendance);
     }
     else if (key === 'teacherAttendance') {
+      if (isOnlineMode && !staffRoles.has(role)) {
+        return res.status(403).json({ success: false, message: 'Absensi guru hanya dapat disinkronkan staf.' });
+      }
+      if (isOnlineMode && !Array.isArray(data)) {
+        return res.status(400).json({ success: false, message: 'Payload teacherAttendance harus berupa array.' });
+      }
       if (Array.isArray(data)) {
-        if (data.length === 0 && Array.isArray(teacherAttendance) && teacherAttendance.length > 0) {
-          // Do not wipe non-empty teacherAttendance
-        } else {
-          const tMap = new Map((Array.isArray(teacherAttendance) ? teacherAttendance : []).map((t: any) => [String(t.id || `${t.teacherId}_${t.date}`), t]));
-          for (const item of data) {
-            if (item) {
-              const k = String(item.id || `${item.teacherId}_${item.date}`);
-              tMap.set(k, { ...(tMap.get(k) || {}), ...item });
-            }
-          }
-          teacherAttendance = Array.from(tMap.values());
-        }
-      } else if (data) {
+        teacherAttendance = mergeTenantScopedSyncRecords(
+          teacherAttendance,
+          data,
+          req,
+          (item: any) => String(item.id || `${item.teacherId}_${item.date}`)
+        );
+      } else if (data && !isOnlineMode) {
         teacherAttendance = data;
       }
       await saveData('teacherAttendance', teacherAttendance);
@@ -14870,10 +15021,30 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     else if (key === 'generatedExams') { generatedExams = mergeTenantListData(generatedExams, data, req); await saveData('generatedExams', generatedExams); }
     else if (key === 'lessonPlans') { lessonPlans = mergeTenantListData(lessonPlans, data, req); await saveData('lessonPlans', lessonPlans); }
     else if (key === 'grades') { grades = mergeTenantListData(grades, data, req); await saveData('grades', grades); }
-    else if (key === 'settings') { appSettings = data; await saveData('settings', appSettings); }
+    else if (key === 'settings') {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return res.status(400).json({ success: false, message: 'Payload settings tidak valid.' });
+      }
+      const safeSettings = { ...data };
+      for (const protectedKey of [
+        'adminPass', 'password', 'jwtSecret', 'JWT_SECRET', 'tokenLockSecret', 'TOKEN_LOCK_SECRET',
+        'localStoreSecret', 'LOCAL_STORE_SECRET', 'licensePrivateKey', 'LICENSE_PRIVATE_KEY',
+        'livekitApiSecret', 'cloudinaryApiSecret', 'cloudinaryApiKey'
+      ]) delete safeSettings[protectedKey];
+      appSettings = { ...appSettings, ...safeSettings };
+      await saveData('settings', appSettings);
+    }
     else if (key === 'schoolLocations' || key === 'schoolLocationSettings') { schoolLocationSettings = data; await saveData('schoolLocationSettings', schoolLocationSettings); }
     else if (key === 'childguardStatus') {
       if (typeof data === 'object' && data !== null) {
+        if (isOnlineMode && isStudentSyncRole) {
+          const ownStudent = (students || []).find((st: any) => String(st.id) === String(authUser?.id || ''));
+          const allowedKeys = new Set([String(authUser?.id || ''), String(ownStudent?.nis || '')].filter(Boolean));
+          const suppliedKeys = Object.keys(data);
+          if (suppliedKeys.some((statusKey: string) => !allowedKeys.has(String(statusKey)))) {
+            return res.status(403).json({ success: false, message: 'Status ChildGuard hanya boleh untuk akun siswa sendiri.' });
+          }
+        }
         const now = Date.now();
         for (const [sKey, sStatus] of Object.entries(data)) {
           if (typeof sStatus === 'object' && sStatus !== null) {
