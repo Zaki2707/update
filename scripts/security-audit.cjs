@@ -72,6 +72,12 @@ const checks = [
   ['Grade upsert is tenant scoped', server.includes('g => isItemForCurrentMadrasah(g, req) &&') && server.includes('Nilai hanya dapat dibuat untuk siswa dan kelas pada tenant yang sama.')],
   ['Student delete cascades are tenant scoped', server.includes('!isItemForCurrentMadrasah(a, req) ||') && server.includes('!isItemForCurrentMadrasah(g, req) ||')],
   ['Regular student IDs reject duplicates', server.includes('ID siswa sudah digunakan. Gunakan ID lain agar state CBT dan realtime tetap unik.')],
+  ['Import groups are tenant scoped', server.includes("let list = filterByMadrasah(importGroups || [], req)") && server.includes("tagNewRecord(raw, req)") && server.includes("isItemForCurrentMadrasah(g, req)")],
+  ['Teacher deletion is tenant scoped', server.includes('teacherCandidates.find((t: any) => isItemForCurrentMadrasah(t, req))') && server.includes("teachers = teachers.filter((t: any) => !(String(t.id) === String(id) && isItemForCurrentMadrasah(t, req)))")],
+  ['Tenant configuration envelope exists', server.includes('function tenantConfigValue(') && server.includes('function setTenantConfigValue(') && server.includes('__tenantScopedConfigV1')],
+  ['Geofence settings are tenant scoped', server.includes("tenantConfigValue(schoolLocationSettings, req") && server.includes("setTenantConfigValue(\n    schoolLocationSettings")],
+  ['Time slots and KBM are tenant scoped', server.includes('timeSlots = mergeTenantListData(timeSlots, newSlots, req)') && server.includes("tenantConfigValue(kbmDuration, req, 40, 'kbmDuration')")],
+  ['Grade categories and custom columns are tenant scoped', server.includes("setTenantConfigValue(gradeCategories, req") && server.includes("setTenantConfigValue(customGradeColumns, req") && app.includes("endpoint = '/api/custom-grade-columns'")],
   ['Chunk restore is bound to owner and tenant', server.includes('session.owner !== owner || session.tenant !== tenant') && server.includes('15 * 60 * 1000')],
 ];
 
