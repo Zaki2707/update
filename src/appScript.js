@@ -2866,7 +2866,14 @@ async function detectTenantUrlOnBoot() {
                     document.title = `${data.madrasah.name} - Portal Madrasah`;
                     const tenantBanner = document.getElementById('login-tenant-banner');
                     if (tenantBanner) {
-                        tenantBanner.innerHTML = `<i class="fa-solid fa-school text-emerald-600"></i> Portal Madrasah: <strong class="font-bold text-slate-800">${data.madrasah.name}</strong>`;
+                        tenantBanner.replaceChildren();
+                    const tenantIcon = document.createElement('i');
+                    tenantIcon.className = 'fa-solid fa-school text-emerald-600';
+                    const tenantLabel = document.createTextNode(' Portal Madrasah: ');
+                    const tenantName = document.createElement('strong');
+                    tenantName.className = 'font-bold text-slate-800';
+                    tenantName.textContent = String(data.madrasah.name || '');
+                    tenantBanner.append(tenantIcon, tenantLabel, tenantName);
                         tenantBanner.classList.remove('hidden');
                     }
                     const leftSchoolName = document.getElementById('login-left-school-name');
