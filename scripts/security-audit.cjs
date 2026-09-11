@@ -66,6 +66,12 @@ const checks = [
   ['No wildcard frame-ancestors override remains', !server.includes('frame-ancestors *')],
   ['LiveKit online fails closed before dev fallback', server.includes('LiveKit online belum dikonfigurasi dengan aman.') && server.includes('if (isOnlineMode && (!apiKey || !apiSecret || !serverUrl')],
   ['WebSocket admin identity is tenant namespaced', server.includes("'admin::' + tenant")],
+  ['HTTP student signaling queue is tenant namespaced', server.includes("return 'student::' + tenant + '::' + String(studentId)")],
+  ['WebSocket student identity is tenant namespaced', server.includes("student ? ('student::' + tenant + '::' + publicId)")],
+  ['LiveKit physical room is tenant namespaced', server.includes("const physicalRoomName = 'room_tenant_'") && server.includes('at.addGrant({ room: physicalRoomName')],
+  ['Grade upsert is tenant scoped', server.includes('g => isItemForCurrentMadrasah(g, req) &&') && server.includes('Nilai hanya dapat dibuat untuk siswa dan kelas pada tenant yang sama.')],
+  ['Student delete cascades are tenant scoped', server.includes('!isItemForCurrentMadrasah(a, req) ||') && server.includes('!isItemForCurrentMadrasah(g, req) ||')],
+  ['Regular student IDs reject duplicates', server.includes('ID siswa sudah digunakan. Gunakan ID lain agar state CBT dan realtime tetap unik.')],
   ['Chunk restore is bound to owner and tenant', server.includes('session.owner !== owner || session.tenant !== tenant') && server.includes('15 * 60 * 1000')],
 ];
 
