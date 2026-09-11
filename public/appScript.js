@@ -832,7 +832,7 @@ async function syncKeyFromServer(key) {
             else if (key === 'customGradeColumns') newData = resData.customGradeColumns;
             else if (key === 'calendarEvents') newData = resData.calendarEvents;
             else if (key === 'generatedExams') newData = resData.generatedExams;
-            else if (key === 'lessonPlans') newData = resData.lessonPlans;
+            else if (key === 'lessonPlans') newData = Array.isArray(resData.data) ? resData.data : resData.lessonPlans;
             else if (key === 'grades') newData = resData.grades;
             else if (key === 'lkpdList') newData = resData.lkpdList;
             else if (key === 'settings') newData = resData.settings;
@@ -1469,8 +1469,68 @@ function showToast(message, type = 'success') {
     }, 4500);
 }
 
+let runtimeReadinessPromise = null;
+let runtimeReadinessConfirmed = false;
+
+function updateInitialRuntimeStatus(message) {
+    try {
+        const status = document.getElementById('app-initial-loader-status');
+        if (status) status.textContent = String(message || '');
+    } catch (_) {}
+}
+
+async function waitForServerRuntimeReady(maxWaitMs = 45000) {
+    if (runtimeReadinessConfirmed) return true;
+    if (runtimeReadinessPromise) return runtimeReadinessPromise;
+
+    runtimeReadinessPromise = (async () => {
+        const startedAt = Date.now();
+        let attempt = 0;
+
+        while ((Date.now() - startedAt) < maxWaitMs) {
+            attempt += 1;
+            try {
+                const response = await fetch('/readyz', {
+                    cache: 'no-store',
+                    headers: { 'Cache-Control': 'no-cache' }
+                });
+                const data = await response.json().catch(() => null);
+                if (response.ok && (!data || data.ready !== false)) {
+                    runtimeReadinessConfirmed = true;
+                    window.__onlineRuntimeReady = true;
+                    updateInitialRuntimeStatus('Portal siap digunakan');
+                    try { window.dispatchEvent(new CustomEvent('madrasah:runtime-ready')); } catch (_) {}
+                    return true;
+                }
+            } catch (_) {}
+
+            if ((Date.now() - startedAt) > 1200) {
+                updateInitialRuntimeStatus('Menyiapkan koneksi Cloud SQL...');
+            }
+            const delayMs = Math.min(2000, 700 + (attempt * 150));
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+
+        updateInitialRuntimeStatus('Database belum siap. Mencoba kembali...');
+        return false;
+    })().finally(() => {
+        runtimeReadinessPromise = null;
+    });
+
+    return runtimeReadinessPromise;
+}
+
+window.waitForServerRuntimeReady = waitForServerRuntimeReady;
+
 async function initAppSession() {
     console.log('MEMERIKSA SESI LOGIN...');
+
+    const runtimeReady = await waitForServerRuntimeReady(45000);
+    if (!runtimeReady) {
+        console.warn('Runtime online belum siap; pemeriksaan sesi dijadwalkan ulang.');
+        setTimeout(initAppSession, 5000);
+        return;
+    }
 
     // Load settings FIRST so we can accurately detect offline mode before session restoration
     try {
@@ -1630,6 +1690,13 @@ function fillAndSubmitDemo(user, pass) {
 
 async function handleLogin(e) {
     if (e && e.preventDefault) e.preventDefault();
+
+    const runtimeReady = await waitForServerRuntimeReady(15000);
+    if (!runtimeReady) {
+        showToast('Server masih menyiapkan Cloud SQL. Silakan coba lagi sebentar.', 'warning');
+        return;
+    }
+
     const uEl = document.getElementById('login-user');
     const pEl = document.getElementById('login-pass');
     const u = uEl ? uEl.value.trim() : '';
