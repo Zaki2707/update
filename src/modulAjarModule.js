@@ -1351,7 +1351,7 @@ function renderModulAjarModule(container) {
     } else {
         // Check subjects that ALREADY have created lesson plans
         const managedSubjects = (appState.subjects || []).map(s => {
-            const plans = (appState.lessonPlans || []).filter(lp => String(lp.subjectId) === String(s.id));
+            const plans = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, s.id, appState.subjects));
             return {
                 ...s,
                 plans,
