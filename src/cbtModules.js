@@ -15,6 +15,25 @@ function qbInlineArg(value) {
     return qbEscapeAttr(JSON.stringify(String(value ?? '')));
 }
 
+function qbDecodeLegacyEntities(value) {
+    let text = String(value ?? '');
+    if (!text || !/&(?:amp|lt|gt|quot|apos|#0*39|#x0*27);/i.test(text)) return text;
+
+    // Normalize legacy/pre-escaped question text back to literal characters.
+    // HTML sinks must still call qbEscapeHtml/renderCbtTableCell afterwards.
+    for (let pass = 0; pass < 2; pass++) {
+        const next = text
+            .replace(/&amp;/gi, '&')
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>')
+            .replace(/&quot;/gi, '"')
+            .replace(/&apos;|&#0*39;|&#x0*27;/gi, "'");
+        if (next === text) break;
+        text = next;
+    }
+    return text;
+}
+
 function qbSafeImageSrc(value) {
     let raw = String(value ?? '').trim();
     if (!raw) return '';
@@ -3227,13 +3246,13 @@ function loadActiveBankQuestionsToConvert(activeCode) {
     const formattedLines = [];
     questions.forEach((q, idx) => {
         const num = idx + 1;
-        const qText = q.question || '';
+        const qText = qbDecodeLegacyEntities(q.question || '');
         const opts = q.options || [];
-        const optA = opts[0] || '';
-        const optB = opts[1] || '';
-        const optC = opts[2] || '';
-        const optD = opts[3] || '';
-        const optE = opts[4] || '';
+        const optA = qbDecodeLegacyEntities(opts[0] || '');
+        const optB = qbDecodeLegacyEntities(opts[1] || '');
+        const optC = qbDecodeLegacyEntities(opts[2] || '');
+        const optD = qbDecodeLegacyEntities(opts[3] || '');
+        const optE = qbDecodeLegacyEntities(opts[4] || '');
         
         let kj = 'A';
         if (typeof q.answer === 'number' && q.answer >= 0 && q.answer < 5) {
@@ -3267,7 +3286,7 @@ function loadActiveBankQuestionsToConvert(activeCode) {
 function renderCbtTableCell(text) {
     if (!text) return '';
 
-    const sourceText = String(text);
+    const sourceText = qbDecodeLegacyEntities(text);
     const previewText = RAW_LATEX_COMMAND_PATTERN.test(sourceText)
         ? autoConvertMathToLatex(sourceText)
         : sourceText;
@@ -3402,7 +3421,8 @@ function runQuestionConversion(activeCode = '') {
 function parseRawTextToCBTFormat(rawText, defaultTS = 'PG', defaultKD = '1.0.1', defaultKJ = 'A', autoMath = true, parseMode = 'auto', optionCount = 5) {
     if (!rawText || !rawText.trim()) return { text: '', parsedQuestions: [], optionCount };
 
-    const lines = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const normalizedRawText = qbDecodeLegacyEntities(rawText);
+    const lines = normalizedRawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     const parsedQuestions = [];
 
     if (parseMode === 'enter') {
