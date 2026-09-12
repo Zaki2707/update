@@ -3248,11 +3248,11 @@ function loadActiveBankQuestionsToConvert(activeCode) {
         }
 
         formattedLines.push(`${num}. ${qText}`);
-        if (optA) formattedLines.push(`A. ${qbEscapeHtml(optA)}`);
-        if (optB) formattedLines.push(`B. ${qbEscapeHtml(optB)}`);
-        if (optC) formattedLines.push(`C. ${qbEscapeHtml(optC)}`);
-        if (optD) formattedLines.push(`D. ${qbEscapeHtml(optD)}`);
-        if (optE) formattedLines.push(`E. ${qbEscapeHtml(optE)}`);
+        if (optA) formattedLines.push(`A. ${optA}`);
+        if (optB) formattedLines.push(`B. ${optB}`);
+        if (optC) formattedLines.push(`C. ${optC}`);
+        if (optD) formattedLines.push(`D. ${optD}`);
+        if (optE) formattedLines.push(`E. ${optE}`);
         formattedLines.push(`Kunci: ${kj}`);
         formattedLines.push('');
     });
@@ -3642,17 +3642,17 @@ function parseRawTextToCBTFormat(rawText, defaultTS = 'PG', defaultKD = '1.0.1',
     const outputLines = [];
     for (let i = 0; i < parsedQuestions.length; i++) {
         const q = parsedQuestions[i];
-        outputLines.push(`TS\t${qbEscapeHtml(q.ts)}`);
-        outputLines.push(`KD\t${qbEscapeHtml(q.kd)}`);
-        outputLines.push(`KJ\t${qbEscapeHtml(q.kj)}`);
+        outputLines.push(`TS\t${q.ts}`);
+        outputLines.push(`KD\t${q.kd}`);
+        outputLines.push(`KJ\t${q.kj}`);
         outputLines.push(`ABS\t`);
-        outputLines.push(`${q.num}.\t${qbEscapeHtml(q.questionText)}`);
-        outputLines.push(`A\t${qbEscapeHtml(q.options.A || '')}`);
-        outputLines.push(`B\t${qbEscapeHtml(q.options.B || '')}`);
-        outputLines.push(`C\t${qbEscapeHtml(q.options.C || '')}`);
-        outputLines.push(`D\t${qbEscapeHtml(q.options.D || '')}`);
+        outputLines.push(`${q.num}.\t${q.questionText}`);
+        outputLines.push(`A\t${q.options.A || ''}`);
+        outputLines.push(`B\t${q.options.B || ''}`);
+        outputLines.push(`C\t${q.options.C || ''}`);
+        outputLines.push(`D\t${q.options.D || ''}`);
         if (optionCount >= 5) {
-            outputLines.push(`E\t${qbEscapeHtml(q.options.E || '')}`);
+            outputLines.push(`E\t${q.options.E || ''}`);
         }
 
         if (i < parsedQuestions.length - 1) {
@@ -4190,11 +4190,11 @@ function parseWordHtmlToText(html) {
 
             if (isCbtTable && qText) {
                 let block = `${qNum || '1'}. ${qText}`;
-                if (optA) block += `\nA. ${qbEscapeHtml(optA)}`;
-                if (optB) block += `\nB. ${qbEscapeHtml(optB)}`;
-                if (optC) block += `\nC. ${qbEscapeHtml(optC)}`;
-                if (optD) block += `\nD. ${qbEscapeHtml(optD)}`;
-                if (optE) block += `\nE. ${qbEscapeHtml(optE)}`;
+                if (optA) block += `\nA. ${optA}`;
+                if (optB) block += `\nB. ${optB}`;
+                if (optC) block += `\nC. ${optC}`;
+                if (optD) block += `\nD. ${optD}`;
+                if (optE) block += `\nE. ${optE}`;
                 if (kj) block += `\nKunci: ${kj}`;
                 textParts.push(block);
             } else {
