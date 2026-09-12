@@ -3261,6 +3261,85 @@ window.openStudentExamReviewModal = function(examId) {
     }
 };
 
+function reconcileStudentCbtServerSummary(studentId, examList, summary) {
+    // CBT_SERVER_SUMMARY_AUTHORITY_V2: once the server summary succeeds, it is
+    // authoritative for this student's attempt lifecycle. This prevents a teacher
+    // reset from being undone by stale browser localStorage.
+    const stId = String(studentId || '').trim();
+    if (!stId || !summary || summary.success !== true) return false;
+
+    if (!appState.completedExams) appState.completedExams = JSON.parse(localStorage.getItem('madrasah_completed_exams') || '{}') || {};
+    if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
+    if (!appState.studentExamGrades) appState.studentExamGrades = JSON.parse(localStorage.getItem('madrasah_student_exam_grades') || '{}') || {};
+    if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
+    if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions') || '{}') || {};
+
+    const completedIds = new Set((Array.isArray(summary.completedExams) ? summary.completedExams : []).map(id => String(id)));
+    const completedMap = summary.completedMap && typeof summary.completedMap === 'object' ? summary.completedMap : {};
+    const activeMap = summary.activeSessions && typeof summary.activeSessions === 'object' ? summary.activeSessions : {};
+    const gradeMap = summary.grades && typeof summary.grades === 'object' ? summary.grades : {};
+    let pendingQueue = getPendingOfflineQueue();
+
+    (Array.isArray(examList) ? examList : []).forEach(ex => {
+        if (!ex || ex.recordType === 'EVENT' || ex.id === undefined || ex.id === null) return;
+        const examId = String(ex.id);
+        const key = stId + '_' + examId;
+        const hasCompletedMap = Object.prototype.hasOwnProperty.call(completedMap, key);
+        const serverCompleted = completedIds.has(examId) || hasCompletedMap;
+        const serverActive = Object.prototype.hasOwnProperty.call(activeMap, key);
+
+        if (serverCompleted) {
+            appState.completedExams[key] = hasCompletedMap ? completedMap[key] : true;
+        } else {
+            delete appState.completedExams[key];
+        }
+
+        if (serverActive) {
+            const serverSession = activeMap[key] && typeof activeMap[key] === 'object' ? activeMap[key] : {};
+            const queuedAnswers = {};
+            pendingQueue.forEach(item => {
+                if (String(item?.studentId) === stId && String(item?.examId) === examId && item?.questionId !== undefined) {
+                    queuedAnswers[String(item.questionId)] = item.answer;
+                }
+            });
+            const mergedAnswers = { ...(serverSession.answers || {}), ...queuedAnswers };
+            appState.activeExamSessions[key] = {
+                ...serverSession,
+                answers: mergedAnswers,
+                answeredCount: Object.keys(mergedAnswers).length
+            };
+            appState.studentExamAnswers[key] = mergedAnswers;
+        } else {
+            delete appState.activeExamSessions[key];
+            // No server-side active attempt means queued writes for this old attempt
+            // must never be replayed into a future reset attempt.
+            pendingQueue = pendingQueue.filter(item =>
+                !(String(item?.studentId) === stId && String(item?.examId) === examId)
+            );
+        }
+
+        if (Object.prototype.hasOwnProperty.call(gradeMap, key)) {
+            appState.studentExamGrades[key] = gradeMap[key];
+        } else {
+            delete appState.studentExamGrades[key];
+        }
+
+        if (!serverCompleted && !serverActive) {
+            delete appState.studentExamAnswers[key];
+            delete appState.studentExamQuestions[key];
+        }
+    });
+
+    safeSetStorage('madrasah_completed_exams', appState.completedExams);
+    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
+    safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
+    setPendingOfflineQueue(pendingQueue);
+    window._pendingOfflineAnswers = pendingQueue;
+    return true;
+}
+
 async function renderStudentCBTList(container, isRefresh = false) {
     if (!container) return;
 
@@ -3314,23 +3393,8 @@ async function renderStudentCBTList(container, isRefresh = false) {
             if (exRes.success) { appState.exams = exRes.exams || []; changed = true; }
             if (lkRes.success) { appState.lkpdList = lkRes.lkpdList || []; changed = true; }
             if (mySumRes.success) {
-                if (!appState.completedExams) appState.completedExams = {};
-                if (Array.isArray(mySumRes.completedExams)) {
-                    mySumRes.completedExams.forEach(eId => {
-                        const key = stId + '_' + eId;
-                        appState.completedExams[key] = true;
-                    });
-                }
-                if (mySumRes.completedMap) {
-                    appState.completedExams = { ...appState.completedExams, ...mySumRes.completedMap };
-                }
-                if (mySumRes.grades) {
-                    appState.studentExamGrades = { ...(appState.studentExamGrades || {}), ...mySumRes.grades };
-                }
-                if (mySumRes.activeSessions) {
-                    const localSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
-                    appState.activeExamSessions = { ...localSessions, ...(appState.activeExamSessions || {}), ...mySumRes.activeSessions };
-                }
+                const authoritativeExamList = exRes.success ? (exRes.exams || []) : (appState.exams || []);
+                reconcileStudentCbtServerSummary(stId, authoritativeExamList, mySumRes);
                 changed = true;
             }
             if (changed) {
@@ -3816,6 +3880,7 @@ async function startStudentExam(examId) {
     // CBT_LOAD_ORDER_V2: activate/restore the authoritative attempt before requesting its question packet.
     // The server intentionally refuses /start-questions until an active attempt exists.
     let serverAttemptReady = false;
+    let preflightSession = null;
     try {
         const preflightController = new AbortController();
         const preflightTimeout = setTimeout(() => preflightController.abort(), 4000);
@@ -3836,6 +3901,7 @@ async function startStudentExam(examId) {
             return;
         }
         serverAttemptReady = true;
+        preflightSession = preflightData.session && typeof preflightData.session === 'object' ? preflightData.session : null;
     } catch (err) {
         // Preserve offline-first continuation only for an already-active local attempt.
         if (!hasActiveSession) {
@@ -3849,7 +3915,39 @@ async function startStudentExam(examId) {
     // 1. Fetch server-generated, server-shuffled, and sanitized questions.
     // Legacy browser caches are sanitized again before any offline continuation.
     if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions')) || {};
+    if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
+    if (!appState.completedExams) appState.completedExams = JSON.parse(localStorage.getItem('madrasah_completed_exams') || '{}') || {};
+    if (!appState.studentExamGrades) appState.studentExamGrades = JSON.parse(localStorage.getItem('madrasah_student_exam_grades') || '{}') || {};
+    if (!appState.activeExamSessions) appState.activeExamSessions = activeSessions;
+
     const examQuestionKey = st.id + '_' + ex.id;
+    const serverAnswerCount = preflightSession?.answers && typeof preflightSession.answers === 'object'
+        ? Object.keys(preflightSession.answers).length : 0;
+    const serverQuestionCount = Number(preflightSession?.totalQuestions || 0);
+
+    if (serverAttemptReady && hasActiveSession && preflightSession && serverAnswerCount === 0 && serverQuestionCount === 0) {
+        // CBT_RESET_RECONCILE_V2: the browser believed an attempt was active, but
+        // the authoritative server has just created a fresh empty attempt. Treat
+        // all matching local state/queued writes as belonging to the old reset attempt.
+        delete appState.activeExamSessions[examQuestionKey];
+        delete appState.studentExamAnswers[examQuestionKey];
+        delete appState.studentExamQuestions[examQuestionKey];
+        delete appState.completedExams[examQuestionKey];
+        delete appState.studentExamGrades[examQuestionKey];
+
+        const cleanedQueue = getPendingOfflineQueue().filter(item =>
+            !(String(item?.studentId) === String(st.id) && String(item?.examId) === String(ex.id))
+        );
+        setPendingOfflineQueue(cleanedQueue);
+        window._pendingOfflineAnswers = cleanedQueue;
+
+        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+        safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+        safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
+        safeSetStorage('madrasah_completed_exams', appState.completedExams);
+        safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
+    }
+
     let questions = appState.studentExamQuestions[examQuestionKey];
     if (Array.isArray(questions) && questions.length > 0) {
         questions = questions.map(stripStudentQuestionSecrets).filter(Boolean);
