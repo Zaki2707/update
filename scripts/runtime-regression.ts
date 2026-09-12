@@ -323,6 +323,18 @@ await test('CBT: teacher attempt context retains assignment boundary', () => {
   assert.match(serverFunction('getExamAttemptContext'), /teacherCanUseExamPayload\(req,\s*exam\)/);
 });
 
+await test('Student master writes are admin-owned and self password may remain unchanged', () => {
+  assert.match(serverSource, /app\.post\("\/api\/students", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+  assert.match(serverSource, /app\.put\("\/api\/students\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+  assert.match(serverSource, /if \(password\) student\.password = hashPassword\(password\)/);
+  assert.ok(modulesSource.includes('Kosongkan jika tidak ingin mengganti'));
+});
+
+await test('Offline restore re-hashes legacy plaintext user credentials', () => {
+  assert.ok(serverSource.includes('for (const restoredStudent of mergedStudents)'));
+  assert.ok(serverSource.includes('for (const restoredTeacher of mergedTeachers)'));
+});
+
 await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
   execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
     stdio: 'inherit', timeout: 45000,
