@@ -524,14 +524,100 @@ await test('Realtime: legacy slug-only sessions receive canonical tenant exam ev
   assert.match(fn, /clientTenant !== eventTenant/);
 });
 
-await test('Realtime: WebSocket student signaling cannot bypass teacher monitoring scope', () => {
-  const start = serverSource.indexOf('wss.on("connection"');
-  const end = serverSource.indexOf('console.log("WebRTC WebSocket Signaling Server initialized successfully!"', start);
-  const wsBlock = serverSource.slice(start, end > start ? end : undefined);
-  assert.match(wsBlock, /WS_STUDENT_TO_TEACHER_SCOPE_V2/);
-  assert.match(wsBlock, /ws\.__authUser = auth/);
-  assert.match(wsBlock, /const monitorUser = targetWs\.__authUser/);
+await test('Realtime: teacher SSE events follow academic exam and LKPD scope', () => {
+  assert.match(serverSource, /REALTIME_TEACHER_EVENT_SCOPE_V3/);
+  assert.match(serverSource, /function teacherCanReceiveRealtimeEvent/);
+  assert.match(serverSource, /teacherCanUseExamPayload\(scopeReq, candidates\[0\]\)/);
+  assert.match(serverSource, /teacherCanUseLkpdPayload\(scopeReq, candidates\[0\]\)/);
+  const start = serverSource.indexOf('function broadcastExamEvent');
+  const end = serverSource.indexOf('\nfunction getJakartaTodayDateStr', start);
+  const fn = serverSource.slice(start, end > start ? end : undefined);
+  assert.match(fn, /isTeacher && !teacherCanReceiveRealtimeEvent\(user, event, eventTenant\)/);
+
+  const context: any = vm.createContext({
+    exams: [], lkpdList: [],
+    canonicalRealtimeTenant: (value: any) => String(value || 'default'),
+    getMemoryKeyValue: (key: string) => key === 'exams'
+      ? [{ id: 'exam-1', madrasahId: 'm-1', subject: 'allowed' }, { id: 'exam-2', madrasahId: 'm-1', subject: 'blocked' }]
+      : [{ id: 'lkpd-1', madrasahId: 'm-1', subject: 'allowed' }],
+    teacherCanUseExamPayload: (_req: any, item: any) => item.subject === 'allowed',
+    teacherCanUseLkpdPayload: (_req: any, item: any) => item.subject === 'allowed',
+  });
+  vm.runInContext(serverFunction('teacherCanReceiveRealtimeEvent'), context);
+  const teacher = { role: 'teacher', id: 't-1', madrasahId: 'm-1' };
+  assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { examId: 'exam-1' }, 'm-1'), true);
+  assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { examId: 'exam-2' }, 'm-1'), false);
+  assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { lkpdId: 'lkpd-1' }, 'm-1'), true);
+  assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { studentId: 's-1' }, 'm-1'), false);
+});
+
+await test('Realtime: P2P signaling uses one authenticated route per staff account', () => {
+  assert.match(serverSource, /SIGNALING_PER_STAFF_ROUTE_V3/);
+  assert.match(serverSource, /function signalingStaffKeyForTenant/);
+  assert.match(serverSource, /function rememberSignalingStaffRoute/);
+
+  const postStart = serverSource.indexOf('app.post("/api/exam/signaling"');
+  const getStart = serverSource.indexOf('app.get("/api/exam/signaling"', postStart);
+  const livekitStart = serverSource.indexOf('// LiveKit grants are derived', getStart);
+  const postRoute = serverSource.slice(postStart, getStart);
+  const getRoute = serverSource.slice(getStart, livekitStart);
+  assert.match(postRoute, /rememberSignalingStaffRoute\(user, signalingItemTenant\(target\)\)/);
+  assert.match(postRoute, /signalingStaffKeyForTenant\(tenant, recipientId\)/);
+  assert.match(getRoute, /key = rememberSignalingStaffRoute\(user, routeTenant\)/);
+
+  const wsStart = serverSource.indexOf('wss.on("connection"');
+  const wsEnd = serverSource.indexOf('console.log("WebRTC WebSocket Signaling Server initialized successfully!"', wsStart);
+  const wsBlock = serverSource.slice(wsStart, wsEnd > wsStart ? wsEnd : undefined);
+  assert.match(wsBlock, /publicId = String\(auth\.id\)/);
+  assert.match(wsBlock, /signalingStaffKeyForTenant\(tenant, auth\.id\)/);
+  assert.match(wsBlock, /candidateKey\.startsWith\('staff::' \+ tenant \+ '::'\)/);
   assert.match(wsBlock, /teacherCanMonitorStudentRealtime\(monitorReq, monitorUser, senderStudent\)/);
+  assert.doesNotMatch(wsBlock, /storageKey = publicId === 'admin'/);
+});
+
+await test('Livecam: runtime frames are ephemeral, TTL-pruned, and cleared on finalization', () => {
+  assert.match(serverSource, /RUNTIME_LIVECAM_EPHEMERAL_V3/);
+  assert.match(serverSource, /let studentLivecamFrames: Record<string, string> = \{\}/);
+  assert.doesNotMatch(serverSource, /let studentLivecamFrames = bootStore\['studentLivecamFrames'\]/);
+  assert.match(serverSource, /RUNTIME_LIVECAM_FRAME_TTL_MS = 2 \* 60 \* 1000/);
+
+  const finishStart = serverSource.indexOf('app.post("/api/exam/attempt/finish"');
+  const finishEnd = serverSource.indexOf('// Phase 1 Endpoint: Summarized Teacher Monitoring', finishStart);
+  const finishRoute = serverSource.slice(finishStart, finishEnd);
+  assert.match(finishRoute, /clearRuntimeLivecamFrame\(key\)/);
+  assert.match(finishRoute, /saveDeltaDb\('studentLivecamFrames', key, null\)/);
+
+  const context: any = vm.createContext({
+    studentLivecamFrames: {},
+    studentLivecamFrameUpdatedAt: {},
+    RUNTIME_LIVECAM_FRAME_TTL_MS: 1000,
+    Date: { now: () => 5000 },
+  });
+  for (const name of ['pruneStaleLivecamFrames', 'setRuntimeLivecamFrame', 'clearRuntimeLivecamFrame']) {
+    vm.runInContext(serverFunction(name), context);
+  }
+  context.setRuntimeLivecamFrame('fresh', 'frame');
+  assert.equal(context.studentLivecamFrames.fresh, 'frame');
+  context.studentLivecamFrames.stale = 'old';
+  context.studentLivecamFrameUpdatedAt.stale = 3000;
+  context.pruneStaleLivecamFrames(5000);
+  assert.equal(context.studentLivecamFrames.stale, undefined);
+  assert.equal(context.studentLivecamFrames.fresh, 'frame');
+  context.clearRuntimeLivecamFrame('fresh');
+  assert.equal(context.studentLivecamFrames.fresh, undefined);
+});
+
+await test('LiveKit: token minting requires explicit credentials in every mode', () => {
+  const start = serverSource.indexOf('app.post("/api/exam/livekit-token"');
+  const end = serverSource.indexOf('\nfunction sanitizeChatAttachment', start);
+  const route = serverSource.slice(start, end > start ? end : undefined);
+  assert.match(route, /LIVEKIT_EXPLICIT_CREDENTIALS_V3/);
+  assert.match(route, /if \(!apiKey \|\| !apiSecret \|\| !serverUrl\)/);
+  assert.match(route, /new AccessToken\(apiKey, apiSecret/);
+  assert.match(route, /serverUrl, roomName: physicalRoomName/);
+  assert.doesNotMatch(route, /devkey/);
+  assert.doesNotMatch(route, /apiSecret \|\| "secret"/);
+  assert.doesNotMatch(route, /ws:\/\/localhost:7880/);
 });
 
 await test('Auth: legacy slug-only account records remain valid for canonical tenant tokens', () => {
