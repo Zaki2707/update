@@ -42,6 +42,9 @@ jobs:
       - name: Hardening behavior regression
         run: npm run hardening:regression
 
+      - name: Frontend inline-handler audit
+        run: npm run frontend:handler-audit
+
       - name: Verify sensitive runtime history is clean
         shell: bash
         run: |
