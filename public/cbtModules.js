@@ -3399,9 +3399,12 @@ function runQuestionConversion(activeCode = '') {
             </div>
         `).join('');
 
-        // Trigger KaTeX math rendering ONLY inside .katex-preview-block elements
+        // Trigger KaTeX math rendering ONLY inside .katex-preview-block elements.
+        // Normalize legacy HTML entities as plain text before KaTeX sees them.
         if (typeof renderMathInElement === 'function') {
             previewArea.querySelectorAll('.katex-preview-block').forEach(el => {
+                const mathSource = qbDecodeLegacyEntities(el.textContent || '');
+                el.textContent = mathSource;
                 renderMathInElement(el, {
                     delimiters: [
                         {left: '$$', right: '$$', display: true},

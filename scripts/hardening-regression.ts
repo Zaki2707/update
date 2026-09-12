@@ -251,6 +251,8 @@ function testServerGuards() {
   assert.match(cbtSource, /qbEscapeHtml\(previewText\)/);
   assert.match(cbtSource, /function qbDecodeLegacyEntities\(value\)/);
   assert.match(cbtSource, /const sourceText = qbDecodeLegacyEntities\(text\)/);
+  assert.match(cbtSource, /const mathSource = qbDecodeLegacyEntities\(el\.textContent \|\| ''\)/);
+  assert.match(cbtSource, /el\.textContent = mathSource/);
   const gameSubmitStart = server.indexOf('app.post("/api/games/:id/submit"');
   const gameSubmitEnd = server.indexOf('\napp.', gameSubmitStart + 20);
   const gameSubmitRoute = server.slice(gameSubmitStart, gameSubmitEnd > gameSubmitStart ? gameSubmitEnd : undefined);
