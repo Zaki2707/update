@@ -5045,7 +5045,11 @@ function saveExamAnswer(qId, val) {
                 activeExamSession.timeLeft = res.remainingTime;
             }
             const curQ = removePendingOfflineAnswer(payload);
-            if (curQ.length === 0) {
+            const owner = getCurrentCbtQueueOwner();
+            const ownPending = owner
+                ? curQ.filter(item => pendingOfflineAnswerMatches(item, owner.studentId, null, null, owner.tenantId))
+                : [];
+            if (ownPending.length === 0) {
                 window.updateCbtSyncBadge('synced');
             } else {
                 window.updateCbtSyncBadge('offline');

@@ -473,6 +473,7 @@ await test('CBT: pending answer replay is isolated to the currently authenticate
   assert.match(assessmentSource, /CBT_QUEUE_ACCOUNT_ISOLATION_V2/);
   assert.match(assessmentSource, /tenantId: String\(/);
   assert.match(assessmentSource, /function removePendingOfflineAnswersForAttempt/);
+  assert.match(assessmentSource, /const ownPending = owner/);
 });
 
 await test('CBT: logout clears volatile runtime without deleting recovery storage', () => {
