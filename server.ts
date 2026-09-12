@@ -2266,6 +2266,54 @@ const dbWriteQueue = new KeyedSerialQueue();
 const storeMutationQueue = new KeyedSerialQueue();
 const tokenLedgerQueue = new KeyedSerialQueue();
 
+// ONLINE_PERSISTED_MEMORY_SNAPSHOT_V1:
+// Last full logical state known to have committed successfully. This is kept
+// separately from raw app_store rows because chats/attendance are partitioned.
+const persistedMemorySnapshots = new Map<string, any>();
+const persistedSnapshotKeys = [
+  'schoolLocationSettings', 'classes', 'subjects', 'teachers', 'students',
+  'attendance', 'teacherAttendance', 'questionBankGroups', 'questions', 'grades',
+  'chats', 'exams', 'lkpdList', 'rooms', 'schedules', 'savedRosters', 'timeSlots',
+  'kbmDuration', 'journals', 'gradeCategories', 'customGradeColumns',
+  'calendarEvents', 'generatedExams', 'lessonPlans', 'activeExamSessions',
+  'completedExams', 'forceFinishedExams', 'studentExamAnswers',
+  'studentExamQuestions', 'studentExamMasterQuestions', 'studentExamGrades',
+  'studentTabSwitches', 'studentOutOfTab', 'blockedStudents', 'examMessages',
+  'examViolationLogs', 'settings', 'childguardRules', 'childguardLogs',
+  'childguardLocations', 'childguardStatus', 'importGroups', 'photoCloudinaryMap',
+  'eduGames', 'gameAttempts', 'madrasahs', 'tokenRequests', 'usedActivationKeys'
+];
+
+function cloneStateSnapshot(value: any): any {
+  if (value === undefined) return undefined;
+  try { return structuredClone(value); }
+  catch (_) {
+    try { return JSON.parse(JSON.stringify(value)); }
+    catch (_) { return value; }
+  }
+}
+
+function capturePersistedMemorySnapshots(keys: string[] = persistedSnapshotKeys) {
+  if (!isOnlineMode) return;
+  for (const key of keys) {
+    persistedMemorySnapshots.set(key, cloneStateSnapshot(getMemoryKeyValue(key)));
+  }
+}
+
+function rollbackMemoryToPersistedSnapshot(key: string): boolean {
+  if (!isOnlineMode || !persistedMemorySnapshots.has(key)) return false;
+  const restored = cloneStateSnapshot(persistedMemorySnapshots.get(key));
+  updateMemoryKey(key, restored);
+  try {
+    const store = readLocalStore();
+    if (restored === undefined) delete store[key];
+    else store[key] = restored;
+    // ONLINE writeLocalStore refreshes cache only; Cloud SQL remains authoritative.
+    writeLocalStore(store);
+  } catch (_) {}
+  return true;
+}
+
 function withTokenLedger<T>(task: () => Promise<T> | T): Promise<T> {
   return tokenLedgerQueue.run('global-token-ledger', task);
 }
@@ -2327,6 +2375,7 @@ async function writeKeyToPostgresDirectUnlocked(key: string) {
           await verifyOnlineArrayPersistence(key, freshValue, client);
         }
         await client.query('COMMIT');
+        persistedMemorySnapshots.set(key, cloneStateSnapshot(freshValue));
         return; // Successful write; critical question-bank rows are read-back verified before the key queue advances.
 
       } catch (err: any) {
@@ -2436,6 +2485,9 @@ async function writeBatchToPostgresDirect(keys: string[]) {
         }
 
         await client.query('COMMIT');
+        for (const [key, freshValue] of snapshots) {
+          persistedMemorySnapshots.set(key, cloneStateSnapshot(freshValue));
+        }
         return;
       } catch (err: any) {
         clientError = err;
@@ -2555,7 +2607,12 @@ async function saveData(key: string, value: any, immediate = true) {
   // ONLINE acknowledgement and notification must follow a successful SQL write.
   // Deferred persistence is supported only by OFFLINE's durable local store.
   if (isOnlineMode) {
-    await writeKeyToPostgresDirect(key);
+    try {
+      await writeKeyToPostgresDirect(key);
+    } catch (err) {
+      rollbackMemoryToPersistedSnapshot(key);
+      throw err;
+    }
   } else if (pool && !isDbQuotaExceeded) {
     if (immediate) await writeKeyToPostgresDirect(key);
     else scheduleDbWrite(key);
@@ -2614,12 +2671,15 @@ async function saveDataBatch(items: { key: string; value: any }[], immediate = t
     }
   } catch (err) {
     if (isOnlineMode) {
-      for (const [key, previous] of previousValues) updateMemoryKey(key, previous);
+      for (const [key, previous] of previousValues) {
+        if (!rollbackMemoryToPersistedSnapshot(key)) updateMemoryKey(key, previous);
+      }
       try {
         const store = readLocalStore();
-        for (const [key, previous] of previousValues) {
-          if (previous === undefined) delete store[key];
-          else store[key] = previous;
+        for (const [key] of previousValues) {
+          const restored = getMemoryKeyValue(key);
+          if (restored === undefined) delete store[key];
+          else store[key] = restored;
         }
         writeLocalStore(store);
       } catch (_) {}
@@ -2861,8 +2921,14 @@ async function updateStoreKeyWithLock(key: string, updateFn: (val: any) => any) 
       writeLocalStore(store);
     } catch (e) {}
 
-    if (isOnlineMode) await writeKeyToPostgresDirect(key);
-    else if (pool && !isDbQuotaExceeded) scheduleDbWrite(key);
+    if (isOnlineMode) {
+      try {
+        await writeKeyToPostgresDirect(key);
+      } catch (err) {
+        rollbackMemoryToPersistedSnapshot(key);
+        throw err;
+      }
+    } else if (pool && !isDbQuotaExceeded) scheduleDbWrite(key);
 
     try {
       broadcastStateUpdate(key);
@@ -3797,6 +3863,7 @@ async function hydrate() {
     if (dbData['childguardStatus'] !== undefined) childguardStatus = dbData['childguardStatus'];
     applyExtendedDbState(dbData);
 
+    capturePersistedMemorySnapshots();
     hasHydratedPersistentState = true;
 
     try {
@@ -4941,18 +5008,8 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     grades: filteredGrades,
     teacherAttendance: isStudent ? [] : filterByMadrasah(teacherAttendance || [], req),
     customGradeColumns: isStudent ? {} : tenantConfigValue(customGradeColumns, req, {}, 'customGradeColumns'),
-    childguardRules: isStudent ? [] : childguardRules,
-    childguardLogs: isStudent ? [] : (isBosUser ? childguardLogs : filterStudentLinkedListForRequest(childguardLogs, req)),
-    childguardLocations: isStudent ? {} : (isBosUser ? childguardLocations : filterStudentKeyedObjectForRequest(childguardLocations, req)),
-    childguardStatus: isStudent
-      ? Object.fromEntries(Object.entries(childguardStatus || {}).filter(([statusKey]) => {
-          const ownCandidates = (students || []).filter((st: any) =>
-            String(st.id) === String(authUser?.id || '') && isItemForCurrentMadrasah(st, req)
-          );
-          const own = ownCandidates.length === 1 ? ownCandidates[0] : null;
-          return String(statusKey) === String(authUser?.id || '') || String(statusKey) === String(own?.nis || '');
-        }))
-      : (isBosUser ? childguardStatus : filterStudentKeyedObjectForRequest(childguardStatus, req)),
+    // ChildGuard APK integration is retired. Legacy persisted keys remain for
+    // backup compatibility but are intentionally not exposed to active clients.
     madrasahs: sanitizedMadrasahs,
     tokenRequests: isStudent ? [] : (isBosUser ? tokenRequests : filterByMadrasah(tokenRequests || [], req)),
     cbtTokenPrice,
@@ -5066,9 +5123,41 @@ const DEFAULT_SERVER_SEED_GAMES = [
   }
 ];
 
+function sanitizeGameForStudent(game: any): any {
+  if (!game || typeof game !== 'object') return game;
+  const safe: any = cloneStateSnapshot(game) || { ...game };
+  const answerKey = String(game.answerKey || '').trim();
+  const compactAnswer = answerKey.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  // Student engines receive only derived data that is needed for rendering.
+  if (game.gameType === 'tebak_kata') {
+    safe.answerLength = compactAnswer.length || Math.max(1, Number(game.answerLength || 8));
+  }
+  if (game.gameType === 'susun_kata') {
+    const letters = compactAnswer.split('');
+    safe.scrambledLetters = letters
+      .map((char: string, index: number) => ({
+        char,
+        order: crypto.createHash('sha256').update(String(game.id || '') + ':' + index + ':' + char).digest('hex')
+      }))
+      .sort((a: any, b: any) => a.order.localeCompare(b.order))
+      .map((entry: any) => entry.char);
+  }
+
+  delete safe.answerKey;
+  delete safe.correctAnswer;
+  delete safe.correctOptionText;
+  delete safe.teacherAnswer;
+  delete safe.solution;
+  delete safe.rubric;
+  return safe;
+}
+
 function getGamesForRequest(req: any): any[] {
   const custom = filterByMadrasah(Array.isArray(eduGames) ? eduGames : [], req);
-  return custom.length > 0 ? custom : DEFAULT_SERVER_SEED_GAMES;
+  const list = custom.length > 0 ? custom : DEFAULT_SERVER_SEED_GAMES;
+  const role = String((req.user || getAuthUser(req))?.role || '').toLowerCase();
+  return isStudentAuthRole(role) ? list.map(sanitizeGameForStudent) : list;
 }
 
 // GET /api/games
@@ -5201,16 +5290,21 @@ app.post("/api/games/:id/submit", async (req, res) => {
 
     const normSubmitted = normalizeGameText(submittedText);
     let isCorrect = false;
+    let rewardVerified = true;
     const completionGameTypes = ["memory_match", "match_pairs", "word_search", "spot_difference", "image_puzzle", "escape_room", "learning_adventure"];
+    const isClientAssistedCompletion = completionGameTypes.includes(game.gameType);
 
     if (game.gameType === "true_false") {
       const normCorrectTF = normalizeGameText(game.correctAnswer || "BENAR");
       isCorrect = normSubmitted === normCorrectTF;
-    } else if (completionGameTypes.includes(game.gameType)) {
-      // Completion games remain client-assisted because their interactive state lives in the browser.
-      // XP replay is constrained below so a forged/repeated completion cannot farm unlimited XP.
-      isCorrect = passed === true || normSubmitted === "completed" || normSubmitted === "success" ||
-        normSubmitted === "passed" || (Boolean(game.answerKey) && normSubmitted === normalizeGameText(game.answerKey));
+    } else if (isClientAssistedCompletion) {
+      const normServerKey = normalizeGameText(game.answerKey || '');
+      const serverVerified = Boolean(normServerKey && normSubmitted === normServerKey);
+      const clientClaimsCompletion = passed === true || normSubmitted === "completed" ||
+        normSubmitted === "success" || normSubmitted === "passed";
+      // Keep the interactive completion UX, but never mint XP from a client-only claim.
+      isCorrect = serverVerified || clientClaimsCompletion;
+      rewardVerified = serverVerified;
     } else {
       const normTarget = normalizeGameText(game.answerKey);
       if (normTarget) {
@@ -5246,7 +5340,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
       }));
 
       const configuredReward = Math.max(0, Math.min(10000, Math.floor(Number(game.rewardXp ?? 100) || 0)));
-      const awardedXp = student && !isPreview && isCorrect && !alreadyRewardedToday ? configuredReward : 0;
+      const awardedXp = student && !isPreview && isCorrect && rewardVerified && !alreadyRewardedToday ? configuredReward : 0;
       let dailyStreak = student?.dailyStreak || 1;
 
       if (student && awardedXp > 0) {
@@ -5275,6 +5369,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
         earnedXp: awardedXp,
         rewardDate: todayStr,
         rewardAlreadyClaimed: alreadyRewardedToday,
+        rewardVerified,
         timestamp: getJakartaIsoString()
       }, req);
       gameAttempts.push(attemptLog);
@@ -5284,7 +5379,8 @@ app.post("/api/games/:id/submit", async (req, res) => {
         earnedXp: awardedXp,
         newTotalXp: Number(student?.gameXp || 0),
         dailyStreak,
-        rewardAlreadyClaimed: alreadyRewardedToday
+        rewardAlreadyClaimed: alreadyRewardedToday,
+        rewardVerified
       };
     });
 
@@ -7734,7 +7830,8 @@ app.post("/api/teachers", requireAuth, requireRole(['admin', 'bos', 'superadmin'
     return res.status(400).json({ success: false, message: "NIP, Nama, dan Username wajib diisi." });
   }
   const newId = "T" + Date.now();
-  const rawPassword = password || "guru123";
+  const requestedPassword = String(password || '').trim();
+  const rawPassword = requestedPassword.length >= 8 ? requestedPassword : generateTemporaryStudentPassword();
   const hashed = hashPassword(rawPassword);
 
   const newTeacher = tagNewRecord({
@@ -7761,8 +7858,13 @@ app.post("/api/teachers", requireAuth, requireRole(['admin', 'bos', 'superadmin'
   }, req);
   teachers.push(newTeacher);
   await saveData('teachers', teachers);
+  const credentials = [{
+    teacherId: newId,
+    username,
+    temporaryPassword: rawPassword
+  }];
   const { password: _, ...sanitizedNewTeacher } = newTeacher;
-  res.json({ success: true, teacher: sanitizedNewTeacher });
+  res.json({ success: true, teacher: sanitizedNewTeacher, credentials });
 });
 
 app.put("/api/teachers/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
@@ -7826,8 +7928,7 @@ app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos
   }
   const t = resolvedTeacher.item;
 
-  // Remove from teachers, add to students
-  teachers.splice(tIdx, 1);
+  // Remove from teachers and add to students atomically.
   let convertedPassword = t.password;
   if (req.body.password && String(req.body.password).trim()) {
     convertedPassword = hashPassword(String(req.body.password).trim());
@@ -7845,9 +7946,12 @@ app.put("/api/teachers/:id/change-role", requireAuth, requireRole(['admin', 'bos
     no_hp: req.body.no_hp || "",
     role: normalizeStudentStoredRole(req.body.role)
   }, req);
-  students.push(newStudent);
-  await saveData('teachers', teachers);
-  await saveData('students', students);
+  const nextTeachers = teachers.filter((_: any, index: number) => index !== tIdx);
+  const nextStudents = [...students, newStudent];
+  await saveDataBatch([
+    { key: 'teachers', value: nextTeachers },
+    { key: 'students', value: nextStudents }
+  ], true);
   const { password: _, ...sanitizedNewStudent } = newStudent;
   res.json({ success: true, student: sanitizedNewStudent });
 });
@@ -8407,8 +8511,7 @@ app.put("/api/students/:id/change-role", requireAuth, requireRole(['admin', 'bos
   }
   const st = resolvedStudent.item;
   
-  // Remove from students, add to teachers
-  students.splice(sIdx, 1);
+  // Remove from students and add to teachers atomically.
   let convertedPassword = st.password;
   if (req.body.password && String(req.body.password).trim()) {
     convertedPassword = hashPassword(String(req.body.password).trim());
@@ -8424,9 +8527,12 @@ app.put("/api/students/:id/change-role", requireAuth, requireRole(['admin', 'bos
     role: "teacher",
     homeroom_class_id: req.body.homeroom_class_id || ""
   }, req);
-  teachers.push(newTeacher);
-  await saveData('teachers', teachers);
-  await saveData('students', students);
+  const nextStudents = students.filter((_: any, index: number) => index !== sIdx);
+  const nextTeachers = [...teachers, newTeacher];
+  await saveDataBatch([
+    { key: 'students', value: nextStudents },
+    { key: 'teachers', value: nextTeachers }
+  ], true);
   const { password: _, ...sanitizedNewTeacher } = newTeacher;
   res.json({ success: true, teacher: sanitizedNewTeacher });
 });
@@ -8460,7 +8566,6 @@ app.put("/api/users/change-role", requireAuth, requireRole(['admin', 'bos', 'sup
       return res.json({ success: true, message: "Peran berhasil diubah menjadi Guru.", user: sanitizedTeacher, role: "teacher" });
     } else {
       const st = students[sIdx];
-      students.splice(sIdx, 1);
       
       let convertedPassword = st.password;
       if (req.body.password && String(req.body.password).trim()) {
@@ -8477,9 +8582,12 @@ app.put("/api/users/change-role", requireAuth, requireRole(['admin', 'bos', 'sup
         role: "teacher",
         homeroom_class_id: ""
       }, req);
-      teachers.push(newTeacher);
-      await saveData('teachers', teachers);
-      await saveData('students', students);
+      const nextStudents = students.filter((_: any, index: number) => index !== sIdx);
+      const nextTeachers = [...teachers, newTeacher];
+      await saveDataBatch([
+        { key: 'students', value: nextStudents },
+        { key: 'teachers', value: nextTeachers }
+      ], true);
       const { password: _, ...sanitizedNewTeacher } = newTeacher;
       return res.json({ success: true, message: "Peran berhasil diubah menjadi Guru.", user: sanitizedNewTeacher, role: "teacher" });
     }
@@ -8493,12 +8601,12 @@ app.put("/api/users/change-role", requireAuth, requireRole(['admin', 'bos', 'sup
       return res.json({ success: true, message: `Peran berhasil diubah menjadi ${roleValue === "class_leader" ? "Ketua Kelas" : "Murid"}.`, user: sanitizedStudent, role: roleValue });
     } else {
       const tch = teachers[tIdx];
-      teachers.splice(tIdx, 1);
-      
-      classes.forEach(c => {
+      const nextTeachers = teachers.filter((_: any, index: number) => index !== tIdx);
+      const nextClasses = classes.map((c: any) => {
         if (isItemForCurrentMadrasah(c, req) && String(c.homeroomTeacherId) === String(userId)) {
-          c.homeroomTeacherId = "";
+          return { ...c, homeroomTeacherId: "" };
         }
+        return c;
       });
 
       let convertedPassword = tch.password;
@@ -8510,18 +8618,20 @@ app.put("/api/users/change-role", requireAuth, requireRole(['admin', 'bos', 'sup
         id: tch.id,
         nis: tch.nip || "100" + Date.now().toString().substr(-3),
         name: tch.name,
-        classId: filterByMadrasah(classes, req)[0]?.id || "C1",
-        class_id: filterByMadrasah(classes, req)[0]?.id || "C1",
+        classId: filterByMadrasah(nextClasses, req)[0]?.id || "C1",
+        class_id: filterByMadrasah(nextClasses, req)[0]?.id || "C1",
         username: tch.username,
         password: convertedPassword,
         photo: "",
         no_hp: "",
         role: roleValue
       }, req);
-      students.push(newStudent);
-      await saveData('teachers', teachers);
-      await saveData('students', students);
-      await saveData('classes', classes);
+      const nextStudents = [...students, newStudent];
+      await saveDataBatch([
+        { key: 'teachers', value: nextTeachers },
+        { key: 'students', value: nextStudents },
+        { key: 'classes', value: nextClasses }
+      ], true);
       const { password: _, ...sanitizedNewStudent } = newStudent;
       return res.json({ success: true, message: `Peran berhasil diubah menjadi ${roleValue === "class_leader" ? "Ketua Kelas" : "Murid"}.`, user: sanitizedNewStudent, role: roleValue });
     }
@@ -12024,6 +12134,9 @@ async function saveDeltaBatchDb(items: DeltaBatchWrite[]) {
         }
       }
       await client.query('COMMIT');
+      for (const item of deduped.values()) {
+        persistedMemorySnapshots.set(item.storeName, cloneStateSnapshot(getMemoryKeyValue(item.storeName)));
+      }
     } catch (err) {
       clientError = err;
       if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
@@ -12054,6 +12167,7 @@ async function saveDeltaDb(deltaType: string, itemKey: string, value: any) {
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
           `, [dbKey, JSON.stringify(value)]);
         }
+        persistedMemorySnapshots.set(deltaType, cloneStateSnapshot(getMemoryKeyValue(deltaType)));
       } catch (e) {
         console.error('Delta write error:', e);
         if (isOnlineMode) throw e;
@@ -12515,6 +12629,10 @@ app.get("/api/chats", requireAuth, async (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
   const role = String(authUser?.role || '').toLowerCase();
   const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+  const isChatAdmin = adminRoles.has(role);
+  if (!isStudent && !isChatAdmin) {
+    return res.status(403).json({ success: false, message: "Chat hanya tersedia untuk administrator dan siswa." });
+  }
 
   let chatList = chats;
   if (pool) {
@@ -12544,8 +12662,8 @@ app.post("/api/chats", requireAuth, async (req: any, res) => {
     const userMId = getRequestMadrasahId(req);
     const authRole = String(authUser?.role || '').toLowerCase();
     const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(authRole);
-    const isStaff = ['teacher', 'guru', 'admin', 'administrator', 'bos', 'superadmin'].includes(authRole);
-    if (!isStudent && !isStaff) return res.status(403).json({ success: false, message: "Akses chat ditolak." });
+    const isChatAdmin = adminRoles.has(authRole);
+    if (!isStudent && !isChatAdmin) return res.status(403).json({ success: false, message: "Chat hanya tersedia untuk administrator dan siswa." });
 
     const receiverId = String(req.body?.receiverId || '').trim();
     if (!receiverId || receiverId.length > 128) {
@@ -12598,7 +12716,6 @@ app.post("/api/chats", requireAuth, async (req: any, res) => {
       list.push(newChat);
       return list;
     });
-    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, data: newChat });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err, "Gagal mengirim pesan.") });
@@ -12610,6 +12727,8 @@ app.delete("/api/chats/:id", requireAuth, async (req: any, res) => {
     const authUser = req.user || getAuthUser(req);
     const role = String(authUser?.role || '').toLowerCase();
     const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+    const isChatAdmin = adminRoles.has(role);
+    if (!isStudent && !isChatAdmin) return res.status(403).json({ success: false, message: "Chat hanya tersedia untuk administrator dan siswa." });
     let deleted = false;
     let denied = false;
 
@@ -12628,7 +12747,6 @@ app.delete("/api/chats/:id", requireAuth, async (req: any, res) => {
 
     if (denied) return res.status(403).json({ success: false, message: "Siswa hanya dapat menghapus pesan yang dikirim sendiri." });
     if (!deleted) return res.status(404).json({ success: false, message: 'Pesan tidak ditemukan pada madrasah ini.' });
-    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err, "Gagal menghapus pesan.") });
@@ -12640,6 +12758,8 @@ app.post("/api/chats/clear", async (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
   const authRole = String(authUser?.role || '').toLowerCase();
   const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(authRole);
+  const isChatAdmin = adminRoles.has(authRole);
+  if (!isStudent && !isChatAdmin) return res.status(403).json({ success: false, message: "Chat hanya tersedia untuk administrator dan siswa." });
   if (!senderId || !receiverId) return res.status(400).json({ success: false, message: "Missing ids" });
   if (isStudent) {
     const ownId = String(authUser.id);
@@ -12656,7 +12776,6 @@ app.post("/api/chats/clear", async (req: any, res) => {
         (String(c.senderId) === String(receiverId) && String(c.receiverId) === String(senderId))
       )));
     });
-    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err) });
@@ -12668,6 +12787,8 @@ app.put("/api/chats/read", requireAuth, async (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
   const role = String(authUser?.role || '').toLowerCase();
   const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+  const isChatAdmin = adminRoles.has(role);
+  if (!isStudent && !isChatAdmin) return res.status(403).json({ success: false, message: "Chat hanya tersedia untuk administrator dan siswa." });
   if (!senderId || !receiverId) return res.status(400).json({ success: false, message: 'Missing ids' });
   if (isStudent && String(receiverId) !== String(authUser?.id || '')) {
     return res.status(403).json({ success: false, message: 'Siswa hanya dapat menandai pesan yang diterimanya sendiri.' });
@@ -12687,7 +12808,6 @@ app.put("/api/chats/read", requireAuth, async (req: any, res) => {
       }
       return chatList;
     });
-    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
     res.json({ success: true, updated });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err) });
@@ -12695,39 +12815,12 @@ app.put("/api/chats/read", requireAuth, async (req: any, res) => {
 });
 
 
-app.post("/api/chats/broadcast-apk", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
-  try {
-    const { text, attachment } = req.body || {};
-    const studentsList = filterByMadrasah(students || [], req);
-    const now = Date.now();
-    const newChats: any[] = [];
-    studentsList.forEach((student: any) => {
-      const chat = tagNewRecord({
-        id: (now + Math.random()).toString(),
-        senderId: String((req.user || getAuthUser(req))?.id || 'admin'),
-        receiverId: student.id,
-        text: text || "Bapak/Ibu Orangtua dan Siswa, berikut adalah berkas instalasi Layanan Monitoring ChildGuard Madrasah Bisa. Silakan unduh, instal, dan aktifkan izin aksesibilitas serta overlay perangkat agar fitur pemantauan berjalan dengan baik.",
-        timestamp: now,
-        read: false,
-        attachment: attachment || {
-          type: 'apk',
-          name: 'childguard_v2.1.0_prod.apk',
-          data: '/public/childguard.apk'
-        }
-      }, req);
-      newChats.push(chat);
-    });
-
-    await updateStoreKeyWithLock('chats', (currentVal) => {
-      const chatList = Array.isArray(currentVal) ? currentVal : [];
-      return [...chatList, ...newChats];
-    });
-
-    if (isOnlineMode) await writeKeyToPostgresDirect('chats');
-    res.json({ success: true, count: newChats.length });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: safeServerError(err) });
-  }
+app.post("/api/chats/broadcast-apk", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (_req: any, res) => {
+  return res.status(410).json({
+    success: false,
+    code: 'CHILDGUARD_RETIRED',
+    message: 'Integrasi APK ChildGuard sudah dinonaktifkan dan tidak lagi digunakan oleh Madrasah Bisa.'
+  });
 });
 
 app.get("/api/grades", requireAuth, (req: any, res) => {
@@ -17515,7 +17608,7 @@ app.post("/api/system/restore", async (req: any, res) => {
     });
   } catch (err: any) {
     const status = String(err?.message || '').startsWith('RESTORE_') ? 409 : 500;
-    res.status(status).json({ success: false, message: "Gagal merestore data: " + err.message });
+    res.status(status).json({ success: false, message: safeServerError(err, "Gagal merestore data.") });
   }
 });
 
@@ -18327,13 +18420,13 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     const syncKey = String(key);
     const isStudentSyncRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
     const isTeacherSyncRole = role === 'teacher' || role === 'guru';
-    const studentSyncKeys = new Set(['attendance', 'lkpdList', 'childguardStatus']);
+    const studentSyncKeys = new Set(['attendance', 'lkpdList']);
     const staffSyncKeys = new Set([
       'teachers', 'students', 'classes', 'subjects', 'attendance', 'teacherAttendance',
       'schedules', 'savedRosters', 'timeSlots', 'kbmDuration', 'questionBankGroups',
       'questionBank', 'questions', 'exams', 'lkpdList', 'rooms', 'journals',
       'gradeCategories', 'customGradeColumns', 'calendarEvents', 'generatedExams',
-      'lessonPlans', 'grades', 'gameModes', 'classGrades', 'childguardStatus',
+      'lessonPlans', 'grades', 'gameModes', 'classGrades',
       'settings', 'schoolLocations', 'schoolLocationSettings'
     ]);
     if (isStudentSyncRole && !studentSyncKeys.has(syncKey)) {
