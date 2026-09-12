@@ -372,6 +372,29 @@ await test('CBT: expired attempt resumes at zero only for safe finalization', ()
   assert.match(answerRoute, /Waktu ujian sudah habis/);
 });
 
+await test('CBT: server summary clears reset browser state and stale queued answers', () => {
+  assert.match(assessmentSource, /CBT_SERVER_SUMMARY_AUTHORITY_V2/);
+  assert.match(assessmentSource, /reconcileStudentCbtServerSummary\(stId, authoritativeExamList, mySumRes\)/);
+  assert.match(assessmentSource, /delete appState\.completedExams\[key\]/);
+  assert.match(assessmentSource, /delete appState\.activeExamSessions\[key\]/);
+  assert.match(assessmentSource, /delete appState\.studentExamAnswers\[key\]/);
+  assert.match(assessmentSource, /delete appState\.studentExamQuestions\[key\]/);
+  assert.match(assessmentSource, /setPendingOfflineQueue\(pendingQueue\)/);
+  assert.doesNotMatch(assessmentSource, /appState\.activeExamSessions = \{ \.\.\.localSessions, \.\.\.\(appState\.activeExamSessions \|\| \{\}\), \.\.\.mySumRes\.activeSessions \}/);
+});
+
+await test('CBT: fresh server attempt discards stale reset cache before loading questions', () => {
+  const start = assessmentSource.indexOf('async function startStudentExam(examId)');
+  const end = assessmentSource.indexOf('\nfunction ', start + 20);
+  const fn = assessmentSource.slice(start, end > start ? end : undefined);
+  assert.match(fn, /CBT_RESET_RECONCILE_V2/);
+  assert.match(fn, /const hadLocalSession = Boolean\(activeSessions\[key1\] \|\| activeSessions\[key2\]\)/);
+  assert.match(fn, /serverAttemptReady && hadLocalSession && preflightSession && serverAnswerCount === 0 && serverQuestionCount === 0/);
+  assert.match(fn, /delete appState\.studentExamAnswers\[examQuestionKey\]/);
+  assert.match(fn, /delete appState\.studentExamQuestions\[examQuestionKey\]/);
+  assert.match(fn, /const cleanedQueue = getPendingOfflineQueue\(\)\.filter/);
+});
+
 await test('Student master writes are admin-owned and self password may remain unchanged', () => {
   assert.match(serverSource, /app\.post\("\/api\/students", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
   assert.match(serverSource, /app\.put\("\/api\/students\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
