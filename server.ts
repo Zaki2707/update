@@ -12916,7 +12916,7 @@ app.get("/api/system-settings/location", (req, res) => {
   });
 });
 
-app.put("/api/system-settings/location", async (req, res) => {
+app.put("/api/system-settings/location", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { schoolLatitude, schoolLongitude, geofenceRadius } = req.body;
   const nextSettings = {
     schoolLatitude: Number(schoolLatitude),
