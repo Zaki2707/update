@@ -20,9 +20,7 @@
             }
         });
     </script>
-    <!-- FontAwesome Icons (Local + CDN) -->
-    <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <!-- FontAwesome CSS is bundled by Vite from the official npm dependency. -->
     <!-- Local SheetJS for Excel -->
     <script src="/vendor/xlsx/xlsx.full.min.js"></script>
     <!-- Local jsPDF for PDF export -->
@@ -34,12 +32,10 @@
     <script src="/vendor/jszip/jszip.min.js"></script>
     <!-- Local PDF.js for reading PDF files -->
     <script src="/vendor/pdfjs/pdf.min.js"></script>
-    <!-- Local KaTeX for Math Equations -->
-    <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+    <!-- KaTeX CSS is bundled by Vite; runtime JS remains local for window.katex compatibility. -->
     <script src="/vendor/katex/katex.min.js"></script>
     <script src="/vendor/katex/contrib/auto-render.min.js"></script>
-    <!-- Local Google Fonts (Amiri, Noto Naskh Arabic, Plus Jakarta Sans) -->
-    <link rel="stylesheet" href="/vendor/fonts/fonts.css">
+    <!-- Typography uses theme-safe system fallbacks; no legacy local WOFF2 files are loaded. -->
     <style>
         body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
         .dot-grid-bg {
