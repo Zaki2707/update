@@ -1061,6 +1061,246 @@ async function recoverLegacyStudentProfilePhotos(req: any): Promise<{
   };
 }
 
+
+type StudentBackupPhotoRecoveryEntry = {
+  nis?: any;
+  name?: any;
+  photo?: any;
+  backupRef?: any;
+};
+
+function normalizeRecoveryPersonName(value: any): string {
+  return String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function extractBackupManagedPhotoId(value: any): string | null {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^\/api\/photos\/([A-Za-z0-9._-]{1,160})(?:[?#].*)?$/);
+  if (!match) return null;
+  const id = normalizeCloudinaryPhotoId(match[1]);
+  return isSafeManagedPhotoId(id) ? id : null;
+}
+
+async function recoverStudentProfilePhotosFromBackupPayload(
+  req: any,
+  entries: StudentBackupPhotoRecoveryEntry[],
+  dryRun: boolean
+): Promise<any> {
+  if (!isTrustedCloudRunRuntime || !isOnlineMode) {
+    throw new Error('Recovery foto backup hanya dapat dijalankan pada Cloud Run mode online.');
+  }
+  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+    throw new Error('Cloudinary wajib dikonfigurasi sebelum recovery foto backup.');
+  }
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 500) {
+    throw new Error('Daftar recovery foto harus berisi 1-500 item.');
+  }
+
+  const tenantStudents = filterByMadrasah(students || [], req);
+  const studentsByNis = new Map<string, any[]>();
+  for (const student of tenantStudents) {
+    const nis = String(student?.nis || '').trim();
+    if (!nis) continue;
+    const list = studentsByNis.get(nis) || [];
+    list.push(student);
+    studentsByNis.set(nis, list);
+  }
+
+  const cloudByCleanId = await listActualCloudinaryPhotos();
+  const result: any = {
+    dryRun,
+    received: entries.length,
+    matchedIdentity: 0,
+    recoverable: 0,
+    validExistingKept: 0,
+    nisNotFound: 0,
+    ambiguousNis: 0,
+    nameMismatch: 0,
+    invalidPhoto: 0,
+    wouldReuseCloudinary: 0,
+    wouldUpload: 0,
+    reusedCloudinary: 0,
+    uploaded: 0,
+    uploadFailed: 0,
+    updated: 0,
+    concurrentChangeSkipped: 0,
+    details: [] as any[]
+  };
+
+  const plans: any[] = [];
+  const seenNis = new Set<string>();
+
+  for (const entry of entries) {
+    const nis = String(entry?.nis || '').trim();
+    const backupName = String(entry?.name || '').trim();
+    const normalizedBackupName = normalizeRecoveryPersonName(backupName);
+
+    if (!nis || seenNis.has(nis)) {
+      if (result.details.length < 30) result.details.push({ nis, status: 'invalid-or-duplicate-nis' });
+      continue;
+    }
+    seenNis.add(nis);
+
+    const matches = studentsByNis.get(nis) || [];
+    if (matches.length === 0) {
+      result.nisNotFound++;
+      if (result.details.length < 30) result.details.push({ nis, name: backupName, status: 'nis-not-found' });
+      continue;
+    }
+    if (matches.length !== 1) {
+      result.ambiguousNis++;
+      if (result.details.length < 30) result.details.push({ nis, name: backupName, status: 'ambiguous-nis' });
+      continue;
+    }
+
+    const student = matches[0];
+    if (!normalizedBackupName || normalizeRecoveryPersonName(student?.name) !== normalizedBackupName) {
+      result.nameMismatch++;
+      if (result.details.length < 30) {
+        result.details.push({
+          nis,
+          backupName,
+          currentName: String(student?.name || ''),
+          status: 'name-mismatch'
+        });
+      }
+      continue;
+    }
+
+    const parsed = parseSafeRasterDataUrl(String(entry?.photo || ''));
+    if (!parsed) {
+      result.invalidPhoto++;
+      if (result.details.length < 30) result.details.push({ nis, name: backupName, status: 'invalid-photo' });
+      continue;
+    }
+
+    result.matchedIdentity++;
+
+    const currentRef = String(student?.photo || '').trim();
+    const currentId = getCloudinaryPhotoIdFromReference(currentRef);
+    const currentRemote = currentId ? cloudByCleanId.get(normalizeCloudinaryPhotoId(currentId)) : null;
+    if (currentRemote) {
+      result.validExistingKept++;
+      continue;
+    }
+
+    let targetId = extractBackupManagedPhotoId(entry?.backupRef);
+    if (!targetId) {
+      const digest = crypto.createHash('sha256').update(parsed.buffer).digest('hex').slice(0, 24);
+      const safeNis = nis.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) || 'student';
+      targetId = `recovered_${safeNis}_${digest}`;
+    }
+
+    const normalizedTargetId = normalizeCloudinaryPhotoId(targetId);
+    const targetRemote = cloudByCleanId.get(normalizedTargetId) || null;
+    result.recoverable++;
+    if (targetRemote) result.wouldReuseCloudinary++;
+    else result.wouldUpload++;
+
+    plans.push({
+      studentId: String(student?.id || ''),
+      nis,
+      name: String(student?.name || ''),
+      originalPhoto: currentRef,
+      photoDataUrl: String(entry?.photo || ''),
+      targetId: normalizedTargetId,
+      targetRemote
+    });
+  }
+
+  if (dryRun) return result;
+
+  const successfulPlans: any[] = [];
+  for (const plan of plans) {
+    let cloudUrl = plan.targetRemote?.url || '';
+    if (cloudUrl) {
+      result.reusedCloudinary++;
+    } else {
+      // Remove stale aliases before upload so the deduplication cache cannot mask a missing remote asset.
+      delete photoCloudinaryMap[plan.targetId];
+      delete photoCloudinaryMap[`madrasah_photos/${plan.targetId}`];
+
+      cloudUrl = await uploadToCloudinary(plan.photoDataUrl, plan.targetId) || '';
+      if (!cloudUrl) {
+        result.uploadFailed++;
+        if (result.details.length < 30) {
+          result.details.push({ nis: plan.nis, name: plan.name, status: 'cloudinary-upload-failed' });
+        }
+        continue;
+      }
+      result.uploaded++;
+      cloudByCleanId.set(plan.targetId, {
+        url: cloudUrl,
+        fullId: `madrasah_photos/${plan.targetId}`
+      });
+    }
+
+    photoCloudinaryMap[plan.targetId] = cloudUrl;
+    photoCloudinaryMap[`madrasah_photos/${plan.targetId}`] = cloudUrl;
+    successfulPlans.push({
+      ...plan,
+      newPhoto: `/api/photos/${plan.targetId}`
+    });
+  }
+
+  if (successfulPlans.length > 0) {
+    await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
+
+    await updateStoreKeyWithLock('students', (currentVal) => {
+      const list = Array.isArray(currentVal) ? currentVal : [];
+      const today = new Date().toISOString().split('T')[0];
+
+      for (const plan of successfulPlans) {
+        const candidates = list
+          .map((student: any, index: number) => ({ student, index }))
+          .filter(({ student }: any) =>
+            String(student?.nis || '').trim() === plan.nis &&
+            normalizeRecoveryPersonName(student?.name) === normalizeRecoveryPersonName(plan.name) &&
+            isItemForCurrentMadrasah(student, req)
+          );
+
+        if (candidates.length !== 1) {
+          result.concurrentChangeSkipped++;
+          continue;
+        }
+
+        const { student, index } = candidates[0];
+        const latestPhoto = String(student?.photo || '').trim();
+        if (latestPhoto !== plan.originalPhoto) {
+          result.concurrentChangeSkipped++;
+          continue;
+        }
+
+        const history = Array.isArray(student?.photoHistory) ? [...student.photoHistory] : [];
+        if (!history.some((item: any) => historyPhotoValue(item) === plan.newPhoto)) {
+          history.unshift({
+            photo: plan.newPhoto,
+            date: today,
+            type: 'backup-recovery',
+            label: 'Foto Profil (Recovery Backup)'
+          });
+        }
+
+        list[index] = {
+          ...student,
+          photo: plan.newPhoto,
+          photoHistory: history,
+          photoUpdated: today
+        };
+        result.updated++;
+      }
+
+      return list;
+    });
+  }
+
+  return result;
+}
+
 async function saveBase64ToFirestore(base64Str: string): Promise<string> {
   if (!base64Str || !base64Str.startsWith("data:image/")) return base64Str;
 
@@ -2821,6 +3061,7 @@ app.use((req: any, res, next) => {
     p === '/api/cloudinary/sync' ||
     p === '/api/cloudinary/repair-missing' ||
     p === '/api/cloudinary/recover-legacy-student-photos' ||
+    p === '/api/students/recover-profile-photos-from-backup' ||
     p.startsWith('/api/system/backup') ||
     p.startsWith('/api/system/restore') ||
     (p === '/api/settings' && method !== 'GET');
@@ -2841,6 +3082,9 @@ app.use((req: any, res, next) => {
 
   if (p === '/api/cloudinary/recover-legacy-student-photos') {
     if (!enforceApiRateLimit(req, res, `legacy-photo-recovery:${authUser.id}`, 3, 60 * 60 * 1000)) return;
+  }
+  if (p === '/api/students/recover-profile-photos-from-backup') {
+    if (!enforceApiRateLimit(req, res, `backup-photo-recovery:${authUser.id}`, 40, 60 * 60 * 1000)) return;
   }
   if (p === '/api/realtime-token') {
     if (!enforceApiRateLimit(req, res, `realtime:${authUser.id}`, 120, 10 * 60 * 1000)) return;
@@ -7784,6 +8028,28 @@ app.post("/api/students/import", requireAuth, requireRole(['teacher', 'guru', 'a
   }
   await saveData('students', students);
   res.json({ success: true, imported: count, skipped, credentials, message: `Berhasil import ${count} siswa, ${skipped} dilewati (NIS sudah terdaftar).` });
+});
+
+app.post("/api/students/recover-profile-photos-from-backup", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const entries = Array.isArray(req.body?.photos) ? req.body.photos : [];
+    const dryRun = req.body?.dryRun === true;
+
+    const result = await recoverStudentProfilePhotosFromBackupPayload(req, entries, dryRun);
+    return res.json({
+      success: true,
+      message: dryRun
+        ? `Preview recovery selesai. ${result.recoverable} foto dapat dipulihkan; ${result.validExistingKept} foto aktif yang valid akan dipertahankan.`
+        : `Recovery selesai. ${result.updated} foto profil siswa diperbarui; ${result.validExistingKept} foto aktif yang valid dipertahankan.`,
+      result
+    });
+  } catch (err: any) {
+    console.error('[Backup Photo Recovery] Failed:', err?.message || err);
+    return res.status(500).json({
+      success: false,
+      message: safeServerError(err, 'Recovery foto siswa dari backup gagal.')
+    });
+  }
 });
 
 app.post("/api/students/bulk-upload-photos", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
