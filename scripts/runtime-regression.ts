@@ -510,14 +510,15 @@ await test('Auth: persisted sessions validate before UI restore and account RAM 
   assert.match(appSource, /resetAccountScopedRuntimeState\(\)/);
   assert.match(appSource, /if \(!loadSucceeded\)/);
   assert.match(settingsSource, /return true;/);
-  assert.match(settingsSource, /fallbackResponses\.some\(item => item && item\.success === true\)/);
+  assert.match(settingsSource, /fallbackAuthenticatedResponses\.some\(item => item && item\.success === true\)/);
 });
 
 await test('Auth: JWT is bound to current credential and active tenant state', () => {
   assert.match(serverSource, /AUTH_SESSION_CREDENTIAL_STAMP_V2/);
   assert.match(serverSource, /function validateAuthSessionAgainstCurrentState/);
   assert.match(serverSource, /if \(!session \|\| !session\.authStamp\) return false/);
-  assert.match(serverSource, /targetMadrasah\.isActive === false/);
+  assert.match(serverSource, /sessionMadrasah\.isActive === false/);
+  assert.match(serverSource, /const \{ authStamp: _authStamp, \.\.\.safeAuthUser \} = authUser/);
   assert.match(serverSource, /validateAuthSessionAgainstCurrentState\(payload\)/);
   assert.match(serverSource, /createAuthToken\(studentUser, student\.password\)/);
   assert.match(serverSource, /createAuthToken\(teacherUser, teacher\.password\)/);

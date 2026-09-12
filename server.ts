@@ -4317,11 +4317,13 @@ function validateAuthSessionAgainstCurrentState(session: AuthSession): boolean {
       stampMatches(bossPass, 'bos', bossUser, 'default');
   }
 
+  const sessionMadrasah = (madrasahs || []).find((m: any) =>
+    String(m.id) === tenantId || String(m.slug) === tenantId
+  );
+  if (!sessionMadrasah || sessionMadrasah.isActive === false) return false;
+
   if (role === 'admin' || role === 'administrator') {
-    const targetMadrasah = (madrasahs || []).find((m: any) =>
-      String(m.id) === tenantId || String(m.slug) === tenantId
-    );
-    if (!targetMadrasah || targetMadrasah.isActive === false) return false;
+    const targetMadrasah = sessionMadrasah;
 
     if (id === 'ADMIN') {
       const currentUsername = String(appSettings?.adminUser || 'admin').trim();
@@ -6505,7 +6507,8 @@ app.get("/api/auth/me", (req, res) => {
   if (!authUser) {
     return res.status(401).json({ success: false, message: "Belum login atau token kedaluwarsa" });
   }
-  res.json({ success: true, user: authUser });
+  const { authStamp: _authStamp, ...safeAuthUser } = authUser;
+  res.json({ success: true, user: safeAuthUser });
 });
 
 app.get("/api/token-balance", requireAuth, (req: any, res) => {
