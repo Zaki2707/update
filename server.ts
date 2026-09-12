@@ -535,6 +535,48 @@ function getCloudinaryPhotoIdFromReference(value: any): string | null {
   return null;
 }
 
+
+function normalizePhotoReferenceForClient(value: any): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=\\r\\n]+$/i.test(raw)) return raw;
+
+  const withoutMarker = raw.replace(/^PHOTO_REF:/i, '').trim();
+  if (withoutMarker !== raw) {
+    const markedId = normalizeCloudinaryPhotoId(withoutMarker);
+    return markedId ? `/api/photos/${markedId}` : '';
+  }
+
+  if (/^\/api\/photos\/[A-Za-z0-9._-]+$/.test(raw)) return raw;
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  // Offline may still serve files from the local uploads directory. Online
+  // responses must resolve through the Cloudinary-backed /api/photos route.
+  if (/^\/(?:uploads|attendance_photos|photos)\/[A-Za-z0-9._/-]+$/i.test(raw)) {
+    return isOfflineMode ? raw : '';
+  }
+
+  // Older records sometimes stored only the Cloudinary public ID or the
+  // madrasah_photos/<id> path. Resolve those through the server route so the
+  // client never has to know Cloudinary credentials or URL conventions.
+  const publicId = raw.replace(/^madrasah_photos\//i, '');
+  if (/^[A-Za-z0-9._-]{1,180}$/.test(publicId)) {
+    const normalizedId = normalizeCloudinaryPhotoId(publicId);
+    return normalizedId ? `/api/photos/${normalizedId}` : '';
+  }
+
+  return '';
+}
+
+function normalizePhotoHistoryForClient(history: any): any {
+  if (!Array.isArray(history)) return history;
+  return history.map((entry: any) => {
+    if (typeof entry === 'string') return normalizePhotoReferenceForClient(entry);
+    if (!entry || typeof entry !== 'object') return entry;
+    return { ...entry, photo: normalizePhotoReferenceForClient(entry.photo) };
+  });
+}
+
 function collectReferencedPhotoIds(): Set<string> {
   const candidates = new Set<string>();
   const addPhotoId = (value: any) => {
@@ -2890,30 +2932,157 @@ function parseDbRows(rows: any[]) {
   return dbData;
 }
 
+const LESSON_PLAN_CHILD_KEYS = [
+  'groups', 'modules', 'lessonPlans', 'plans', 'items', 'documents', 'files', 'children'
+] as const;
+
+const LESSON_PLAN_CONTENT_KEYS = [
+  'title', 'name', 'topic', 'judul', 'materi', 'topik', 'identitasModul', 'htmlContent',
+  'extractedContent', 'kegiatanPembelajaran', 'sourceFileName', 'sourceType',
+  'moduleContent', 'modulAjar', 'learningObjectives', 'tujuanPembelajaran'
+] as const;
+
+const LESSON_PLAN_METADATA_KEYS = [
+  'madrasahId', 'madrasah_id', 'madrasahSlug', 'madrasah_slug', 'tenantId',
+  'schoolId', 'subjectId', 'subject_id', 'subjectCode', 'subject_code',
+  'subjectName', 'subject_name', 'subject', 'mapel', 'groupId', 'group_id',
+  'groupName', 'group_name', 'grade', 'level', 'semester', 'classes',
+  'targetClasses', 'target_classes', 'classId', 'class_id'
+] as const;
+
+function hasLessonPlanContent(value: any): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return LESSON_PLAN_CONTENT_KEYS.some((key) => {
+    const candidate = value[key];
+    return candidate !== undefined && candidate !== null && String(candidate).trim() !== '';
+  });
+}
+
+function lessonPlanContextFromValue(value: any, inherited: Record<string, any>): Record<string, any> {
+  const context: Record<string, any> = { ...inherited };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return context;
+
+  for (const key of LESSON_PLAN_METADATA_KEYS) {
+    if (value[key] !== undefined && value[key] !== null && value[key] !== '') {
+      context[key] = value[key];
+    }
+  }
+
+  if (context.subjectId === undefined) {
+    context.subjectId = value.subjectCode ?? value.subject_id ?? value.subjectName ??
+      value.subject_name ?? value.subject ?? value.mapel;
+  }
+  if (context.groupId === undefined) {
+    context.groupId = value.group_id ?? value.groupId;
+  }
+  if (context.groupName === undefined) {
+    context.groupName = value.group_name ?? value.groupName;
+  }
+  if (context.classes === undefined && context.targetClasses !== undefined) {
+    context.classes = context.targetClasses;
+  }
+  if (context.targetClasses === undefined && context.classes !== undefined) {
+    context.targetClasses = context.classes;
+  }
+  return context;
+}
+
+function normalizeLessonPlanRecord(value: any, inherited: Record<string, any>): any {
+  const item = { ...value };
+  const context = lessonPlanContextFromValue(value, inherited);
+  for (const key of LESSON_PLAN_METADATA_KEYS) {
+    if (item[key] === undefined && context[key] !== undefined) item[key] = context[key];
+  }
+  if (!item.subjectId) {
+    item.subjectId = item.subjectCode ?? item.subject_id ?? item.subjectName ??
+      item.subject_name ?? item.subject ?? item.mapel ?? '';
+  }
+  if (!item.title) item.title = item.judul ?? item.modulName ?? item.name ?? '';
+  if (!item.topic) item.topic = item.materi ?? item.topik ?? '';
+  if (!item.grade) item.grade = item.level ?? item.classId ?? item.class_id ?? '';
+  if (!item.classes && item.targetClasses) item.classes = item.targetClasses;
+  if (!item.targetClasses && item.classes) item.targetClasses = item.classes;
+  return item;
+}
+
+function flattenLessonPlanValue(value: any, inherited: Record<string, any> = {}, depth = 0): any[] {
+  if (depth > 12 || value === null || value === undefined) return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => flattenLessonPlanValue(entry, inherited, depth + 1));
+  }
+  if (typeof value !== 'object') return [];
+
+  const context = lessonPlanContextFromValue(value, inherited);
+
+  const childEntries: Array<[string, any]> = [];
+  for (const key of LESSON_PLAN_CHILD_KEYS) {
+    if (value[key] !== undefined && value[key] !== null) childEntries.push([key, value[key]]);
+  }
+
+  // Group/container objects often have a display title of their own. Prefer
+  // their child collection so the group itself is not counted as an extra
+  // lesson plan (for example 2 groups × 18 modules must remain 36).
+  if (childEntries.length === 0 && hasLessonPlanContent(value)) {
+    return [normalizeLessonPlanRecord(value, context)];
+  }
+  if (childEntries.length > 0) {
+    const hasNamedGroupChildren = childEntries.some(([key]) => key !== 'groups' && key !== 'lessonPlans' && key !== 'plans');
+    const groupId = value.groupId ?? value.group_id ?? (hasNamedGroupChildren ? value.id : undefined);
+    const groupName = value.groupName ?? value.group_name ?? (hasNamedGroupChildren ? (value.name ?? value.title) : undefined);
+    const childContext = {
+      ...context,
+      ...(groupId !== undefined && groupId !== null && groupId !== '' ? { groupId } : {}),
+      ...(groupName !== undefined && groupName !== null && groupName !== '' ? { groupName } : {})
+    };
+    return childEntries.flatMap(([, children]) =>
+      flattenLessonPlanValue(children, childContext, depth + 1)
+    );
+  }
+
+  // Some legacy stores use an object keyed by group/module IDs instead of an
+  // array. Recurse only into nested records; scalar metadata is not emitted.
+  const nestedEntries = Object.entries(value).filter(([, child]) =>
+    child && typeof child === 'object'
+  );
+  if (nestedEntries.length > 0) {
+    return nestedEntries.flatMap(([entryKey, child]) => {
+      const keyedContext = { ...context };
+      if (keyedContext.groupId === undefined && /^[A-Za-z0-9._-]{1,120}$/.test(entryKey)) {
+        keyedContext.groupId = entryKey;
+      }
+      return flattenLessonPlanValue(child, keyedContext, depth + 1);
+    });
+  }
+
+  return [];
+}
+
 function mergeLessonPlanDbSources(dbData: Record<string, any>): any[] | null {
   const keys = ['madrasah_lessonPlans', 'madrasah_lesson_plans', 'lessonPlans'];
-  const hasAny = keys.some((key) => Array.isArray(dbData[key]));
+  const hasAny = keys.some((key) => dbData[key] !== undefined && dbData[key] !== null);
   if (!hasAny) return null;
 
   const byKey = new Map<string, any>();
   let anonymousCounter = 0;
 
   for (const key of keys) {
-    const items = Array.isArray(dbData[key]) ? dbData[key] : [];
+    const items = flattenLessonPlanValue(dbData[key], { sourceKey: key });
     for (const raw of items) {
       if (!raw || typeof raw !== 'object') continue;
-      const item = { ...raw };
+      const item = normalizeLessonPlanRecord(raw, {});
       const id = String(item.id || '').trim();
+      const group = String(item.groupId || item.group_id || '').trim().toLowerCase();
       const signature = [
         String(item.subjectId || item.subjectCode || item.subjectName || '').trim().toLowerCase(),
         String(item.title || item.name || '').trim().toLowerCase(),
         String(item.topic || item.materi || '').trim().toLowerCase(),
         String(item.grade || '').trim().toLowerCase(),
-        String(item.semester || '').trim().toLowerCase()
+        String(item.semester || '').trim().toLowerCase(),
+        group
       ].join('::');
       const hasSignature = signature.replace(/:/g, '').trim().length > 0;
       const dedupeKey = id
-        ? `id::${id}`
+        ? `id::${id}::${group}`
         : (hasSignature ? `sig::${signature}` : `anon::${anonymousCounter++}`);
       const previous = byKey.get(dedupeKey);
       byKey.set(dedupeKey, previous ? { ...previous, ...item } : item);
@@ -3798,7 +3967,8 @@ function sanitizeStudentPeerProfile(student: any) {
     name: student.name,
     classId: student.classId || student.class_id || '',
     class_id: student.class_id || student.classId || '',
-    photo: student.photo || '',
+    photo: normalizePhotoReferenceForClient(student.photo),
+    photoHistory: normalizePhotoHistoryForClient(student.photoHistory),
     role: normalizeStudentStoredRole(student.role)
   };
 }
@@ -3809,7 +3979,8 @@ function sanitizeTeacherForStudent(teacher: any) {
     id: teacher.id,
     name: teacher.name,
     mapel: Array.isArray(teacher.mapel) ? teacher.mapel : (teacher.mapel ? [teacher.mapel] : []),
-    photo: teacher.photo || ''
+    photo: normalizePhotoReferenceForClient(teacher.photo),
+    photoHistory: normalizePhotoHistoryForClient(teacher.photoHistory)
   };
 }
 
@@ -4237,10 +4408,18 @@ app.get("/api/all-data", requireAuth, (req, res) => {
   }
 
   // Sanitasi sensitif (hilangkan password dan adminPass)
-  const sanitizedTeachers = filteredTeachers.map(({ password, ...rest }: any) => rest);
+  const sanitizedTeachers = filteredTeachers.map(({ password, ...rest }: any) => ({
+    ...rest,
+    photo: normalizePhotoReferenceForClient(rest.photo),
+    photoHistory: normalizePhotoHistoryForClient(rest.photoHistory)
+  }));
   const sanitizedStudents = (isStudent ? filteredStudents : sortedStudents).map((st: any) => {
     const { password, passwordRaw, ...rest } = st;
-    return rest;
+    return {
+      ...rest,
+      photo: normalizePhotoReferenceForClient(rest.photo),
+      photoHistory: normalizePhotoHistoryForClient(rest.photoHistory)
+    };
   });
   const isBosUser = Boolean(authUser && (authUser.role === 'bos' || authUser.role === 'superadmin'));
   const visibleMadrasahs = isBosUser
@@ -5541,7 +5720,7 @@ app.post("/api/login", async (req, res) => {
       role: normalizeStudentStoredRole(student.role),
       madrasahId: student.madrasahId || requestedTenant?.id || student.madrasahSlug || 'default',
       madrasahSlug: student.madrasahSlug || requestedTenant?.slug || student.madrasahId || 'default',
-      photo: student.photo,
+      photo: normalizePhotoReferenceForClient(student.photo),
       no_hp: student.no_hp
     };
     const token = createAuthToken(studentUser);
@@ -7030,7 +7209,11 @@ function mergeLkpdListDataSmart(globalList: any[], incomingData: any[], req: any
 // 3. Teachers API
 app.get("/api/teachers", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
   const list = filterByMadrasah(teachers, req);
-  const sanitized = list.map(({ password, ...rest }: any) => rest);
+  const sanitized = list.map(({ password, ...rest }: any) => ({
+    ...rest,
+    photo: normalizePhotoReferenceForClient(rest.photo),
+    photoHistory: normalizePhotoHistoryForClient(rest.photoHistory)
+  }));
   res.json({ success: true, teachers: sanitized });
 });
 
@@ -7245,7 +7428,11 @@ app.get("/api/students", requireAuth, requireRole(['teacher', 'guru', 'admin', '
     const nisB = String(b.nis || b.no_urut || b.id || '').trim();
     return nisA.localeCompare(nisB, undefined, { numeric: true, sensitivity: 'base' });
   });
-  const sanitized = sortedStudents.map(({ password, passwordRaw, ...rest }: any) => rest);
+  const sanitized = sortedStudents.map(({ password, passwordRaw, ...rest }: any) => ({
+    ...rest,
+    photo: normalizePhotoReferenceForClient(rest.photo),
+    photoHistory: normalizePhotoHistoryForClient(rest.photoHistory)
+  }));
   res.json({ success: true, students: sanitized });
 });
 
@@ -7443,12 +7630,17 @@ app.put("/api/student/profile", requireAuth, requireRole(['student', 'siswa', 'c
     role: student.role || authUser.role || 'student',
     madrasahId: student.madrasahId || authUser.madrasahId || 'default',
     madrasahSlug: student.madrasahSlug || (authUser as any).madrasahSlug || student.madrasahId || 'default',
-    photo: student.photo,
+    photo: normalizePhotoReferenceForClient(student.photo),
     no_hp: student.no_hp
   };
   const token = createAuthToken(sessionUser);
   const { password: _, passwordRaw: __, ...safeStudent } = student;
-  return res.json({ success: true, student: safeStudent, user: { ...sessionUser, token }, token });
+  const clientStudent = {
+    ...safeStudent,
+    photo: normalizePhotoReferenceForClient(safeStudent.photo),
+    photoHistory: normalizePhotoHistoryForClient(safeStudent.photoHistory)
+  };
+  return res.json({ success: true, student: clientStudent, user: { ...sessionUser, token }, token });
 });
 
 app.put("/api/students/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
