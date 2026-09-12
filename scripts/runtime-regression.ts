@@ -15,6 +15,7 @@ const serverSource = source;
 const modulesSource = fs.readFileSync('src/modulesScript.js', 'utf8');
 const adminModulesSource = fs.readFileSync('src/adminModules.js', 'utf8');
 const appSource = fs.readFileSync('src/appScript.js', 'utf8');
+const settingsSource = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
 const assessmentSource = fs.readFileSync('src/assessmentModule.js', 'utf8');
 const ast = ts.createSourceFile('server.ts', source, ts.ScriptTarget.ES2022, true);
 const quiet = { log() {}, warn() {}, error() {} };
