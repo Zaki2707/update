@@ -2298,10 +2298,6 @@ function buildSidebar() {
                 <i class="fa-solid fa-scroll w-5 text-emerald-400"></i>
                 <span>Modul Ajar</span>
             </button>
-            <button type="button" onclick="navigateTo('modul_ajar_2')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
-                <i class="fa-solid fa-layer-group w-5 text-teal-400"></i>
-                <span>Modul Ajar 2</span>
-            </button>
             <button type="button" onclick="navigateTo('jurnal')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-book-bookmark w-5 text-emerald-400"></i>
                 <span>Jurnal Mengajar</span>
@@ -2455,12 +2451,9 @@ function navigateTo(route) {
     else if (route === 'nilai') renderGradesModule(container);
     else if (route === 'modul_ajar') renderModulAjarModule(container);
     else if (route === 'modul_ajar_2') {
-        if (typeof window.renderModulAjar2Module === 'function') {
-            window.renderModulAjar2Module(container);
-        } else {
-            console.error('Modul Ajar 2 gagal dimuat: renderModulAjar2Module tidak tersedia.');
-            if (container) container.innerHTML = '<div class="p-6 bg-rose-50 border border-rose-200 text-rose-700 rounded-2xl text-sm font-bold">Modul Ajar 2 gagal dimuat. Silakan muat ulang aplikasi setelah deployment terbaru.</div>';
-        }
+        // Legacy deep-link compatibility: Mode 2 now lives inside the main Modul Ajar flow.
+        appState.activeModulAjarSubTab = 'simpan';
+        renderModulAjarModule(container);
     }
     else if (route === 'jurnal') renderJournalModule(container);
     else if (route === 'setting') renderSettingModule(container);
