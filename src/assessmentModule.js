@@ -36,6 +36,51 @@ window.safeSetStorage = safeSetStorage;
 
 let activeExamSession = null;
 let examTimerInterval = null;
+window._cbtFinalizing = false;
+
+// CBT_LOGOUT_RUNTIME_ISOLATION_V2: logout must never delete durable recovery data,
+// but no in-memory exam/timer/camera/signaling state may survive into another account.
+window.__resetCbtRuntimeOnLogout = function() {
+    if (window.__examTimerInterval) {
+        clearInterval(window.__examTimerInterval);
+        window.__examTimerInterval = null;
+    }
+    if (examTimerInterval) {
+        clearInterval(examTimerInterval);
+        examTimerInterval = null;
+    }
+    if (window._studentSnapshotInterval) {
+        clearInterval(window._studentSnapshotInterval);
+        window._studentSnapshotInterval = null;
+    }
+    if (window.__studentWebcamStream) {
+        if (window.stopCameraStreamTrack) {
+            window.stopCameraStreamTrack(window.__studentWebcamStream);
+        } else {
+            try { window.__studentWebcamStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+        }
+        window.__studentWebcamStream = null;
+    }
+    try { stopStudentLiveKit(); } catch(e) {}
+    if (window._signalingWs) {
+        try { window._signalingWs.close(); } catch(e) {}
+        window._signalingWs = null;
+    }
+    if (window._studentPeerConnections) {
+        Object.values(window._studentPeerConnections).forEach(pc => {
+            try { pc.close(); } catch(e) {}
+        });
+        window._studentPeerConnections = {};
+    }
+    const pipContainer = document.getElementById('student-pip-container');
+    if (pipContainer) pipContainer.remove();
+    if (window._examWakeLock && typeof window._examWakeLock.release === 'function') {
+        Promise.resolve(window._examWakeLock.release()).catch(() => {});
+    }
+    window._examWakeLock = null;
+    activeExamSession = null;
+    window._cbtFinalizing = false;
+};
 
 async function syncExamStateToServer(payload) {
     const role = String((appState && appState.role) || (appState.currentUser && appState.currentUser.role) || '').toLowerCase();
@@ -3304,7 +3349,7 @@ function reconcileStudentCbtServerSummary(studentId, examList, summary) {
             const serverSession = activeMap[key] && typeof activeMap[key] === 'object' ? activeMap[key] : {};
             const queuedAnswers = {};
             pendingQueue.forEach(item => {
-                if (String(item?.studentId) === stId && String(item?.examId) === examId && item?.questionId !== undefined) {
+                if (pendingOfflineAnswerMatches(item, stId, examId) && item?.questionId !== undefined) {
                     queuedAnswers[String(item.questionId)] = item.answer;
                 }
             });
@@ -3322,7 +3367,7 @@ function reconcileStudentCbtServerSummary(studentId, examList, summary) {
             // No server-side active attempt means queued writes for this old attempt
             // must never be replayed into a future reset attempt.
             pendingQueue = pendingQueue.filter(item =>
-                !(String(item?.studentId) === stId && String(item?.examId) === examId)
+                !pendingOfflineAnswerMatches(item, stId, examId)
             );
         }
 
@@ -4772,11 +4817,38 @@ function setPendingOfflineQueue(q) {
     } catch(e) {}
 }
 
+function getCurrentCbtQueueOwner() {
+    const role = String((appState && appState.role) || (appState.currentUser && appState.currentUser.role) || '').toLowerCase();
+    if (!['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) return null;
+    const studentId = String(appState.currentUser?.id || '').trim();
+    if (!studentId) return null;
+    const tenantId = String(
+        appState.currentUser?.madrasahId ||
+        appState.currentUser?.madrasahSlug ||
+        window.__activeTenant?.id ||
+        window.__activeTenant?.slug ||
+        ''
+    ).trim();
+    return { studentId, tenantId };
+}
+
+function pendingOfflineAnswerMatches(item, studentId, examId = null, questionId = null, tenantId = null) {
+    if (String(item?.studentId) !== String(studentId)) return false;
+    if (examId !== null && String(item?.examId) !== String(examId)) return false;
+    if (questionId !== null && String(item?.questionId) !== String(questionId)) return false;
+    const itemTenant = String(item?.tenantId || '').trim();
+    const targetTenant = String(tenantId ?? getCurrentCbtQueueOwner()?.tenantId ?? '').trim();
+    // Legacy queue rows did not have tenantId. They remain recoverable only for the
+    // same student id; all new rows are tenant-scoped as well.
+    if (itemTenant && targetTenant && itemTenant !== targetTenant) return false;
+    return true;
+}
+
 function getPendingAnswersForExam(studentId, examId) {
     const pending = {};
+    const owner = getCurrentCbtQueueOwner();
     getPendingOfflineQueue().forEach(item => {
-        if (String(item?.studentId) === String(studentId) &&
-            String(item?.examId) === String(examId) &&
+        if (pendingOfflineAnswerMatches(item, studentId, examId, null, owner?.tenantId) &&
             item?.questionId !== undefined) {
             pending[String(item.questionId)] = item.answer;
         }
@@ -4789,9 +4861,13 @@ function upsertPendingOfflineAnswer(payload) {
     // auth rotation, or a dropped request cannot erase the student's latest answer.
     const queue = getPendingOfflineQueue();
     const existingIdx = queue.findIndex(item =>
-        String(item?.studentId) === String(payload?.studentId) &&
-        String(item?.examId) === String(payload?.examId) &&
-        String(item?.questionId) === String(payload?.questionId)
+        pendingOfflineAnswerMatches(
+            item,
+            payload?.studentId,
+            payload?.examId,
+            payload?.questionId,
+            payload?.tenantId
+        )
     );
     if (existingIdx >= 0) queue[existingIdx] = payload;
     else queue.push(payload);
@@ -4802,9 +4878,22 @@ function upsertPendingOfflineAnswer(payload) {
 
 function removePendingOfflineAnswer(payload) {
     const queue = getPendingOfflineQueue().filter(item =>
-        !(String(item?.studentId) === String(payload?.studentId) &&
-          String(item?.examId) === String(payload?.examId) &&
-          String(item?.questionId) === String(payload?.questionId))
+        !pendingOfflineAnswerMatches(
+            item,
+            payload?.studentId,
+            payload?.examId,
+            payload?.questionId,
+            payload?.tenantId
+        )
+    );
+    setPendingOfflineQueue(queue);
+    window._pendingOfflineAnswers = queue;
+    return queue;
+}
+
+function removePendingOfflineAnswersForAttempt(studentId, examId, tenantId = null) {
+    const queue = getPendingOfflineQueue().filter(item =>
+        !pendingOfflineAnswerMatches(item, studentId, examId, null, tenantId)
     );
     setPendingOfflineQueue(queue);
     window._pendingOfflineAnswers = queue;
@@ -4817,7 +4906,10 @@ window.updateCbtSyncBadge = function(status) {
     const badge = document.getElementById('cbt-sync-status-badge');
     const text = document.getElementById('cbt-sync-status-text');
     if (!badge || !text) return;
-    const queueLen = (window._pendingOfflineAnswers && window._pendingOfflineAnswers.length) || 0;
+    const owner = getCurrentCbtQueueOwner();
+    const queueLen = owner
+        ? (window._pendingOfflineAnswers || []).filter(item => pendingOfflineAnswerMatches(item, owner.studentId, null, null, owner.tenantId)).length
+        : 0;
     if (status === 'syncing') {
         badge.className = 'px-2.5 py-1.5 bg-amber-50 text-amber-700 rounded-2xl text-[10px] font-bold flex items-center space-x-1.5 border border-amber-200';
         badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span><span id="cbt-sync-status-text">Menyinkron (${queueLen})...</span>`;
@@ -4837,10 +4929,22 @@ window.flushPendingOfflineAnswers = async function() {
         window.updateCbtSyncBadge('synced');
         return;
     }
-    window.updateCbtSyncBadge('syncing');
 
+    // CBT_QUEUE_ACCOUNT_ISOLATION_V2: never replay one student's queued answer
+    // using another account's JWT on a shared computer.
+    const owner = getCurrentCbtQueueOwner();
+    if (!owner) {
+        window._pendingOfflineAnswers = queue;
+        return;
+    }
+
+    window.updateCbtSyncBadge('syncing');
     const remaining = [];
     for (const item of queue) {
+        if (!pendingOfflineAnswerMatches(item, owner.studentId, null, null, owner.tenantId)) {
+            remaining.push(item);
+            continue;
+        }
         try {
             const res = await fetch('/api/exam/attempt/answer', {
                 method: 'POST',
@@ -4867,7 +4971,8 @@ window.flushPendingOfflineAnswers = async function() {
 
     setPendingOfflineQueue(remaining);
     window._pendingOfflineAnswers = remaining;
-    if (remaining.length === 0) {
+    const ownRemaining = remaining.filter(item => pendingOfflineAnswerMatches(item, owner.studentId, null, null, owner.tenantId));
+    if (ownRemaining.length === 0) {
         window.updateCbtSyncBadge('synced');
     } else {
         window.updateCbtSyncBadge('offline');
@@ -4911,6 +5016,13 @@ function saveExamAnswer(qId, val) {
 
         const payload = {
             studentId: st.id,
+            tenantId: String(
+                appState.currentUser?.madrasahId ||
+                appState.currentUser?.madrasahSlug ||
+                window.__activeTenant?.id ||
+                window.__activeTenant?.slug ||
+                ''
+            ).trim(),
             examId: activeExamSession.exam.id,
             questionId: qId,
             answer: val,
@@ -4933,7 +5045,11 @@ function saveExamAnswer(qId, val) {
                 activeExamSession.timeLeft = res.remainingTime;
             }
             const curQ = removePendingOfflineAnswer(payload);
-            if (curQ.length === 0) {
+            const owner = getCurrentCbtQueueOwner();
+            const ownPending = owner
+                ? curQ.filter(item => pendingOfflineAnswerMatches(item, owner.studentId, null, null, owner.tenantId))
+                : [];
+            if (ownPending.length === 0) {
                 window.updateCbtSyncBadge('synced');
             } else {
                 window.updateCbtSyncBadge('offline');
@@ -4969,97 +5085,144 @@ function prevExamQuestion() {
     }
 }
 
-function submitExamFinal() {
-    const sidebar = document.getElementById('sidebar');
-    const header = document.querySelector('header');
-    if (sidebar) sidebar.style.display = '';
-    if (header) header.style.display = '';
+async function confirmCbtCompletionOnServer(studentId, examId) {
+    try {
+        const response = await fetch(`/api/exam/my-summary?studentId=${encodeURIComponent(studentId)}`);
+        const data = await response.json().catch(() => ({ success: false }));
+        if (!response.ok || !data.success) return { completed: false, grade: null, completionValue: null };
+        const examKey = String(studentId) + '_' + String(examId);
+        const completedIds = new Set((Array.isArray(data.completedExams) ? data.completedExams : []).map(id => String(id)));
+        const completedMap = data.completedMap && typeof data.completedMap === 'object' ? data.completedMap : {};
+        const grades = data.grades && typeof data.grades === 'object' ? data.grades : {};
+        const hasMapValue = Object.prototype.hasOwnProperty.call(completedMap, examKey);
+        return {
+            completed: completedIds.has(String(examId)) || hasMapValue,
+            grade: Object.prototype.hasOwnProperty.call(grades, examKey) ? grades[examKey] : null,
+            completionValue: hasMapValue ? completedMap[examKey] : true
+        };
+    } catch(e) {
+        return { completed: false, grade: null, completionValue: null };
+    }
+}
 
-    const st = appState.currentUser && appState.currentUser.id ? (appState.students.find(s => String(s.id) === String(appState.currentUser.id)) || appState.currentUser) : appState.students[0] || {};
-    const ex = activeExamSession.exam;
+async function submitExamFinal() {
+    if (!activeExamSession || window._cbtFinalizing) return;
+    window._cbtFinalizing = true;
 
-    if (!appState.completedExams) appState.completedExams = {};
-    appState.completedExams[st.id + '_' + ex.id] = true;
-    safeSetStorage('madrasah_completed_exams', appState.completedExams);
+    const st = appState.currentUser && appState.currentUser.id
+        ? (appState.students.find(s => String(s.id) === String(appState.currentUser.id)) || appState.currentUser)
+        : (appState.students[0] || {});
+    const sessionSnapshot = activeExamSession;
+    const ex = sessionSnapshot.exam;
+    if (!st?.id || !ex?.id) {
+        window._cbtFinalizing = false;
+        showToast('Data sesi ujian tidak lengkap. Muat ulang halaman sebelum mengirim.', 'error');
+        return;
+    }
 
-    const answers = activeExamSession.answers || {};
-    if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers')) || {};
-    appState.studentExamAnswers[st.id + '_' + ex.id] = answers;
-    safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+    const key = String(st.id) + '_' + String(ex.id);
+    const answers = { ...(sessionSnapshot.answers || {}) };
+    const questions = Array.isArray(sessionSnapshot.questions)
+        ? sessionSnapshot.questions
+        : (appState.studentExamQuestions ? (appState.studentExamQuestions[key] || []) : []);
 
-    let questions = (activeExamSession && activeExamSession.questions) ? activeExamSession.questions : (appState.studentExamQuestions ? appState.studentExamQuestions[st.id + '_' + ex.id] : []);
-    if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions')) || {};
-    appState.studentExamQuestions[st.id + '_' + ex.id] = questions;
-    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
-    let pgQuestions = questions.filter(q => q.type !== 'esay' && q.type !== 'essay');
-    let essayQuestions = questions.filter(q => q.type === 'esay' || q.type === 'essay');
+    try {
+        // CBT_FINALIZE_SERVER_ACK_V2: never mark the browser completed until the
+        // authoritative finish endpoint (or a follow-up summary) confirms completion.
+        const response = await fetch('/api/exam/attempt/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                studentId: st.id,
+                examId: ex.id,
+                answers
+            })
+        });
+        let res = await response.json().catch(() => ({ success: false, message: 'Respons server tidak valid.' }));
+        let completionValue = true;
 
-    // Server is the single source of truth for answer key and grading (Poin 5 & 6)
-    if (!appState.studentExamGrades) appState.studentExamGrades = JSON.parse(localStorage.getItem('madrasah_student_exam_grades')) || {};
-    appState.studentExamGrades[st.id + '_' + ex.id] = {
-        pgScore: null,
-        essayScore: 0,
-        finalScore: null,
-        isGraded: false,
-        correctPGCount: 0,
-        totalPGCount: pgQuestions.length,
-        essayGrades: {}
-    };
-    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
+        if (!response.ok || !res.success) {
+            // A retry can legitimately race with a finish that the server already
+            // committed. Trust that case only after /my-summary proves completion.
+            if (response.status === 409) {
+                const confirmed = await confirmCbtCompletionOnServer(st.id, ex.id);
+                if (confirmed.completed) {
+                    res = { success: true, grade: confirmed.grade, alreadyCompleted: true };
+                    completionValue = confirmed.completionValue ?? true;
+                }
+            }
+        }
+        if (!res.success) {
+            throw new Error(res.message || 'Server belum mengonfirmasi penyelesaian ujian.');
+        }
 
-    if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
-    delete appState.activeExamSessions[st.id + '_' + ex.id];
-    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+        if (!appState.completedExams) appState.completedExams = {};
+        appState.completedExams[key] = completionValue;
+        safeSetStorage('madrasah_completed_exams', appState.completedExams);
 
-    // Phase 4: Server-Authoritative Exam Finalization & Scoring
-    fetch('/api/exam/attempt/finish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            studentId: st.id,
-            examId: ex.id,
-            answers: answers
-        })
-    }).then(r => r.json()).then(res => {
-        if (res.success && res.grade) {
-            appState.studentExamGrades[st.id + '_' + ex.id] = res.grade;
+        if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
+        appState.studentExamAnswers[key] = answers;
+        safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+
+        if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions') || '{}') || {};
+        appState.studentExamQuestions[key] = questions;
+        safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
+
+        if (res.grade) {
+            if (!appState.studentExamGrades) appState.studentExamGrades = JSON.parse(localStorage.getItem('madrasah_student_exam_grades') || '{}') || {};
+            appState.studentExamGrades[key] = res.grade;
             safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
         }
-    }).catch(() => {
-        syncExamStateToServer({
-            completed: { [st.id + '_' + ex.id]: true },
-            answers: { [st.id + '_' + ex.id]: answers },
-            sessionKey: st.id + '_' + ex.id,
-            sessionData: null,
-            gradesObj: { [st.id + '_' + ex.id]: appState.studentExamGrades[st.id + '_' + ex.id] }
-        });
-    });
 
-    if (window.__studentWebcamStream) {
-        if (window.stopCameraStreamTrack) {
-            window.stopCameraStreamTrack(window.__studentWebcamStream);
-        } else {
-            try {
-                window.__studentWebcamStream.getTracks().forEach(t => t.stop());
-            } catch(e) {}
+        if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
+        delete appState.activeExamSessions[key];
+        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+
+        removePendingOfflineAnswersForAttempt(st.id, ex.id, getCurrentCbtQueueOwner()?.tenantId);
+
+        if (window.__studentWebcamStream) {
+            if (window.stopCameraStreamTrack) {
+                window.stopCameraStreamTrack(window.__studentWebcamStream);
+            } else {
+                try { window.__studentWebcamStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+            }
+            window.__studentWebcamStream = null;
         }
-        window.__studentWebcamStream = null;
-    }
-    try { stopStudentLiveKit(); } catch(e){}
+        try { stopStudentLiveKit(); } catch(e) {}
+        const pipContainer = document.getElementById('student-pip-container');
+        if (pipContainer) pipContainer.remove();
+        if (window.__examTimerInterval) {
+            clearInterval(window.__examTimerInterval);
+            window.__examTimerInterval = null;
+        }
 
-    const pipContainer = document.getElementById('student-pip-container');
-    if (pipContainer) {
-        pipContainer.remove();
+        activeExamSession = null;
+        const sidebar = document.getElementById('sidebar');
+        const header = document.querySelector('header');
+        if (sidebar) sidebar.style.display = '';
+        if (header) header.style.display = '';
+        showToast(res.alreadyCompleted ? 'Ujian sudah tercatat selesai di server.' : 'Ujian berhasil diselesaikan dan dikirim!', 'success');
+        renderStudentCBTList(document.getElementById('view-container'));
+    } catch (err) {
+        // Preserve the recovery snapshot exactly when finalization is not confirmed.
+        if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
+        appState.activeExamSessions[key] = {
+            ...(appState.activeExamSessions[key] || {}),
+            examId: ex.id,
+            status: 'active',
+            answers,
+            currentIndex: sessionSnapshot.currentIndex || 0,
+            timeLeft: sessionSnapshot.timeLeft,
+            endsAt: appState.activeExamSessions[key]?.endsAt || null,
+            answeredCount: Object.keys(answers).length,
+            totalQuestions: questions.length
+        };
+        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+        const message = String(err?.message || 'Server belum mengonfirmasi penyelesaian ujian.');
+        showToast(`Pengiriman belum dikonfirmasi server. ${message} Jawaban tetap tersimpan dan dapat dikirim ulang.`, 'error');
+    } finally {
+        window._cbtFinalizing = false;
     }
-
-    if (window.__examTimerInterval) {
-        clearInterval(window.__examTimerInterval);
-        window.__examTimerInterval = null;
-    }
-
-    activeExamSession = null;
-    showToast('Ujian berhasil diselesaikan dan dikirim!', 'success');
-    renderStudentCBTList(document.getElementById('view-container'));
 }
 
 // Room Management Functions
