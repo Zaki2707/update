@@ -515,6 +515,25 @@ await test('Auth: persisted sessions validate before UI restore and account RAM 
   assert.match(settingsSource, /fallbackAuthenticatedResponses\.some\(item => item && item\.success === true\)/);
 });
 
+await test('Realtime: legacy slug-only sessions receive canonical tenant exam events', () => {
+  const start = serverSource.indexOf('function broadcastExamEvent');
+  const end = serverSource.indexOf('\nfunction getJakartaTodayDateStr', start);
+  const fn = serverSource.slice(start, end > start ? end : undefined);
+  assert.match(fn, /REALTIME_TENANT_CANONICAL_SCOPE_V2/);
+  assert.match(fn, /canonicalRealtimeTenant\(user\.madrasahId \|\| user\.madrasahSlug \|\| 'default'\)/);
+  assert.match(fn, /clientTenant !== eventTenant/);
+});
+
+await test('Realtime: WebSocket student signaling cannot bypass teacher monitoring scope', () => {
+  const start = serverSource.indexOf('wss.on("connection"');
+  const end = serverSource.indexOf('console.log("WebRTC WebSocket Signaling Server initialized successfully!"', start);
+  const wsBlock = serverSource.slice(start, end > start ? end : undefined);
+  assert.match(wsBlock, /WS_STUDENT_TO_TEACHER_SCOPE_V2/);
+  assert.match(wsBlock, /ws\.__authUser = auth/);
+  assert.match(wsBlock, /const monitorUser = targetWs\.__authUser/);
+  assert.match(wsBlock, /teacherCanMonitorStudentRealtime\(monitorReq, monitorUser, senderStudent\)/);
+});
+
 await test('Auth: legacy slug-only account records remain valid for canonical tenant tokens', () => {
   assert.match(serverSource, /AUTH_TENANT_ID_SLUG_COMPAT_V2/);
   assert.match(serverSource, /function canonicalAuthTenantIdentity/);
