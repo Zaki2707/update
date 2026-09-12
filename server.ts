@@ -11128,6 +11128,20 @@ app.post("/api/exam/attempt/start", async (req, res) => {
     }
   }
 
+  // CBT_LOADABLE_PACKET_GUARD_V2: never start a fresh timer when this exam
+  // currently has no question that can actually be assigned to the configured type.
+  const existingAssignedPacket = Array.isArray(studentExamQuestions[key]) ? studentExamQuestions[key] : [];
+  if (!activeExamSessions[key] && existingAssignedPacket.length === 0) {
+    const loadableQuestions = getLoadableQuestionsForExamAttempt(matchedExam);
+    if (!Array.isArray(loadableQuestions) || loadableQuestions.length === 0) {
+      return res.status(409).json({
+        success: false,
+        code: 'EXAM_NO_QUESTIONS',
+        message: 'Ujian belum memiliki soal yang sesuai. Hubungi guru atau administrator ujian.'
+      });
+    }
+  }
+
   const durationMin = Math.max(1, parseInt(matchedExam.duration || 60, 10) || 60);
   const durationSec = durationMin * 60;
   let session = activeExamSessions[key];
@@ -11222,6 +11236,20 @@ function getRawQuestionsForExamAttempt(matchedExam: any): any[] {
     }
     return false;
   });
+}
+
+function getLoadableQuestionsForExamAttempt(matchedExam: any): any[] {
+  const rawQuestions = getRawQuestionsForExamAttempt(matchedExam);
+  if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) return [];
+
+  const examType = String(matchedExam?.type || '').toLowerCase();
+  if (examType === 'pilihan_ganda') {
+    return rawQuestions.filter((q: any) => q && q.type !== 'esay' && q.type !== 'essay');
+  }
+  if (examType === 'esay_saja') {
+    return rawQuestions.filter((q: any) => q && (q.type === 'esay' || q.type === 'essay'));
+  }
+  return rawQuestions.filter(Boolean);
 }
 
 function resolveMasterCorrectText(rawQuestion: any, originalOptions: any[]): string {
@@ -11452,38 +11480,8 @@ app.post("/api/exam/attempt/start-questions", async (req, res) => {
     }
   }
 
-  // Poin 2: Switch to 'questions' memory key and filter by bankCode, subject, class, tenant
-  let rawQuestions = matchedExam.questions || [];
-
-  if (!rawQuestions || rawQuestions.length === 0) {
-    const allQuestions = getMemoryKeyValue('questions') || questions || [];
-    const exCode = String(matchedExam.bankCode || matchedExam.groupCode || '').trim().toLowerCase();
-    const exSub = String(matchedExam.subject || matchedExam.subjectId || '').trim().toLowerCase();
-    const exClass = String(matchedExam.class || matchedExam.className || matchedExam.classId || '').trim().toLowerCase();
-    const mId = String(matchedExam.madrasahId || matchedExam.madrasahSlug || '').trim();
-
-    rawQuestions = allQuestions.filter((q: any) => {
-      if (!q) return false;
-      // Match tenant if applicable
-      if (mId && mId !== 'default' && mId !== 'BOSS') {
-        const qmId = String(q.madrasahId || q.madrasahSlug || '').trim();
-        if (qmId && qmId !== mId) return false;
-      }
-      const qCode = String(q.code || q.bankCode || q.groupCode || '').trim().toLowerCase();
-      const qSub = String(q.subjectId || q.subject || '').trim().toLowerCase();
-      const qClass = String(q.classId || q.className || q.class || '').trim().toLowerCase();
-
-      // Check match by bankCode or subject
-      if (exCode && qCode && qCode === exCode) return true;
-      if (exSub && qSub && (qSub === exSub || qSub.includes(exSub) || exSub.includes(qSub))) {
-        if (exClass && qClass && !exClass.includes('all') && !qClass.includes('all')) {
-          return qClass === exClass || exClass.includes(qClass);
-        }
-        return true;
-      }
-      return false;
-    });
-  }
+  // Use the same tenant/type-aware source as the pre-start loadability guard.
+  let rawQuestions = getLoadableQuestionsForExamAttempt(matchedExam);
 
   if (!rawQuestions || rawQuestions.length === 0) {
     return res.status(404).json({
