@@ -2166,6 +2166,16 @@ function startSession(isRefresh = false) {
 }
 
 function logout() {
+    // CBT_LOGOUT_RUNTIME_ISOLATION_V2: clear only volatile CBT runtime. Durable
+    // local/server recovery data intentionally remains available to the same student.
+    try {
+        if (typeof window.__resetCbtRuntimeOnLogout === 'function') {
+            window.__resetCbtRuntimeOnLogout();
+        }
+    } catch(e) {
+        console.warn('CBT runtime logout cleanup failed:', e);
+    }
+
     if (window.__persistentStudentCameraStream) {
         try {
             window.__persistentStudentCameraStream.getTracks().forEach(t => t.stop());

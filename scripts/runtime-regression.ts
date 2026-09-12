@@ -449,6 +449,44 @@ await test('CBT: answer sync is write-ahead and survives logout/reconnect restor
   assert.match(assessmentSource, /if \(!res\.ok \|\| !data\.success\) throw new Error/);
 });
 
+await test('CBT: final submission waits for server acknowledgement before clearing recovery state', () => {
+  const submitStart = assessmentSource.indexOf('async function submitExamFinal()');
+  const submitEnd = assessmentSource.indexOf('// Room Management Functions', submitStart);
+  const submitFn = assessmentSource.slice(submitStart, submitEnd > submitStart ? submitEnd : undefined);
+  const finishPos = submitFn.indexOf("fetch('/api/exam/attempt/finish'");
+  const completedPos = submitFn.indexOf('appState.completedExams[key] = completionValue');
+  assert.ok(finishPos >= 0 && completedPos > finishPos, 'local completion must happen only after finish request');
+  assert.match(submitFn, /CBT_FINALIZE_SERVER_ACK_V2/);
+  assert.match(submitFn, /if \(!response\.ok \|\| !res\.success\)/);
+  assert.match(submitFn, /confirmCbtCompletionOnServer\(st\.id, ex\.id\)/);
+  assert.match(submitFn, /Pengiriman belum dikonfirmasi server/);
+  assert.doesNotMatch(submitFn, /syncExamStateToServer\(/);
+});
+
+await test('CBT: pending answer replay is isolated to the currently authenticated student', () => {
+  const flushStart = assessmentSource.indexOf('window.flushPendingOfflineAnswers = async function()');
+  const flushEnd = assessmentSource.indexOf('if (!window._offlineSyncListenerAdded)', flushStart);
+  const flushFn = assessmentSource.slice(flushStart, flushEnd > flushStart ? flushEnd : undefined);
+  const ownerGuardPos = flushFn.indexOf('pendingOfflineAnswerMatches(item, owner.studentId');
+  const fetchPos = flushFn.indexOf("fetch('/api/exam/attempt/answer'");
+  assert.ok(ownerGuardPos >= 0 && fetchPos > ownerGuardPos, 'account ownership guard must run before answer replay');
+  assert.match(assessmentSource, /CBT_QUEUE_ACCOUNT_ISOLATION_V2/);
+  assert.match(assessmentSource, /tenantId: String\(/);
+  assert.match(assessmentSource, /function removePendingOfflineAnswersForAttempt/);
+});
+
+await test('CBT: logout clears volatile runtime without deleting recovery storage', () => {
+  const logoutStart = appSource.indexOf('function logout()');
+  const logoutEnd = appSource.indexOf('\nwindow.logout = logout;', logoutStart);
+  const logoutFn = appSource.slice(logoutStart, logoutEnd > logoutStart ? logoutEnd : undefined);
+  assert.match(logoutFn, /__resetCbtRuntimeOnLogout/);
+  assert.match(assessmentSource, /CBT_LOGOUT_RUNTIME_ISOLATION_V2/);
+  assert.match(assessmentSource, /activeExamSession = null/);
+  assert.match(assessmentSource, /clearInterval\(window\.__examTimerInterval\)/);
+  assert.doesNotMatch(logoutFn, /removeItem\('madrasah_active_exam_sessions'\)/);
+  assert.doesNotMatch(logoutFn, /removeItem\('cbt_pending_offline_answers'\)/);
+});
+
 await test('Student master writes are admin-owned and self password may remain unchanged', () => {
   assert.match(serverSource, /app\.post\("\/api\/students", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
   assert.match(serverSource, /app\.put\("\/api\/students\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
