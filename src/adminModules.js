@@ -526,7 +526,7 @@ function openTeacherModal(id = null) {
         gender: 'L',
         bio: '',
         username: '', 
-        password: 'guru123',
+        password: '',
         photo: ''
     };
     if (!item) return;
@@ -633,7 +633,8 @@ function openTeacherModal(id = null) {
                         </div>
                         <div>
                             <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Password</label>
-                            <input type="text" id="tch-pass" value="${item.password || 'guru123'}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl font-mono">
+                            <input type="password" id="tch-pass" value="" autocomplete="new-password" minlength="8" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl font-mono" placeholder="${id ? 'Kosongkan jika tidak ingin mengganti password' : 'Kosongkan untuk password sementara otomatis'}">
+                            <p class="text-[10px] text-slate-400 mt-1">${id ? 'Password lama tersimpan sebagai hash dan tidak ditampilkan.' : 'Jika dikosongkan, sistem membuat password sementara acak dan menampilkannya satu kali.'}</p>
                         </div>
                     </div>
 
@@ -675,6 +676,56 @@ function removeAdminTeacherPhoto() {
     if (previewBox) {
         previewBox.innerHTML = `<i class="fa-solid fa-user-tie text-emerald-600 text-xl"></i>`;
     }
+}
+
+function showTeacherTemporaryCredential(credential) {
+    if (!credential || !credential.temporaryPassword) return;
+    try {
+        const existing = JSON.parse(sessionStorage.getItem('teacher_temporary_credentials') || '[]');
+        const list = Array.isArray(existing) ? existing.filter(item => String(item?.teacherId || '') !== String(credential.teacherId || '')) : [];
+        list.push({
+            teacherId: String(credential.teacherId || ''),
+            username: String(credential.username || ''),
+            temporaryPassword: String(credential.temporaryPassword || '')
+        });
+        sessionStorage.setItem('teacher_temporary_credentials', JSON.stringify(list));
+    } catch (_) {}
+
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4';
+    const card = document.createElement('div');
+    card.className = 'bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-4';
+    card.innerHTML = `
+        <div class="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center text-xl"><i class="fa-solid fa-key"></i></div>
+        <div>
+            <h3 class="font-black text-slate-900 text-base">Password Sementara Guru</h3>
+            <p class="text-xs text-slate-500 mt-1">Simpan sekarang. Password ini hanya ditampilkan setelah akun dibuat.</p>
+        </div>
+        <div class="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs space-y-2">
+            <div><span class="text-slate-500">Username:</span> <strong id="teacher-temp-user" class="font-mono text-slate-900"></strong></div>
+            <div><span class="text-slate-500">Password:</span> <strong id="teacher-temp-pass" class="font-mono text-amber-700"></strong></div>
+        </div>
+        <div class="flex justify-end gap-2">
+            <button type="button" id="teacher-temp-copy" class="px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-bold">Salin</button>
+            <button type="button" id="teacher-temp-close" class="px-4 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-bold">Tutup</button>
+        </div>
+    `;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    const userEl = card.querySelector('#teacher-temp-user');
+    const passEl = card.querySelector('#teacher-temp-pass');
+    if (userEl) userEl.textContent = String(credential.username || '');
+    if (passEl) passEl.textContent = String(credential.temporaryPassword || '');
+    card.querySelector('#teacher-temp-copy')?.addEventListener('click', async () => {
+        const value = `Username: ${credential.username || ''}\nPassword: ${credential.temporaryPassword || ''}`;
+        try {
+            await navigator.clipboard.writeText(value);
+            showToast('Kredensial guru berhasil disalin.', 'success');
+        } catch (_) {
+            showToast('Salin manual username dan password yang tampil.', 'info');
+        }
+    });
+    card.querySelector('#teacher-temp-close')?.addEventListener('click', () => overlay.remove());
 }
 
 async function saveTeacher(e, id) {
@@ -720,10 +771,12 @@ async function saveTeacher(e, id) {
         const data = await response.json();
         if (!response.ok || !data.success) throw new Error(data.message || 'Gagal menyimpan guru.');
 
+        const generatedCredential = Array.isArray(data.credentials) && data.credentials.length > 0 ? data.credentials[0] : null;
         await loadTeachersFromServer();
         closeModal();
         showToast('Data guru berhasil disimpan!', 'success');
         renderTeacherModule(document.getElementById('view-container'));
+        if (generatedCredential) showTeacherTemporaryCredential(generatedCredential);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1108,7 +1161,6 @@ async function saveTeacherPhotoBase64(base64Img, teacherId) {
                 address: teacher.address || teacher.alamat || '',
                 bio: teacher.bio || '',
                 username: teacher.username, 
-                password: teacher.password, 
                 photo: base64Img,
                 photoHistory: photoHistory,
                 mapel: teacher.mapel || []
