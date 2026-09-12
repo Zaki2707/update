@@ -3153,7 +3153,7 @@ window.openStudentExamReviewModal = function(examId) {
                             return `
                                 <div class="p-3 rounded-2xl border flex items-center gap-3 text-xs transition ${optClass}">
                                     ${iconHtml}
-                                    <div class="flex-1 leading-relaxed">${opt}</div>
+                                    <div class="flex-1 leading-relaxed">${assessmentEscapeHtml(opt)}</div>
                                 </div>
                             `;
                         }).join('')}
@@ -3165,7 +3165,7 @@ window.openStudentExamReviewModal = function(examId) {
                     <div class="mt-3 space-y-2">
                         <p class="text-[10px] uppercase tracking-wider font-bold text-slate-400">Jawaban Anda:</p>
                         <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-800 leading-relaxed font-medium whitespace-pre-wrap">
-                            ${studentAns || '<span class="text-slate-400 italic font-normal">Tidak ada jawaban esay yang diserahkan.</span>'}
+                            ${hasAnswered ? assessmentEscapeHtml(studentAns) : '<span class="text-slate-400 italic font-normal">Tidak ada jawaban esay yang diserahkan.</span>'}
                         </div>
                     </div>
                 `;
@@ -3174,7 +3174,7 @@ window.openStudentExamReviewModal = function(examId) {
             // Image display
             const imgHtml = (q.imageUrl || q.image) ? `
                 <div class="mt-3">
-                    <img src="${q.imageUrl || q.image}" class="max-h-48 rounded-2xl border border-slate-200 object-contain bg-slate-50 p-1" />
+                    <img src="${assessmentSafeImageSrc(q.imageUrl || q.image)}" class="max-h-48 rounded-2xl border border-slate-200 object-contain bg-slate-50 p-1" />
                 </div>
             ` : '';
 
@@ -3183,7 +3183,7 @@ window.openStudentExamReviewModal = function(examId) {
             const explainHtml = explain ? `
                 <div class="mt-4 p-4 bg-indigo-50/50 border border-indigo-100/60 rounded-2xl text-xs space-y-1">
                     <p class="font-extrabold text-indigo-950 flex items-center gap-1.5"><i class="fa-solid fa-circle-info text-indigo-600"></i> Pembahasan / Penjelasan:</p>
-                    <p class="text-indigo-900 leading-relaxed font-medium">${explain}</p>
+                    <p class="text-indigo-900 leading-relaxed font-medium">${assessmentEscapeHtml(explain)}</p>
                 </div>
             ` : '';
 
@@ -3194,7 +3194,7 @@ window.openStudentExamReviewModal = function(examId) {
                         ${statusBadge}
                     </div>
                     
-                    <div class="text-xs font-bold text-slate-800 leading-relaxed">${q.question || q.text || ''}</div>
+                    <div class="text-xs font-bold text-slate-800 leading-relaxed">${assessmentEscapeHtml(q.question || q.text || '')}</div>
                     
                     ${imgHtml}
                     ${optionsHtml}
@@ -7916,7 +7916,7 @@ function generateReportHTML() {
                 return `
                     <div style="background-color: #fff; border: 1px solid #e5e7eb; padding: 16px; border-radius: 12px; margin-bottom: 16px;">
                         <p style="font-weight: bold; font-size: 13px; color: #1f2937; margin: 0 0 6px 0;">Soal No. ${qIdx + 1} (${q.type === 'esay' || q.type === 'essay' ? 'Esay' : 'Pilihan Ganda'})</p>
-                        <p style="font-size: 13px; line-height: 1.625; color: #374151; margin: 0;">${q.question}</p>
+                        <p style="font-size: 13px; line-height: 1.625; color: #374151; margin: 0;">${assessmentEscapeHtml(q.question)}</p>
                         ${details}
                     </div>
                 `;
@@ -8399,7 +8399,7 @@ window.openImportToHarianModal = function(classId, examId) {
                             <span class="bg-indigo-200/80 text-indigo-800 px-2.5 py-1 rounded-xl text-[11px] font-bold">${clsStudents.length} Siswa (${gradedCount} Memiliki Nilai)</span>
                         </div>
                         <p class="text-[11px] text-indigo-700">
-                            Nilai akhir dari evaluasi ujian <b>"${ex.title}"</b> akan otomatis dimasukkan ke dalam daftar Penilaian Harian seluruh siswa kelas ${cls.name}.
+                            Nilai akhir dari evaluasi ujian <b>"${assessmentEscapeHtml(ex.title)}"</b> akan otomatis dimasukkan ke dalam daftar Penilaian Harian seluruh siswa kelas ${assessmentEscapeHtml(cls.name)}.
                         </p>
                     </div>
 
