@@ -374,7 +374,7 @@ function renderStudentProfile(container) {
                             </div>
                             <div>
                                 <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Password</label>
-                                <input type="text" id="prof-pass" value="${st.password || '123456'}" required class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl font-mono">
+                                <input type="password" id="prof-pass" value="" autocomplete="new-password" placeholder="Kosongkan jika tidak ingin mengganti" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl font-mono">
                             </div>
                         </div>
                         <div class="flex justify-end pt-2">
@@ -570,16 +570,14 @@ async function saveStudentPhotoBase64(base64Img, studentId) {
             label: `Upload Baru (${todayStr})`
         });
 
-        const response = await fetch(`/api/students/${encodeURIComponent(studentId)}`, {
-            method: 'PUT',
+        const response = await fetch(`/api/students/${encodeURIComponent(studentId)}/set-profile-photo`, {
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                name: student.name, 
-                username: student.username, 
-                password: student.password, 
-                no_hp: student.no_hp || '', 
+            body: JSON.stringify({
                 photo: base64Img,
-                photoHistory: photoHistory
+                source: 'manual',
+                date: todayStr,
+                label: `Upload Baru (${todayStr})`
             })
         });
 
@@ -961,8 +959,12 @@ async function saveStudentProfileUpdate(e, studentId) {
         const password = document.getElementById('prof-pass')?.value.trim() || '';
         const no_hp = document.getElementById('prof-phone')?.value.trim() || '';
 
-        if (!name || !username || !password) {
-            showToast('Nama, Username, dan Password wajib diisi.', 'error');
+        if (!name || !username) {
+            showToast('Nama dan Username wajib diisi.', 'error');
+            return;
+        }
+        if (password && password.length < 8) {
+            showToast('Password baru minimal 8 karakter, atau kosongkan jika tidak ingin mengganti.', 'error');
             return;
         }
 
@@ -976,7 +978,7 @@ async function saveStudentProfileUpdate(e, studentId) {
         const response = await fetch('/api/student/profile', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, username, password, no_hp })
+            body: JSON.stringify({ name, username, ...(password ? { password } : {}), no_hp })
         });
 
         const data = await response.json();

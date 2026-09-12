@@ -1467,7 +1467,7 @@ function showStudentProfileModal(studentId) {
 }
 
 function openStudentModal(id = null) {
-    const item = id ? appState.students.find(s => String(s.id) === String(id)) : { id: '', nis: '', name: '', classId: appState.classes[0]?.id || 'C1', username: '', password: '123456' };
+    const item = id ? appState.students.find(s => String(s.id) === String(id)) : { id: '', nis: '', name: '', classId: appState.classes[0]?.id || 'C1', username: '', password: '' };
     if (!item) return;
 
     const modal = document.getElementById('modal-container');
@@ -1485,7 +1485,7 @@ function openStudentModal(id = null) {
                         </select>
                     </div>
                     <div><label class="block text-xs uppercase text-slate-500 mb-1">Username</label><input type="text" id="std-user" value="${item.username || ''}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
-                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Password</label><input type="text" id="std-pass" value="${item.password || '123456'}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
+                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Password ${id ? '(opsional)' : '(otomatis jika kosong)'}</label><input type="password" id="std-pass" value="" autocomplete="new-password" placeholder="${id ? 'Kosongkan jika tidak diubah' : 'Kosongkan untuk membuat password aman otomatis'}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Peran / Hak Akses Akun</label>
                         <select id="std-role" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl font-semibold">
@@ -1805,7 +1805,7 @@ async function deleteSelectedStudentsPage() {
 function downloadStudentTemplate() {
     if (window.XLSX) {
         const wb = window.XLSX.utils.book_new();
-        const ws = window.XLSX.utils.aoa_to_sheet([["nis", "name", "classId", "username", "password"], ["1001", "Ahmad", "C1", "siswa1", "123456"]]);
+        const ws = window.XLSX.utils.aoa_to_sheet([["nis", "name", "classId", "username", "password"], ["1001", "Ahmad", "C1", "siswa1", "Aman#1001"]]);
         window.XLSX.utils.book_append_sheet(wb, ws, "Murid");
         window.XLSX.writeFile(wb, "Template_Murid.xlsx");
         showToast('Template berhasil diunduh!');
