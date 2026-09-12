@@ -514,6 +514,13 @@ function getCloudinaryPhotoIdFromReference(value: any): string | null {
   const raw = value.trim();
   if (!raw || raw.startsWith('data:image/')) return null;
 
+  // Explicit persisted formats are safe photo candidates. Avoid arbitrary bare strings:
+  // collectReferencedPhotoIds() scans many non-photo structures recursively.
+  const markedRef = raw.match(/^PHOTO_REF:([A-Za-z0-9._-]{1,180})$/i);
+  if (markedRef) return normalizeCloudinaryPhotoId(markedRef[1]);
+  const storedPublicId = raw.match(/^madrasah_photos\/([A-Za-z0-9._-]{1,180})$/i);
+  if (storedPublicId) return normalizeCloudinaryPhotoId(storedPublicId[1]);
+
   if (raw.startsWith('/api/photos/')) {
     const id = raw.slice('/api/photos/'.length).split(/[?#]/)[0];
     return id ? normalizeCloudinaryPhotoId(id) : null;
@@ -10819,6 +10826,49 @@ app.get("/api/exam/my-state", (req, res) => {
   });
 });
 
+function getExamScheduleAccess(exam: any, nowMs: number = Date.now()) {
+  if (!exam || !exam.date) return { status: 'open', canStart: true, startMs: null, endMs: null };
+
+  const parseDateParts = (value: any): { year: number; month: number; day: number } | null => {
+    const raw = String(value || '').trim();
+    const parts = raw.includes('-') ? raw.split('-') : (raw.includes('/') ? raw.split('/') : []);
+    if (parts.length !== 3) return null;
+    let year = 0, month = 0, day = 0;
+    if (parts[0].length === 4) {
+      year = Number(parts[0]); month = Number(parts[1]); day = Number(parts[2]);
+    } else {
+      day = Number(parts[0]); month = Number(parts[1]); year = Number(parts[2]);
+    }
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day) ||
+        year < 2000 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const probe = new Date(Date.UTC(year, month - 1, day));
+    if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) return null;
+    return { year, month, day };
+  };
+  const parseTimeParts = (value: any, fallbackHour: number, fallbackMinute: number) => {
+    const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return { hour: fallbackHour, minute: fallbackMinute };
+    const hour = Number(match[1]), minute = Number(match[2]);
+    return Number.isInteger(hour) && Number.isInteger(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+      ? { hour, minute } : { hour: fallbackHour, minute: fallbackMinute };
+  };
+
+  const startDate = parseDateParts(exam.date);
+  // Historical malformed schedules remain open for compatibility instead of being locked out.
+  if (!startDate) return { status: 'open', canStart: true, startMs: null, endMs: null };
+  const endDate = parseDateParts(exam.endDate) || startDate;
+  const startTime = parseTimeParts(exam.startTime, 7, 30);
+  const endTime = parseTimeParts(exam.endTime, 23, 59);
+  const toWibEpoch = (date: { year: number; month: number; day: number }, time: { hour: number; minute: number }, second: number) =>
+    Date.UTC(date.year, date.month - 1, date.day, time.hour - 7, time.minute, second, second === 59 ? 999 : 0);
+
+  const startMs = toWibEpoch(startDate, startTime, 0);
+  const endMs = toWibEpoch(endDate, endTime, exam.endTime ? 0 : 59);
+  if (nowMs < startMs) return { status: 'not_started', canStart: false, startMs, endMs };
+  if (nowMs > endMs) return { status: 'expired', canStart: false, startMs, endMs };
+  return { status: 'open', canStart: true, startMs, endMs };
+}
+
 function getExamAttemptContext(req: any, authUser: AuthSession, studentId: string, examId: string) {
   const role = String(authUser.role || '').toLowerCase();
   const isBos = role === 'bos' || role === 'superadmin';
@@ -10837,6 +10887,10 @@ function getExamAttemptContext(req: any, authUser: AuthSession, studentId: strin
           : 'Ujian tidak ditemukan pada tenant yang diizinkan.'
       }
     };
+  }
+
+  if ((role === 'teacher' || role === 'guru') && !teacherCanUseExamPayload(req, exam)) {
+    return { error: { status: 403, message: 'Guru hanya dapat mengakses attempt ujian mata pelajaran/bank soal yang diampu.' } };
   }
 
   const allStudents = getMemoryKeyValue('students') || students || [];
@@ -10888,6 +10942,20 @@ app.post("/api/exam/attempt/start", async (req, res) => {
   }
   if (isAttemptBlocked(req, sId, eId, key)) {
     return res.status(403).json({ success: false, message: "Akses ujian sedang diblokir oleh pengawas." });
+  }
+
+  const attemptRole = String(authUser.role || '').toLowerCase();
+  const studentAttemptRoles = ['student', 'siswa', 'class_leader', 'ketua_kelas'];
+  if (studentAttemptRoles.includes(attemptRole) && !activeExamSessions[key]) {
+    const schedule = getExamScheduleAccess(matchedExam, Date.now());
+    if (schedule.status === 'not_started') {
+      return res.status(403).json({ success: false, code: 'EXAM_NOT_STARTED',
+        message: 'Ujian belum dapat dimulai karena jadwalnya belum tiba.', startsAt: schedule.startMs });
+    }
+    if (schedule.status === 'expired') {
+      return res.status(409).json({ success: false, code: 'EXAM_SCHEDULE_EXPIRED',
+        message: 'Jadwal ujian telah berakhir.', endedAt: schedule.endMs });
+    }
   }
 
   const durationMin = Math.max(1, parseInt(matchedExam.duration || 60, 10) || 60);

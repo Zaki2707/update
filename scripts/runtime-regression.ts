@@ -299,6 +299,30 @@ await test('Production static middleware blocks backend bundles and maps, includ
   assert.equal(malformed.statusCode, 400);
 });
 
+await test('Cloudinary repair discovers explicit persisted photo references only', () => {
+  const context: any = vm.createContext({ URL });
+  vm.runInContext(serverFunction('normalizeCloudinaryPhotoId'), context);
+  vm.runInContext(serverFunction('getCloudinaryPhotoIdFromReference'), context);
+  assert.equal(context.getCloudinaryPhotoIdFromReference('PHOTO_REF:abc-123'), 'abc-123');
+  assert.equal(context.getCloudinaryPhotoIdFromReference('madrasah_photos/abc-123'), 'abc-123');
+  assert.equal(context.getCloudinaryPhotoIdFromReference('/api/photos/abc-123'), 'abc-123');
+  assert.equal(context.getCloudinaryPhotoIdFromReference('ordinary-non-photo-value'), null);
+});
+
+await test('CBT: schedule gate is authoritative in WIB', () => {
+  const context: any = vm.createContext({});
+  vm.runInContext(serverFunction('getExamScheduleAccess'), context);
+  const exam = { date: '2026-09-12', startTime: '07:30', endTime: '09:00' };
+  assert.equal(context.getExamScheduleAccess(exam, Date.parse('2026-09-12T00:29:59Z')).status, 'not_started');
+  assert.equal(context.getExamScheduleAccess(exam, Date.parse('2026-09-12T00:30:00Z')).status, 'open');
+  assert.equal(context.getExamScheduleAccess(exam, Date.parse('2026-09-12T02:00:01Z')).status, 'expired');
+  assert.equal(context.getExamScheduleAccess({ date: 'legacy-invalid-date' }, Date.now()).status, 'open');
+});
+
+await test('CBT: teacher attempt context retains assignment boundary', () => {
+  assert.match(serverFunction('getExamAttemptContext'), /teacherCanUseExamPayload\(req,\s*exam\)/);
+});
+
 await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
   execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
     stdio: 'inherit', timeout: 45000,
