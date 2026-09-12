@@ -3173,7 +3173,7 @@ app.use((req: any, res, next) => {
     const aiLimit = isOnlineMode ? 120 : 1200;
     if (!enforceApiRateLimit(req, res, `ai:${authUser.id}`, aiLimit, 10 * 60 * 1000)) return;
   }
-  if (method === 'POST' && /^\/api\/games\/[^/]+\/submit$/.test(p)) {
+  if (method === 'POST' && /^\/api\/games\/[^/]+\/(?:submit|check)$/.test(p)) {
     const gameSubmitLimit = isOnlineMode ? 120 : 600;
     if (!enforceApiRateLimit(req, res, `game-submit:${authUser.id}`, gameSubmitLimit, 10 * 60 * 1000)) return;
   }
@@ -5143,6 +5143,19 @@ function sanitizeGameForStudent(game: any): any {
       .sort((a: any, b: any) => a.order.localeCompare(b.order))
       .map((entry: any) => entry.char);
   }
+  if (game.gameType === 'crossword' && Array.isArray(game.crosswordData?.clues)) {
+    safe.crosswordData = {
+      ...(safe.crosswordData || {}),
+      clues: game.crosswordData.clues.map((clue: any) => {
+        const answer = String(clue?.answer || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
+        const clean = { ...(clue || {}) };
+        delete clean.answer;
+        clean.length = answer.length || Math.max(1, Number(clean.length || 1));
+        clean.initialLetter = clean.initialHint === false ? '' : (answer[0] || '');
+        return clean;
+      })
+    };
+  }
 
   delete safe.answerKey;
   delete safe.correctAnswer;
@@ -5256,6 +5269,41 @@ function normalizeGameText(text: any): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// Server-authoritative validator for interactive game sub-challenges.
+app.post("/api/games/:id/check", requireAuth, async (req: any, res) => {
+  try {
+    const authUser = req.user || getAuthUser(req);
+    if (!authUser) return res.status(401).json({ success: false, message: "Silakan login terlebih dahulu." });
+
+    const customGames = filterByMadrasah(Array.isArray(eduGames) ? eduGames : [], req);
+    const game = customGames.find((g: any) => String(g.id) === String(req.params.id)) ||
+      DEFAULT_SERVER_SEED_GAMES.find((g: any) => String(g.id) === String(req.params.id));
+    if (!game) return res.status(404).json({ success: false, message: "Game tidak ditemukan." });
+    if (game?.madrasahId && !isItemForCurrentMadrasah(game, req)) {
+      return res.status(403).json({ success: false, message: "Game bukan milik madrasah Anda." });
+    }
+
+    const submittedText = String(req.body?.submittedAnswer ?? '');
+    if (Buffer.byteLength(submittedText, 'utf8') > 4096) {
+      return res.status(413).json({ success: false, message: "Jawaban game terlalu besar." });
+    }
+
+    if (String(req.body?.challenge || '') === 'crossword' && game.gameType === 'crossword') {
+      const clueIndex = Number(req.body?.clueIndex);
+      const clues = Array.isArray(game.crosswordData?.clues) ? game.crosswordData.clues : [];
+      if (!Number.isInteger(clueIndex) || clueIndex < 0 || clueIndex >= clues.length) {
+        return res.status(400).json({ success: false, message: "Petunjuk TTS tidak valid." });
+      }
+      const expected = normalizeGameText(clues[clueIndex]?.answer || '');
+      return res.json({ success: true, isCorrect: Boolean(expected && normalizeGameText(submittedText) === expected) });
+    }
+
+    return res.status(400).json({ success: false, message: "Tipe validasi game tidak didukung." });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: safeServerError(err, "Gagal memeriksa jawaban game.") });
+  }
+});
+
 // POST /api/games/:id/submit (Server-Side Answer Validation)
 app.post("/api/games/:id/submit", async (req, res) => {
   try {
@@ -5292,7 +5340,7 @@ app.post("/api/games/:id/submit", async (req, res) => {
     const normSubmitted = normalizeGameText(submittedText);
     let isCorrect = false;
     let rewardVerified = true;
-    const completionGameTypes = ["memory_match", "match_pairs", "word_search", "spot_difference", "image_puzzle", "escape_room", "learning_adventure"];
+    const completionGameTypes = ["crossword", "memory_match", "match_pairs", "word_search", "spot_difference", "image_puzzle", "escape_room", "learning_adventure"];
     const isClientAssistedCompletion = completionGameTypes.includes(game.gameType);
 
     if (game.gameType === "true_false") {
