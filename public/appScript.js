@@ -370,6 +370,53 @@ var appState = {
     activeAttendanceSearch: ''
 };
 
+function resetAccountScopedRuntimeState() {
+    // ACCOUNT_RUNTIME_ISOLATION_V2: clear only in-memory, account-scoped data.
+    // Durable CBT recovery/offline queues remain in localStorage for the same student.
+    Object.assign(appState, {
+        madrasahs: [],
+        tokenRequests: [],
+        cbtTokenPrice: 5000,
+        questionBank: [],
+        questionBankGroups: [],
+        exams: [],
+        rooms: [],
+        classes: [],
+        teachers: [],
+        students: [],
+        subjects: [],
+        schedules: [],
+        savedRosters: [],
+        activeRosterId: null,
+        timeSlots: [],
+        kbmDuration: 40,
+        attendance: [],
+        teacherAttendance: [],
+        grades: [],
+        gradeCategories: [],
+        customGradeColumns: {},
+        calendarEvents: [],
+        generatedExams: [],
+        blockedStudents: {},
+        journals: [],
+        lessonPlans: [],
+        lkpdList: [],
+        importGroups: [],
+        eduGames: [],
+        gameAttempts: [],
+        activeBankGroupCode: null,
+        activeBank: { subjectId: '', classId: '' },
+        activeJournalSubjectId: '',
+        activeMonitoringExamId: null,
+        activeEvaluationExamId: null,
+        activeGradeClassId: '',
+        activeAttendanceClassId: '',
+        activeAttendanceDate: '',
+        activeAttendanceSearch: ''
+    });
+}
+window.resetAccountScopedRuntimeState = resetAccountScopedRuntimeState;
+
 function adjustColorBrightness(hex, percent) {
     hex = String(hex).replace(/[^0-9a-f]/gi, '');
     if (hex.length < 6) {
@@ -1664,7 +1711,7 @@ async function initAppSession() {
         return;
     }
 
-    // Load settings FIRST so we can accurately detect offline mode before session restoration
+    // Load settings FIRST so we can accurately detect offline mode before session restoration.
     try {
         const res = await fetch('/api/settings');
         const data = await res.json();
@@ -1685,7 +1732,24 @@ async function initAppSession() {
         savedUserData = null;
     }
 
-    // Force-logout on tenant slug mismatch to prevent session pollution
+    // SESSION_RESTORE_FAIL_CLOSED_V2: validate the persisted token before exposing
+    // any authenticated UI or reusing account-scoped RAM.
+    if (savedUserData) {
+        try {
+            const authResponse = await fetch('/api/auth/me', { cache: 'no-store' });
+            const authData = await authResponse.json().catch(() => ({ success: false }));
+            if (!authResponse.ok || !authData.success) {
+                clearPersistedAuthSession();
+                savedUserData = null;
+            }
+        } catch(e) {
+            console.warn('Validasi sesi tersimpan gagal:', e);
+            clearPersistedAuthSession();
+            savedUserData = null;
+        }
+    }
+
+    // Force-logout on tenant slug mismatch to prevent session pollution.
     const path = window.location.pathname;
     if (path.startsWith('/m/')) {
         const urlSlug = path.substring(3).split('/')[0];
@@ -1695,66 +1759,55 @@ async function initAppSession() {
                 console.log('TENANT MISMATCH! Forcing logout from', userSlug, 'to access portal', urlSlug);
                 clearPersistedAuthSession();
                 savedUserData = null;
-                appState.currentUser = null;
-                appState.role = null;
             }
         }
-    } else {
-        // If on the root directory (no subpath), but saved user belongs to a specific custom madrasah, redirect them!
-        if (savedUserData && savedUserData.role !== 'bos' && savedUserData.madrasahSlug && savedUserData.madrasahSlug !== 'default') {
-            console.log('Redirecting to custom madrasah portal:', savedUserData.madrasahSlug);
-            window.location.href = `/m/${savedUserData.madrasahSlug}`;
-            return;
-        }
-    }
-
-    // IF LOGGED IN: Immediately restore session & navigate without showing login page during loading
-    if (savedUserData && savedUserData.role) {
-        appState.currentUser = savedUserData;
-        appState.role = savedUserData.role;
-        console.log('SESI LOGIN DIPULIHKAN SEGERA.');
-
-        const loginContainer = document.getElementById('login-container');
-        const mainApp = document.getElementById('main-app');
-        if (loginContainer) loginContainer.classList.add('hidden');
-        if (mainApp) mainApp.classList.remove('hidden');
-
-        startSession(true);
-    }
-
-    try {
-        applyTheme();
-    } catch(e) {}
-    updateSchoolLogoUI();
-    try {
-        applyLoginCustomization();
-    } catch(e) {}
-
-    if (!appState.currentUser && !savedUserData) {
-        // Normal login-page state: do not start authenticated background work.
+    } else if (savedUserData && savedUserData.role !== 'bos' && savedUserData.madrasahSlug && savedUserData.madrasahSlug !== 'default') {
+        window.location.href = `/m/${savedUserData.madrasahSlug}`;
         return;
     }
 
-    // Load full app data from server in background
+    try { applyTheme(); } catch(e) {}
+    updateSchoolLogoUI();
+    try { applyLoginCustomization(); } catch(e) {}
+
+    if (!savedUserData || !savedUserData.role) {
+        appState.currentUser = null;
+        appState.role = null;
+        resetAccountScopedRuntimeState();
+        return;
+    }
+
+    appState.currentUser = savedUserData;
+    appState.role = savedUserData.role;
+    resetAccountScopedRuntimeState();
+
     const fetchLoad = window.loadDataFromServer || (typeof loadDataFromServer !== 'undefined' ? loadDataFromServer : null);
+    let loadSucceeded = false;
     if (fetchLoad) {
         try {
-            await fetchLoad();
-            await refreshAuthoritativeTokenBalance();
+            loadSucceeded = (await fetchLoad()) !== false;
         } catch(e) {
-            console.warn('Gagal loadDataFromServer:', e);
+            console.warn('Gagal loadDataFromServer saat restore sesi:', e);
         }
     }
 
-    // After fresh server data is loaded, smoothly refresh the current view
-    if (appState.currentUser) {
-        const activeRoute = localStorage.getItem('madrasah_last_route');
-        if (activeRoute && typeof navigateTo === 'function') {
-            navigateTo(activeRoute);
-        }
+    if (!loadSucceeded) {
+        clearPersistedAuthSession();
+        appState.currentUser = null;
+        appState.role = null;
+        resetAccountScopedRuntimeState();
+        showToast('Sesi tidak dibuka karena data akun belum berhasil dimuat. Silakan login kembali.', 'warning');
+        return;
     }
+
+    await refreshAuthoritativeTokenBalance();
+
+    const loginContainer = document.getElementById('login-container');
+    const mainApp = document.getElementById('main-app');
+    if (loginContainer) loginContainer.classList.add('hidden');
+    if (mainApp) mainApp.classList.remove('hidden');
+    startSession(true);
 }
-
 setTimeout(initAppSession, 0);
 
 function handleGlobalSearch(query) {
@@ -1855,48 +1908,64 @@ async function handleLogin(e) {
         });
 
         const data = await response.json();
-
         if (!response.ok || !data.success) {
             showToast(data.message || 'Username atau password salah.', 'error');
             return;
         }
 
-        appState.currentUser = data.user;
         const loggedInUser = data.user;
         const loggedInId = String(loggedInUser.id);
-        
+        appState.currentUser = loggedInUser;
         appState.role = loggedInUser.role;
         persistCurrentUser(loggedInUser);
         localStorage.setItem('madrasah_active_account', loggedInId);
 
-        // Load all data BEFORE we determine the role and start the session!
+        // ACCOUNT_RUNTIME_ISOLATION_V2: never let a new account inherit RAM from the
+        // previous account while authoritative data is being loaded.
+        resetAccountScopedRuntimeState();
+
         const fetchLoad = window.loadDataFromServer || (typeof loadDataFromServer !== 'undefined' ? loadDataFromServer : null);
-        if (fetchLoad) {
-            try {
-                const loginForm = document.getElementById('login-form');
-                const loginBtn = loginForm ? loginForm.querySelector('button[type="submit"]') : null;
-                const origHtml = loginBtn ? loginBtn.innerHTML : '';
-                if (loginBtn) {
-                    loginBtn.disabled = true;
-                    loginBtn.innerHTML = '<i class="fa-solid fa-spinner animate-spin mr-1.5"></i>Memuat Sesi...';
-                }
-                await fetchLoad();
-                await refreshAuthoritativeTokenBalance();
-                if (loginBtn) {
-                    loginBtn.disabled = false;
-                    loginBtn.innerHTML = origHtml;
-                }
-            } catch(e) {
-                console.warn('Gagal fetch data saat login:', e);
+        if (!fetchLoad) {
+            clearPersistedAuthSession();
+            appState.currentUser = null;
+            appState.role = null;
+            showToast('Pemuat data sesi belum siap. Silakan coba login kembali.', 'error');
+            return;
+        }
+
+        const loginForm = document.getElementById('login-form');
+        const loginBtn = loginForm ? loginForm.querySelector('button[type="submit"]') : null;
+        const origHtml = loginBtn ? loginBtn.innerHTML : '';
+        let loadSucceeded = false;
+        try {
+            if (loginBtn) {
+                loginBtn.disabled = true;
+                loginBtn.innerHTML = '<i class="fa-solid fa-spinner animate-spin mr-1.5"></i>Memuat Sesi...';
+            }
+            loadSucceeded = (await fetchLoad()) !== false;
+        } finally {
+            if (loginBtn) {
+                loginBtn.disabled = false;
+                loginBtn.innerHTML = origHtml;
             }
         }
+
+        if (!loadSucceeded) {
+            clearPersistedAuthSession();
+            appState.currentUser = null;
+            appState.role = null;
+            resetAccountScopedRuntimeState();
+            showToast('Login terverifikasi, tetapi data akun gagal dimuat. Sesi dibatalkan agar data akun lain tidak terbawa.', 'error');
+            return;
+        }
+
+        await refreshAuthoritativeTokenBalance();
 
         const matchedStudent = Array.isArray(appState.students)
             ? appState.students.find(s => String(s.id) === loggedInId)
             : null;
 
         let detectedRole = loggedInUser.role;
-
         if (detectedRole === 'bos' || detectedRole === 'boss' || detectedRole === 'superadmin') {
             detectedRole = 'bos';
         } else if (matchedStudent && (matchedStudent.role === 'class_leader' || matchedStudent.role === 'ketua_kelas')) {
@@ -1912,18 +1981,19 @@ async function handleLogin(e) {
         loggedInUser.role = detectedRole;
         appState.currentUser = loggedInUser;
         appState.role = detectedRole;
-
         persistCurrentUser(loggedInUser);
         localStorage.setItem('madrasah_active_account', loggedInId);
 
         startSession(false);
     } catch (error) {
         console.warn('Network login failed (server might be restarting or client is offline):', error.message || error);
+        clearPersistedAuthSession();
+        appState.currentUser = null;
+        appState.role = null;
+        resetAccountScopedRuntimeState();
         showToast('Server lokal tidak dapat dihubungi', 'error');
-        return;
     }
 }
-
 async function refreshAuthoritativeTokenBalance() {
     if (window.isOfflineMode === true || appState.isOfflineMode === true) return null;
     if (!appState.currentUser) return null;
@@ -2185,6 +2255,7 @@ function logout() {
 
     appState.currentUser = null;
     appState.role = null;
+    resetAccountScopedRuntimeState();
     clearPersistedAuthSession();
     try { sessionStorage.removeItem('cbt_print_credentials'); } catch (_) {}
     localStorage.removeItem('madrasah_last_route');

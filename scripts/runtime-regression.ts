@@ -15,6 +15,7 @@ const serverSource = source;
 const modulesSource = fs.readFileSync('src/modulesScript.js', 'utf8');
 const adminModulesSource = fs.readFileSync('src/adminModules.js', 'utf8');
 const appSource = fs.readFileSync('src/appScript.js', 'utf8');
+const settingsSource = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
 const assessmentSource = fs.readFileSync('src/assessmentModule.js', 'utf8');
 const ast = ts.createSourceFile('server.ts', source, ts.ScriptTarget.ES2022, true);
 const quiet = { log() {}, warn() {}, error() {} };
@@ -486,6 +487,42 @@ await test('CBT: logout clears volatile runtime without deleting recovery storag
   assert.match(assessmentSource, /clearInterval\(window\.__examTimerInterval\)/);
   assert.doesNotMatch(logoutFn, /removeItem\('madrasah_active_exam_sessions'\)/);
   assert.doesNotMatch(logoutFn, /removeItem\('cbt_pending_offline_answers'\)/);
+});
+
+await test('CBT: expired attempts freeze client answers and server ignores post-deadline payloads', () => {
+  assert.match(assessmentSource, /CBT_EXPIRED_FINALIZATION_FREEZE_V3/);
+  assert.match(assessmentSource, /function isCbtSessionFrozen/);
+  assert.match(assessmentSource, /freezeExpiredCbtSessionForFinalization\(\)/);
+  assert.match(assessmentSource, /if \(isCbtSessionFrozen\(activeExamSession\)\)/);
+  assert.match(assessmentSource, /status: expiredFinalization \? 'expired_pending_submit' : 'active'/);
+  assert.match(serverSource, /CBT_EXPIRED_FINALIZATION_FREEZE_V3/);
+  assert.match(serverSource, /const sessionExpired = Boolean/);
+  assert.match(serverSource, /const incomingAnswers = \(isStaffForceFinish \|\| sessionExpired\) \? \{\} : filterAllowedAnswers\(answers\)/);
+});
+
+await test('Auth: persisted sessions validate before UI restore and account RAM fails closed', () => {
+  const initStart = appSource.indexOf('async function initAppSession()');
+  const initEnd = appSource.indexOf('setTimeout(initAppSession, 0);', initStart);
+  const initFn = appSource.slice(initStart, initEnd);
+  const authCheckPos = initFn.indexOf("fetch('/api/auth/me'");
+  const sessionStartPos = initFn.indexOf('startSession(true)');
+  assert.ok(authCheckPos >= 0 && sessionStartPos > authCheckPos, 'auth/me must validate before restored UI session starts');
+  assert.match(appSource, /ACCOUNT_RUNTIME_ISOLATION_V2/);
+  assert.match(appSource, /resetAccountScopedRuntimeState\(\)/);
+  assert.match(appSource, /if \(!loadSucceeded\)/);
+  assert.match(settingsSource, /return true;/);
+  assert.match(settingsSource, /fallbackAuthenticatedResponses\.some\(item => item && item\.success === true\)/);
+});
+
+await test('Auth: JWT is bound to current credential and active tenant state', () => {
+  assert.match(serverSource, /AUTH_SESSION_CREDENTIAL_STAMP_V2/);
+  assert.match(serverSource, /function validateAuthSessionAgainstCurrentState/);
+  assert.match(serverSource, /if \(!session \|\| !session\.authStamp\) return false/);
+  assert.match(serverSource, /sessionMadrasah\.isActive === false/);
+  assert.match(serverSource, /const \{ authStamp: _authStamp, \.\.\.safeAuthUser \} = authUser/);
+  assert.match(serverSource, /validateAuthSessionAgainstCurrentState\(payload\)/);
+  assert.match(serverSource, /createAuthToken\(studentUser, student\.password\)/);
+  assert.match(serverSource, /createAuthToken\(teacherUser, teacher\.password\)/);
 });
 
 await test('Student master writes are admin-owned and self password may remain unchanged', () => {
