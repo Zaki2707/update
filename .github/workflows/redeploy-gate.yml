@@ -45,6 +45,9 @@ jobs:
       - name: Frontend inline-handler audit
         run: npm run frontend:handler-audit
 
+      - name: Font asset audit
+        run: npm run font:asset-audit
+
       - name: Verify sensitive runtime history is clean
         shell: bash
         run: |
