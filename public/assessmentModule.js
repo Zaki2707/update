@@ -1,6 +1,24 @@
 var appState = window.appState || {};
 // Assessment Module: Exam Schedule, CBT Player with PiP Camera & Countdown, Live Monitoring & Evaluation
 
+function assessmentEscapeHtml(value) {
+    const raw = String(value === undefined || value === null ? '' : value);
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(raw);
+    return raw.replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    }[ch]));
+}
+function assessmentEscapeAttr(value) {
+    const raw = String(value === undefined || value === null ? '' : value);
+    if (typeof window.escapeHtmlAttr === 'function') return window.escapeHtmlAttr(raw);
+    return assessmentEscapeHtml(raw);
+}
+function assessmentSafeImageSrc(value) {
+    const raw = String(value || '');
+    const normalized = typeof window.getPhotoHtmlSrc === 'function' ? window.getPhotoHtmlSrc(raw) : raw;
+    return assessmentEscapeAttr(normalized);
+}
+
 function safeSetStorage(key, value) {
     if (typeof window.safeSetLocalStorage === 'function') {
         window.safeSetLocalStorage(key, value);
@@ -819,7 +837,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                             ${eventExamsList.map(ex => `
                                 <div class="bg-white p-6 rounded-3xl shadow-sm border space-y-3">
                                     <div class="flex justify-between items-start">
-                                        <h4 class="font-bold text-slate-800 text-base">${ex.title}</h4>
+                                        <h4 class="font-bold text-slate-800 text-base">${assessmentEscapeHtml(ex.title)}</h4>
                                         ${!isTeacher ? `<div class="flex items-center space-x-3">
                                             <button type="button" onclick="openExamModal('${ex.id}', '${ex.eventId}')" class="text-slate-400 hover:text-emerald-500 transition" title="Edit Jadwal"><i class="fa-solid fa-pen"></i></button>
                                             <button type="button" onclick="deleteExam('${ex.id}')" class="text-rose-400 hover:text-rose-600 transition" title="Hapus Jadwal"><i class="fa-solid fa-trash"></i></button>
@@ -1394,7 +1412,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                             </span>
                                                             <span class="text-xs text-slate-400 font-semibold">${ex.className || 'Semua Kelas'}</span>
                                                         </div>
-                                                        <h4 class="font-bold text-base text-white">${ex.title}</h4>
+                                                        <h4 class="font-bold text-base text-white">${assessmentEscapeHtml(ex.title)}</h4>
                                                         <p class="text-xs text-slate-400 mt-1">${ex.subjectName || ex.subject || 'Mapel'}</p>
                                                     </div>
                                                     <button type="button" onclick="renderAssessmentModule(document.getElementById('view-container'), 'monitoring', '${ex.id}')" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-2xl text-xs shadow transition cursor-pointer">Mulai Live Monitoring CBT</button>
@@ -2511,16 +2529,16 @@ function renderExamModalForm(editId = null, eventId = null) {
                         <select id="ex-event-id" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
                             ${(appState.exams || []).filter(e => e.recordType === 'EVENT').map(ev => {
                                 const isSel = (eventId && String(eventId) === String(ev.id)) || (ex && String(ex.eventId) === String(ev.id)) || (!eventId && !ex && ev.id === 'EV_HARIAN');
-                                return `<option value="${ev.id}" ${isSel ? 'selected' : ''}>${ev.title}</option>`;
+                                return `<option value="${ev.id}" ${isSel ? 'selected' : ''}>${assessmentEscapeHtml(ev.title)}</option>`;
                             }).join('')}
                         </select>
                     </div>
-                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Nama Ujian</label><input type="text" id="ex-title" value="${ex ? ex.title : ''}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" placeholder="Contoh: UTS Fikih Semester Genap"></div>
+                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Nama Ujian</label><input type="text" id="ex-title" value="${assessmentEscapeAttr(ex ? ex.title : '')}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" placeholder="Contoh: UTS Fikih Semester Genap"></div>
                     
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Mata Pelajaran</label>
                         <select id="ex-subject" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" required>
-                            ${subjects.map(s => `<option value="${s.name}" ${ex && ex.subject === s.name ? 'selected' : ''}>${s.name}</option>`).join('')}
+                            ${subjects.map(s => `<option value="${s.name}" ${ex && ex.subject === s.name ? 'selected' : ''}>${assessmentEscapeHtml(s.name)}</option>`).join('')}
                         </select>
                     </div>
 
@@ -2678,7 +2696,7 @@ function renderExamClassChips() {
         }
         const cls = classes.find(c => String(c.id) === String(id));
         const name = cls ? cls.name : id;
-        return `<span class="inline-flex items-center px-3 py-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full text-xs font-semibold">${name} <button type="button" onclick="removeExamClass('${id}')" class="ml-1.5 text-indigo-500 hover:text-indigo-900 font-bold">&times;</button></span>`;
+        return `<span class="inline-flex items-center px-3 py-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full text-xs font-semibold">${assessmentEscapeHtml(name)} <button type="button" onclick="removeExamClass('${id}')" class="ml-1.5 text-indigo-500 hover:text-indigo-900 font-bold">&times;</button></span>`;
     }).join('');
 }
 
@@ -3010,9 +3028,9 @@ window.showScheduleNotStartedAlert = function(examId) {
                         <p class="text-xs text-slate-500 mt-1">Ujian ini dijadwalkan pada waktu tertentu.</p>
                     </div>
                     <div class="bg-sky-50 border border-sky-100 p-4 rounded-2xl text-xs text-sky-800 text-left space-y-1.5">
-                        <p><span class="font-bold">Mata Pelajaran:</span> ${ex.subject || '-'}</p>
-                        <p><span class="font-bold">Judul Ujian:</span> ${ex.title}</p>
-                        <p><span class="font-bold">Tanggal Ujian:</span> ${ex.date || '-'}</p>
+                        <p><span class="font-bold">Mata Pelajaran:</span> ${assessmentEscapeHtml(ex.subject || '-')}</p>
+                        <p><span class="font-bold">Judul Ujian:</span> ${assessmentEscapeHtml(ex.title)}</p>
+                        <p><span class="font-bold">Tanggal Ujian:</span> ${assessmentEscapeHtml(ex.date || '-')}</p>
                         <p><span class="font-bold">Waktu Mulai:</span> ${ex.startTime || '07:30'} WIB</p>
                     </div>
                     <p class="text-xs text-slate-400">Silakan kembali saat waktu ujian telah tiba sesuai jadwal di atas.</p>
@@ -3039,9 +3057,9 @@ window.showScheduleExpiredAlert = function(examId) {
                         <p class="text-xs text-slate-500 mt-1">Batas waktu pelaksanaan ujian ini sudah melewati jadwal.</p>
                     </div>
                     <div class="bg-rose-50 border border-rose-100 p-4 rounded-2xl text-xs text-rose-800 text-left space-y-1.5">
-                        <p><span class="font-bold">Mata Pelajaran:</span> ${ex.subject || '-'}</p>
-                        <p><span class="font-bold">Judul Ujian:</span> ${ex.title}</p>
-                        <p><span class="font-bold">Tanggal Pelaksanaan:</span> ${ex.date || '-'}</p>
+                        <p><span class="font-bold">Mata Pelajaran:</span> ${assessmentEscapeHtml(ex.subject || '-')}</p>
+                        <p><span class="font-bold">Judul Ujian:</span> ${assessmentEscapeHtml(ex.title)}</p>
+                        <p><span class="font-bold">Tanggal Pelaksanaan:</span> ${assessmentEscapeHtml(ex.date || '-')}</p>
                         <p><span class="font-bold">Waktu Mulai:</span> ${ex.startTime || '07:30'} WIB</p>
                         ${ex.endTime ? `<p><span class="font-bold">Batas Waktu Selesai:</span> ${ex.endTime} WIB</p>` : ''}
                     </div>
@@ -3195,7 +3213,7 @@ window.openStudentExamReviewModal = function(examId) {
                         <h3 class="font-extrabold text-slate-800 text-sm sm:text-base flex items-center gap-2">
                             <i class="fa-solid fa-graduation-cap text-indigo-600"></i> Review Lembar Kerja & Soal Ujian
                         </h3>
-                        <p class="text-[11px] text-slate-500 font-medium mt-0.5">${ex.title} &nbsp;|&nbsp; Mapel: ${ex.subject || '-'}</p>
+                        <p class="text-[11px] text-slate-500 font-medium mt-0.5">${assessmentEscapeHtml(ex.title)} &nbsp;|&nbsp; Mapel: ${assessmentEscapeHtml(ex.subject || '-')}</p>
                     </div>
                     <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="w-9 h-9 bg-slate-100 hover:bg-rose-100 hover:text-rose-600 text-slate-500 rounded-full flex items-center justify-center transition cursor-pointer">
                         <i class="fa-solid fa-xmark"></i>
@@ -3511,7 +3529,7 @@ async function renderStudentCBTList(container, isRefresh = false) {
                         ${badgeHtml}
                         <span class="text-xs font-mono text-slate-400"><i class="fa-solid fa-clock mr-1 text-slate-400"></i>${ex.duration} Menit</span>
                     </div>
-                    <h3 class="font-bold text-slate-800 text-lg mt-2">${ex.title}</h3>
+                    <h3 class="font-bold text-slate-800 text-lg mt-2">${assessmentEscapeHtml(ex.title)}</h3>
                     <p class="text-xs text-slate-500 mt-1"><i class="fa-solid fa-calendar-days mr-1.5 text-emerald-600"></i>${ex.date || '-'} &nbsp;|&nbsp; <i class="fa-solid fa-clock mr-1 text-emerald-600"></i>${ex.startTime || '07:30'}${ex.endTime ? ' - ' + ex.endTime : ''} WIB</p>
                     ${ex.subject ? `<p class="text-xs text-slate-400 mt-1 font-medium"><i class="fa-solid fa-book mr-1.5 text-slate-400"></i>${ex.subject}</p>` : ''}
                     ${statusNoticeHtml ? `<div class="mt-3">${statusNoticeHtml}</div>` : ''}
@@ -3707,7 +3725,7 @@ window.confirmStartStudentExam = function(examId) {
                             </div>
                             <div>
                                 <p class="text-xs text-slate-400">Judul Ujian</p>
-                                <p class="font-bold text-slate-800">${ex.title}</p>
+                                <p class="font-bold text-slate-800">${assessmentEscapeHtml(ex.title)}</p>
                             </div>
                             <div>
                                 <p class="text-xs text-slate-400">Jadwal</p>
@@ -4454,7 +4472,7 @@ function renderActiveExamScreen() {
                 <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 text-center space-y-4 border">
                     <div class="w-14 h-14 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto text-2xl"><i class="fa-solid fa-triangle-exclamation"></i></div>
                     <h3 class="font-bold text-slate-800 text-lg">Pesan Penting dari Pengawas</h3>
-                    <p class="text-sm text-slate-600 bg-slate-50 p-4 rounded-2xl border">${activeMsg}</p>
+                    <p class="text-sm text-slate-600 bg-slate-50 p-4 rounded-2xl border">${assessmentEscapeHtml(activeMsg)}</p>
                     <button type="button" onclick="dismissStudentExamMessage('${sess.exam.id}', '${st.id}', ${Boolean(appState.examMessages[broadcastKey])})" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow">OK / Mengerti</button>
                 </div>
             </div>
@@ -4482,7 +4500,7 @@ function renderActiveExamScreen() {
             <!-- Sticky Header Timer -->
             <div class="bg-white p-4 sm:p-5 rounded-3xl shadow-sm border flex justify-between items-center sticky top-2 z-20">
                 <div>
-                    <h2 class="text-xs sm:text-sm font-bold text-slate-800">${sess.exam.title}</h2>
+                    <h2 class="text-xs sm:text-sm font-bold text-slate-800">${assessmentEscapeHtml(sess.exam.title)}</h2>
                     <p class="text-[11px] text-slate-500 font-medium">Soal Ke-${sess.currentIndex + 1} dari ${sess.questions.length}</p>
                 </div>
                 <div class="flex items-center gap-2">
@@ -4499,15 +4517,15 @@ function renderActiveExamScreen() {
 
             <!-- Question Box -->
             <div class="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border space-y-6">
-                <p class="font-semibold text-slate-800 text-base leading-relaxed select-none">${q.question}</p>
-                ${((q.imageUrl || q.image) && (!q.question || !q.question.includes(q.imageUrl || q.image))) ? `<div class="my-3 flex justify-center"><img src="${q.imageUrl || q.image}" class="max-h-64 rounded-2xl border border-slate-200 object-contain shadow-sm" alt="Gambar Soal"/></div>` : ''}
+                <p class="font-semibold text-slate-800 text-base leading-relaxed select-none">${assessmentEscapeHtml(q.question)}</p>
+                ${((q.imageUrl || q.image) && (!q.question || !q.question.includes(q.imageUrl || q.image))) ? `<div class="my-3 flex justify-center"><img src="${assessmentSafeImageSrc(q.imageUrl || q.image)}" class="max-h-64 rounded-2xl border border-slate-200 object-contain shadow-sm" alt="Gambar Soal"/></div>` : ''}
                 <div class="space-y-3">
                     ${(q.type === 'esay' || q.type === 'essay') ? `
-                        <textarea onchange="saveExamAnswer('${q.id}', this.value)" rows="6" class="w-full p-4 border rounded-2xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 transition resize-none text-sm" placeholder="Ketik jawaban esay Anda di sini...">${sess.answers[q.id] || ''}</textarea>
+                        <textarea onchange="saveExamAnswer('${q.id}', this.value)" rows="6" class="w-full p-4 border rounded-2xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 transition resize-none text-sm" placeholder="Ketik jawaban esay Anda di sini...">${assessmentEscapeHtml(sess.answers[q.id] || '')}</textarea>
                     ` : (q.options || []).map((opt, oIdx) => `
                         <div onclick="selectExamOption(${oIdx})" class="flex items-center space-x-3 p-4 rounded-2xl border cursor-pointer transition select-none ${sess.answers[q.id] === opt ? 'bg-emerald-50 border-emerald-500 font-bold text-emerald-900 shadow-sm' : 'bg-slate-50 hover:bg-slate-100'}">
                             <span class="w-7 h-7 rounded-xl flex items-center justify-center text-xs font-bold ${sess.answers[q.id] === opt ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'}">${String.fromCharCode(65 + oIdx)}</span>
-                            <span class="text-sm">${opt}</span>
+                            <span class="text-sm">${assessmentEscapeHtml(opt)}</span>
                         </div>
                     `).join('')}
                 </div>
@@ -7812,7 +7830,7 @@ function generateReportHTML() {
                     <h3 style="font-size: 16px; font-weight: bold; text-align: center; text-transform: uppercase; letter-spacing: 0.05em; color: #1f2937; margin: 0 0 12px 0;">DAFTAR NILAI CBT (COMPUTER BASED TEST)</h3>
                     <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); background-color: #f9fafb; padding: 16px; border-radius: 12px; border: 1px solid #f3f4f6; font-size: 14px; color: #4b5563;">
                         <div>
-                            <p style="margin: 0 0 4px 0;"><strong>Ujian:</strong> ${ex.title}</p>
+                            <p style="margin: 0 0 4px 0;"><strong>Ujian:</strong> ${assessmentEscapeHtml(ex.title)}</p>
                             <p style="margin: 0;"><strong>Mata Pelajaran:</strong> ${ex.subject}</p>
                         </div>
                         <div style="text-align: right;">
@@ -7916,7 +7934,7 @@ function generateReportHTML() {
                             <p style="margin: 0;"><strong>Kelas / Rombel:</strong> ${cls.name}</p>
                         </div>
                         <div style="text-align: right;">
-                            <p style="margin: 0 0 4px 0;"><strong>Ujian CBT:</strong> ${ex.title}</p>
+                            <p style="margin: 0 0 4px 0;"><strong>Ujian CBT:</strong> ${assessmentEscapeHtml(ex.title)}</p>
                             <p style="margin: 0 0 4px 0;"><strong>Mata Pelajaran:</strong> ${ex.subject}</p>
                             <p style="margin: 0;"><strong>Nilai Akhir:</strong> <span style="font-weight: bold; color: #047857; background-color: #ecfdf5; padding: 2px 8px; border-radius: 4px; border: 1px solid #a7f3d0;">${studentGr.finalScore !== null && studentGr.finalScore !== undefined ? studentGr.finalScore : 'Proses'}</span></p>
                         </div>
@@ -8837,7 +8855,7 @@ function _executeFocusStudentLivecam(studentId) {
                 <div class="pr-2">
                     <h3 class="text-sm font-bold text-white flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        Spotlight Livecam HD: ${student.name}
+                        Spotlight Livecam HD: ${assessmentEscapeHtml(student.name)}
                     </h3>
                     <p class="text-[10px] text-slate-400 mt-0.5">Memantau detail aktivitas siswa dengan resolusi tinggi (Simulcast HD)</p>
                 </div>
@@ -10007,11 +10025,11 @@ function openEventModal(editId = null) {
                     <input type="hidden" id="ev-edit-id" value="${editId || ''}">
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Nama Event</label>
-                        <input type="text" id="ev-title" value="${ev ? ev.title : ''}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" placeholder="Contoh: Ujian Tengah Semester Genap">
+                        <input type="text" id="ev-title" value="${assessmentEscapeAttr(ev ? ev.title : '')}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" placeholder="Contoh: Ujian Tengah Semester Genap">
                     </div>
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Deskripsi (Opsional)</label>
-                        <textarea id="ev-desc" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" rows="3" placeholder="Contoh: Event untuk seluruh ujian mapel di UTS genap">${ev ? (ev.description || '') : ''}</textarea>
+                        <textarea id="ev-desc" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" rows="3" placeholder="Contoh: Event untuk seluruh ujian mapel di UTS genap">${assessmentEscapeHtml(ev ? (ev.description || '') : '')}</textarea>
                     </div>
                     <div class="pt-2">
                         <button type="submit" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow transition">Simpan Event</button>
