@@ -3737,7 +3737,7 @@ export function renderGameStudentModule(container) {
                         <div class="relative">
                             <div class="w-20 h-20 bg-gradient-to-tr from-amber-400 to-amber-200 rounded-3xl p-1 shadow-lg shadow-amber-500/20">
                                 <div class="w-full h-full bg-slate-900 rounded-[22px] flex items-center justify-center text-3xl font-black text-amber-300 overflow-hidden">
-                                    ${currentStudent.photo ? `<img src="${currentStudent.photo}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-gamepad"></i>`}
+                                    ${currentStudent.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(currentStudent.photo) : ''}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-gamepad"></i>`}
                                 </div>
                             </div>
                             <span class="absolute -bottom-2 -right-2 px-2.5 py-0.5 bg-amber-500 text-slate-950 text-[10px] font-extrabold rounded-full shadow-md uppercase tracking-wider">
@@ -6876,7 +6876,7 @@ window.renderGameMonitoringDashboard = async function() {
                                     <video id="game-webrtc-video-${st.id}" autoplay playsinline muted class="w-full h-full object-cover"></video>
                                     <div id="game-webrtc-fallback-${st.id}" class="absolute inset-0 flex items-center justify-center pointer-events-none bg-slate-950">
                                         ${studentPhoto ? `
-                                            <img src="${studentPhoto}" alt="Foto Absen" class="w-full h-full object-cover opacity-75">
+                                            <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" alt="Foto Absen" class="w-full h-full object-cover opacity-75">
                                         ` : `
                                             <div class="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-900">
                                                 <i class="fa-solid fa-video text-indigo-400 animate-pulse text-3xl mb-2"></i>
@@ -6894,7 +6894,7 @@ window.renderGameMonitoringDashboard = async function() {
                                     </div>
                                 `) : `
                                     ${studentPhoto ? `
-                                        <img src="${studentPhoto}" alt="Foto Siswa" class="w-full h-full object-cover">
+                                        <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" alt="Foto Siswa" class="w-full h-full object-cover">
                                     ` : `
                                         <div class="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-900">
                                             <div class="w-14 h-14 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center text-slate-300 text-xl font-black uppercase mb-2 shadow">
@@ -7210,7 +7210,7 @@ function _executeFocusGameStudentLivecam(studentId) {
                 <div class="p-6 flex flex-col items-center justify-center space-y-4">
                     <div class="w-full max-w-md h-72 rounded-3xl overflow-hidden bg-slate-950 border-2 border-indigo-500/40 shadow-inner flex items-center justify-center relative">
                         ${studentPhoto ? `
-                            <img src="${studentPhoto}" class="w-full h-full object-cover">
+                            <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" class="w-full h-full object-cover">
                         ` : `
                             <div class="text-center p-6 space-y-2">
                                 <i class="fa-solid fa-user-circle text-slate-600 text-6xl"></i>

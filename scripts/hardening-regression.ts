@@ -115,10 +115,13 @@ function testServerGuards() {
   assert.equal(app.includes("fetch('/readyz'"), false, 'frontend startup must not poll a 503 readiness endpoint');
   assert.match(app, /runtimeReady = await waitForServerRuntimeReady\(45000\)/);
   assert.match(app, /runtimeReady = await waitForServerRuntimeReady\(15000\)/);
-  assert.match(app, /Array\.isArray\(resData\.data\) \? resData\.data : resData\.lessonPlans/);
-  assert.match(settingsMisc, /Array\.isArray\(lpRes\.data\) \? lpRes\.data : \(lpRes\.lessonPlans \|\| \[\]\)/);
-  assert.match(modulAjar, /isSameSubject\(lp\.subjectId, s\.id, appState\.subjects\)/);
+  assert.match(app, /normalizeLessonPlanCollection\(resData\)/);
+  assert.match(settingsMisc, /normalizeLessonPlanCollection \? window\.normalizeLessonPlanCollection\(lpRes\)/);
+  assert.match(modulAjar, /isSameSubject\(getLessonPlanSubjectForView\(lp\), s\.id, appState\.subjects\)/);
   assert.equal(modulAjar.includes("String(lp.subjectId) === String(s.id)"), false);
+  assert.match(server, /flattenLessonPlanValue/);
+  assert.match(app, /resolvePhotoUrl/);
+  assert.match(app, /getPhotoHtmlSrc/);
   assert.match(mainEntry, /madrasah:runtime-ready/);
   assert.match(indexHtml, /id="app-initial-loader-status"/);
   const listenIndex = server.indexOf('const server = app.listen(PORT, "0.0.0.0"');
