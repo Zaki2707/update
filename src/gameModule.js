@@ -1652,7 +1652,7 @@ window.openManageAdventureRoadmapModal = function(modeId) {
                                                     ${isFirst ? '<span class="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">🚩 Mulai</span>' : ''}
                                                     ${isLast ? '<span class="text-[10px] font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-full">❌ Puncak Harta Karun</span>' : ''}
                                                 </div>
-                                                <h5 class="font-extrabold text-slate-800 text-sm mt-0.5">${loc.name || `Lokasi ${idx + 1}`}</h5>
+                                                <h5 class="font-extrabold text-slate-800 text-sm mt-0.5">${gameEscapeHtml(loc.name || `Lokasi ${idx + 1}`)}</h5>
                                                 <p class="text-xs text-slate-500">Game: <strong class="text-indigo-700 font-bold">${gameEscapeHtml(assignedGame.title)}</strong> (X: ${loc.x}%, Y: ${loc.y}%)</p>
                                             </div>
                                         </div>
@@ -2563,7 +2563,7 @@ window.openAddFloorModal = function(modeId, floorIndex = null) {
                         </div>
 
                         <!-- Live Swatch Preview -->
-                        <div id="flr-preview-swatch" class="p-4 rounded-xl border border-white/20 text-center transition-all duration-300 shadow-inner" style="background: ${currentStyle};">
+                        <div id="flr-preview-swatch" class="p-4 rounded-xl border border-white/20 text-center transition-all duration-300 shadow-inner" style="background: ${gameEscapeAttr(currentStyle)};">
                             <span class="font-extrabold text-white text-xs drop-shadow-md">Preview Tampilan Lantai Quest</span>
                         </div>
 
@@ -3986,7 +3986,7 @@ function renderStudentTowerTab(games, forceModeId = null, isPreview = false) {
                             </span>
                         </div>
                         <h2 class="text-2xl sm:text-3xl font-black text-white leading-tight">${gameEscapeHtml(mode.title)}</h2>
-                        <p class="text-xs text-indigo-200 max-w-xl mt-1">${mode.description || 'Panjat lantai demi lantai menara quest!'}</p>
+                        <p class="text-xs text-indigo-200 max-w-xl mt-1">${gameEscapeHtml(mode.description || 'Panjat lantai demi lantai menara quest!')}</p>
                     </div>
 
                     ${modes.length > 1 && !forceModeId ? `
@@ -4053,14 +4053,14 @@ function renderStudentTowerTab(games, forceModeId = null, isPreview = false) {
                                             ${!isUnlocked ? '<span class="text-[10px] font-bold text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded-full border border-slate-700">🔒 Terkunci</span>' : ''}
                                         </div>
 
-                                        <h4 class="font-extrabold text-white text-base mt-1 drop-shadow-md">${flr.name}</h4>
-                                        <p class="text-xs text-slate-200 line-clamp-1 drop-shadow-xs">${flr.desc || assignedGame.title}</p>
+                                        <h4 class="font-extrabold text-white text-base mt-1 drop-shadow-md">${gameEscapeHtml(flr.name)}</h4>
+                                        <p class="text-xs text-slate-200 line-clamp-1 drop-shadow-xs">${gameEscapeHtml(flr.desc || assignedGame.title)}</p>
                                     </div>
                                 </div>
 
                                 <div class="w-full sm:w-auto text-right shrink-0 z-10">
                                     ${isUnlocked ? `
-                                        <button type="button" onclick="launchInteractiveGameModal('${assignedGame.id}', ${isPreview}, { modeId: '${mode.id}', floorId: '${flr.id}', floorName: '${flr.name}', floorBg: '${floorBgStyle}' })" class="w-full sm:w-auto px-6 py-2.5 ${isDone ? 'bg-slate-900/80 hover:bg-slate-900 text-white border border-white/20' : 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-lg shadow-amber-500/30'} font-extrabold text-xs rounded-xl transition cursor-pointer flex items-center justify-center gap-2">
+                                        <button type="button" onclick="launchInteractiveGameModal('${assignedGame.id}', ${isPreview}, { modeId: '${mode.id}', floorId: '${flr.id}', floorName: decodeURIComponent('${encodeURIComponent(flr.name || '')}'), floorBg: decodeURIComponent('${encodeURIComponent(floorBgStyle || '')}') })" class="w-full sm:w-auto px-6 py-2.5 ${isDone ? 'bg-slate-900/80 hover:bg-slate-900 text-white border border-white/20' : 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-lg shadow-amber-500/30'} font-extrabold text-xs rounded-xl transition cursor-pointer flex items-center justify-center gap-2">
                                             <span>${isDone ? 'Panjat Lagi' : 'Panjat Lantai Ini'}</span>
                                             <i class="fa-solid fa-chess-rook text-xs"></i>
                                         </button>
