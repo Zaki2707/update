@@ -2176,6 +2176,7 @@ function logout() {
     appState.currentUser = null;
     appState.role = null;
     clearPersistedAuthSession();
+    try { sessionStorage.removeItem('cbt_print_credentials'); } catch (_) {}
     localStorage.removeItem('madrasah_last_route');
 
     // Restore top bar classes in case next login is different role

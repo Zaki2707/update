@@ -19,7 +19,7 @@ function renderClassModule(container) {
         return;
     }
 
-    const isTeacher = appState.role === 'teacher';
+    const isTeacher = ['teacher', 'guru'].includes(String(appState.role || '').toLowerCase());
 
     container.innerHTML = `
         <div class="space-y-6 pb-8">
@@ -1246,6 +1246,8 @@ window.saveTeacherProfileSelf = saveTeacherProfileSelf;
 // Student Module
 function getCachedStudentTemporaryPassword(student) {
     if (!student) return '';
+    const credentialRole = String(appState.role || '').toLowerCase();
+    if (!['admin', 'bos', 'superadmin'].includes(credentialRole)) return '';
     try {
         const cached = JSON.parse(sessionStorage.getItem('cbt_print_credentials') || '[]');
         if (!Array.isArray(cached)) return '';
@@ -1265,6 +1267,10 @@ function escapeStudentCredentialHtml(value) {
 }
 
 function renderStudentPasswordForAdmin(student) {
+    const credentialRole = String(appState.role || '').toLowerCase();
+    if (!['admin', 'bos', 'superadmin'].includes(credentialRole)) {
+        return '<span class="text-[10px] text-slate-400">Tidak ditampilkan</span>';
+    }
     const temporaryPassword = getCachedStudentTemporaryPassword(student);
     if (temporaryPassword) {
         return `<span class="font-mono text-xs text-slate-800">${escapeStudentCredentialHtml(temporaryPassword)}</span>`;
@@ -1287,7 +1293,7 @@ function renderStudentModule(container) {
         })
         .catch(() => {});
 
-    const isTeacher = appState.role === 'teacher';
+    const isTeacher = ['teacher', 'guru'].includes(String(appState.role || '').toLowerCase());
     const classFilter = window.studentClassFilter || '';
     let filteredStudents = Array.isArray(appState.students) ? [...appState.students] : [];
 
@@ -2061,7 +2067,7 @@ function renderScheduleModule(container) {
     const savedMatrixScrollLeft = matrixScrollContainer ? matrixScrollContainer.scrollLeft : 0;
     const savedWindowY = window.scrollY || document.documentElement.scrollTop || 0;
 
-    const isTeacher = appState.role === 'teacher';
+    const isTeacher = ['teacher', 'guru'].includes(String(appState.role || '').toLowerCase());
     const classes = appState.classes || [];
     const subjects = appState.subjects || [];
     const teachers = appState.teachers || [];

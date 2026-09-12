@@ -13,6 +13,8 @@ import { KeyedSerialQueue } from '../src/keyedSerialQueue.js';
 const source = fs.readFileSync('server.ts', 'utf8');
 const serverSource = source;
 const modulesSource = fs.readFileSync('src/modulesScript.js', 'utf8');
+const adminModulesSource = fs.readFileSync('src/adminModules.js', 'utf8');
+const appSource = fs.readFileSync('src/appScript.js', 'utf8');
 const ast = ts.createSourceFile('server.ts', source, ts.ScriptTarget.ES2022, true);
 const quiet = { log() {}, warn() {}, error() {} };
 const transpile = (text: string) => ts.transpileModule(text, {
@@ -340,6 +342,19 @@ await test('Offline restore re-hashes legacy plaintext user credentials', () => 
 await test('Class master writes stay admin-owned', () => {
   assert.match(serverSource, /app\.post\("\/api\/classes", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
   assert.match(serverSource, /app\.delete\("\/api\/classes\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+});
+
+await test('Schedule configuration is admin-owned while teachers remain read-only', () => {
+  assert.match(serverSource, /app\.post\("\/api\/schedules", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+  assert.match(serverSource, /app\.delete\("\/api\/schedules\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+  assert.match(serverSource, /app\.post\("\/api\/time-slots", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+  assert.ok(serverSource.includes("'schedules', 'savedRosters', 'timeSlots', 'kbmDuration', 'classGrades'"));
+});
+
+await test('Temporary student credentials are hidden from teachers and purged on logout', () => {
+  assert.ok(adminModulesSource.includes("if (!['admin', 'bos', 'superadmin'].includes(credentialRole)) return ''"));
+  assert.ok(adminModulesSource.includes('Tidak ditampilkan'));
+  assert.ok(appSource.includes("sessionStorage.removeItem('cbt_print_credentials')"));
 });
 
 await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {

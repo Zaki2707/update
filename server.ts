@@ -12804,7 +12804,7 @@ app.get("/api/time-slots", requireAuth, (req, res) => {
   });
 });
 
-app.post("/api/time-slots", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.post("/api/time-slots", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { timeSlots: newSlots, kbmDuration: newKbm } = req.body;
   if (Array.isArray(newSlots)) {
     timeSlots = mergeTenantListData(timeSlots, newSlots, req);
@@ -16123,7 +16123,7 @@ ${NO_DASHES_PROMPT}
 app.get("/api/schedules", (req, res) => {
   res.json({ success: true, schedules: filterByMadrasah(schedules, req) });
 });
-app.post("/api/schedules", async (req, res) => {
+app.post("/api/schedules", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const mId = getRequestMadrasahId(req);
   if (Array.isArray(req.body)) {
     const taggedIncoming = req.body.map(item => tagNewRecord(item, req));
@@ -16162,7 +16162,7 @@ app.post("/api/schedules", async (req, res) => {
   await saveData('schedules', schedules);
   res.json({ success: true, schedules: filterByMadrasah(schedules, req) });
 });
-app.delete("/api/schedules/:id", async (req, res) => {
+app.delete("/api/schedules/:id", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   schedules = schedules.filter(s => !(String(s.id) === String(id) && isItemForCurrentMadrasah(s, req)));
   await saveData('schedules', schedules);
@@ -18346,7 +18346,11 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Pengaturan sistem hanya dapat diubah administrator.' });
     }
     // TEACHER_SYNC_SCOPE_V2: generic sync must never bypass dedicated master-data RBAC.
-    const teacherAdminOwnedKeys = new Set(['teachers', 'students', 'classes', 'subjects', 'gradeCategories', 'customGradeColumns']);
+    const teacherAdminOwnedKeys = new Set([
+      'teachers', 'students', 'classes', 'subjects',
+      'gradeCategories', 'customGradeColumns',
+      'schedules', 'savedRosters', 'timeSlots', 'kbmDuration', 'classGrades'
+    ]);
     if (isTeacherSyncRole && teacherAdminOwnedKeys.has(syncKey)) {
       return res.status(403).json({ success: false, message: 'Master data tersebut hanya dapat diubah administrator melalui endpoint khusus.' });
     }
