@@ -416,6 +416,39 @@ await test('CBT: empty or incompatible question packet never starts the timer', 
   assert.match(helper, /examType === 'esay_saja'/);
 });
 
+await test('CBT: duration extension advances server endsAt without double-extension on retry', () => {
+  const monitoringStart = serverSource.indexOf('app.post("/api/exam-monitoring-state"');
+  const monitoringEnd = serverSource.indexOf('\napp.', monitoringStart + 20);
+  const route = serverSource.slice(monitoringStart, monitoringEnd > monitoringStart ? monitoringEnd : undefined);
+  assert.match(route, /CBT_SERVER_TIME_EXTENSION_V2/);
+  assert.match(route, /const extensionSec = Math\.max\(durationExtensionSec, extraExtensionSec\)/);
+  assert.match(route, /const authoritativeEndsAt = previousEndsAt \+ \(extensionSec \* 1000\)/);
+  assert.match(route, /nextSession\.timeLeft = Math\.max\(0, Math\.floor\(\(authoritativeEndsAt - Date\.now\(\)\) \/ 1000\)\)/);
+
+  assert.match(assessmentSource, /CBT_LOCAL_TIME_EXTENSION_V2/);
+  assert.match(assessmentSource, /sess\.endsAt = currentEndsAt \+ \(durationDiffSec \* 1000\)/);
+});
+
+await test('CBT: answer sync is write-ahead and survives logout/reconnect restore', () => {
+  const saveStart = assessmentSource.indexOf('function saveExamAnswer(qId, val)');
+  const saveEnd = assessmentSource.indexOf('\nfunction selectExamOption', saveStart);
+  const saveFn = assessmentSource.slice(saveStart, saveEnd > saveStart ? saveEnd : undefined);
+  const queuePos = saveFn.indexOf('upsertPendingOfflineAnswer(payload)');
+  const fetchPos = saveFn.indexOf("fetch('/api/exam/attempt/answer'");
+  assert.ok(queuePos >= 0 && fetchPos > queuePos, 'answer must be queued before network fetch');
+  assert.match(saveFn, /if \(!r\.ok \|\| !res\.success\) throw/);
+  assert.match(saveFn, /removePendingOfflineAnswer\(payload\)/);
+  assert.match(saveFn, /madrasah_student_exam_answers/);
+
+  assert.match(assessmentSource, /CBT_ANSWER_WRITE_AHEAD_V2/);
+  assert.match(assessmentSource, /CBT_RESUME_PENDING_ANSWER_PRECEDENCE_V2/);
+  assert.match(assessmentSource, /const mergedAnswers = \{ \.\.\.\(serverSession\.answers \|\| \{\}\), \.\.\.queuedAnswers \}/);
+  assert.match(assessmentSource, /const pendingResumeAnswers = getPendingAnswersForExam\(st\.id, ex\.id\)/);
+  assert.match(assessmentSource, /sessionData\.answers = \{ \.\.\.sessionData\.answers, \.\.\.res\.session\.answers, \.\.\.pendingResumeAnswers \}/);
+  assert.doesNotMatch(assessmentSource, /sessionData\.answers = \{ \.\.\.res\.session\.answers, \.\.\.sessionData\.answers \}/);
+  assert.match(assessmentSource, /if \(!res\.ok \|\| !data\.success\) throw new Error/);
+});
+
 await test('Student master writes are admin-owned and self password may remain unchanged', () => {
   assert.match(serverSource, /app\.post\("\/api\/students", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
   assert.match(serverSource, /app\.put\("\/api\/students\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);

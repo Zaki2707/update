@@ -12290,8 +12290,38 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
         delete activeExamSessions[key];
         promises.push(saveDeltaDb('activeExamSessions', key, null));
       } else {
-        activeExamSessions[key] = bData;
-        promises.push(saveDeltaDb('activeExamSessions', key, bData));
+        // CBT_SERVER_TIME_EXTENSION_V2: derive any added exam time from the
+        // server's previous session so retries cannot extend the deadline twice.
+        const previousSession = activeExamSessions[key];
+        let nextSession = bData;
+        if (previousSession && typeof previousSession === 'object' &&
+            bData && typeof bData === 'object' && !Array.isArray(bData)) {
+          const previousDurationMin = Number(previousSession.duration);
+          const requestedDurationMin = Number(bData.duration);
+          const durationExtensionSec =
+            Number.isFinite(previousDurationMin) && Number.isFinite(requestedDurationMin)
+              ? Math.max(0, (requestedDurationMin - previousDurationMin) * 60)
+              : 0;
+          const previousExtraSec = Math.max(0, Number(previousSession.extraTimeAdded) || 0);
+          const requestedExtraSec = Math.max(previousExtraSec, Number(bData.extraTimeAdded) || 0);
+          const extraExtensionSec = Math.max(0, requestedExtraSec - previousExtraSec);
+          const extensionSec = Math.max(durationExtensionSec, extraExtensionSec);
+          const previousEndsAt = Number(previousSession.endsAt);
+
+          nextSession = {
+            ...previousSession,
+            ...bData,
+            extraTimeAdded: requestedExtraSec
+          };
+
+          if (Number.isFinite(previousEndsAt) && previousEndsAt > 0) {
+            const authoritativeEndsAt = previousEndsAt + (extensionSec * 1000);
+            nextSession.endsAt = authoritativeEndsAt;
+            nextSession.timeLeft = Math.max(0, Math.floor((authoritativeEndsAt - Date.now()) / 1000));
+          }
+        }
+        activeExamSessions[key] = nextSession;
+        promises.push(saveDeltaDb('activeExamSessions', key, nextSession));
       }
     }
     broadcastStateUpdate('activeExamSessions');
