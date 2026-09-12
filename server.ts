@@ -5150,6 +5150,7 @@ function sanitizeGameForStudent(game: any): any {
   delete safe.teacherAnswer;
   delete safe.solution;
   delete safe.rubric;
+  delete safe.explanation;
   return safe;
 }
 
