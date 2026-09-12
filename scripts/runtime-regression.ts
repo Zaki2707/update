@@ -11,6 +11,8 @@ import { KeyedSerialQueue } from '../src/keyedSerialQueue.js';
 // Exercise the actual server functions with isolated dependencies. No production
 // database, credentials, network service, or persisted user data is used here.
 const source = fs.readFileSync('server.ts', 'utf8');
+const serverSource = source;
+const modulesSource = fs.readFileSync('src/modulesScript.js', 'utf8');
 const ast = ts.createSourceFile('server.ts', source, ts.ScriptTarget.ES2022, true);
 const quiet = { log() {}, warn() {}, error() {} };
 const transpile = (text: string) => ts.transpileModule(text, {
