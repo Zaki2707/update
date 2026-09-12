@@ -4785,6 +4785,22 @@ function sanitizeSettingsForPublic(settings: any) {
   return safe;
 }
 
+// LIVEKIT_RUNTIME_CAPABILITY_V4: expose only a boolean capability to the browser.
+// The API key/secret stay server-side and the same resolver is used by token minting.
+function resolveLiveKitRuntimeConfig() {
+  const apiKey = String(appSettings?.livekitApiKey || process.env.LIVEKIT_API_KEY || '').trim();
+  const apiSecret = String(appSettings?.livekitApiSecret || process.env.LIVEKIT_API_SECRET || '').trim();
+  const serverUrl = String(appSettings?.livekitUrl || process.env.LIVEKIT_URL || '').trim();
+  const onlineLocalhost = isOnlineMode && /localhost|127\.0\.0\.1/i.test(serverUrl);
+  return {
+    apiKey,
+    apiSecret,
+    serverUrl,
+    configured: Boolean(apiKey && apiSecret && serverUrl && !onlineLocalhost),
+    onlineLocalhost
+  };
+}
+
 const tenantSettingsBlockedKeys = new Set([
   'adminUser', 'adminPass', 'password', 'jwtSecret', 'JWT_SECRET',
   'paymentAccounts', 'cbtTokenPrice',
@@ -4942,6 +4958,15 @@ function teacherCanUseExamPayload(req: any, examPayload: any): boolean {
   const subjectRef = examPayload.subjectId || examPayload.subject;
   if (subjectRef && !teacherCanAccessSubjectRef(req, subjectRef)) return false;
   return Boolean(bankCode || subjectRef);
+}
+
+// TEACHER_EVENT_MUTATION_SCOPE_V3: event containers remain readable so teacher
+// schedules stay grouped correctly, but only admin/BOSS may mutate EVENT records.
+function teacherCanMutateExamPayload(req: any, examPayload: any): boolean {
+  if (!isTeacherRequest(req)) return true;
+  if (!examPayload || typeof examPayload !== 'object') return false;
+  if (String(examPayload.recordType || '').toUpperCase() === 'EVENT') return false;
+  return teacherCanUseExamPayload(req, examPayload);
 }
 
 function examsForRequest(req: any): any[] {
@@ -5177,6 +5202,9 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     .map(isBosUser ? sanitizeMadrasahAdminView : sanitizeMadrasahMemberView)
     .filter(Boolean);
   const sanitizedSettings = sanitizeSettingsForClient(effectiveSettingsForRequest(req));
+  if (sanitizedSettings && typeof sanitizedSettings === 'object') {
+    sanitizedSettings.livekitConfigured = resolveLiveKitRuntimeConfig().configured;
+  }
 
   res.json({
     success: true,
@@ -12068,7 +12096,12 @@ app.post("/api/exam/violation", async (req, res) => {
   const violationKey = resolveExamViolationLogKey(req, eId);
   if (!examViolationLogs[violationKey]) examViolationLogs[violationKey] = [];
   const targetStudent = context.student;
-  const safeReason = String(reason || 'Keluar Tab / Split Screen').slice(0, 500);
+  // VIOLATION_PLAIN_TEXT_V3: strip control characters before persistence; the
+  // frontend also escapes this field at every innerHTML sink.
+  const safeReason = String(reason || 'Keluar Tab / Split Screen')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .trim()
+    .slice(0, 500) || 'Keluar Tab / Split Screen';
   const violationItem = {
     id: "viol_" + now + "_" + crypto.randomBytes(6).toString('hex'),
     studentId: sId,
@@ -12485,10 +12518,21 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
   gradesObj = normalizeExamStateMapKeysForRequest(req, gradesObj);
   forceFinished = normalizeExamStateMapKeysForRequest(req, forceFinished);
   messages = normalizeExamMessageMapKeysForRequest(req, messages);
-  if (livecamFrame?.key) {
+  if (livecamFrame !== undefined && livecamFrame !== null) {
+    if (!livecamFrame || typeof livecamFrame !== 'object' || Array.isArray(livecamFrame) || !livecamFrame.key || !livecamFrame.frame) {
+      return res.status(400).json({ success: false, message: "Payload frame livecam monitoring tidak valid." });
+    }
     const normalizedLivecamKey = normalizeExamStateMutationKey(req, String(livecamFrame.key));
     if (!normalizedLivecamKey) return res.status(403).json({ success: false, message: "Livecam key monitoring tidak valid." });
-    livecamFrame = { ...livecamFrame, key: normalizedLivecamKey };
+    const frameText = String(livecamFrame.frame);
+    if (Buffer.byteLength(frameText, 'utf8') > 2 * 1024 * 1024) {
+      return res.status(413).json({ success: false, message: "Frame livecam terlalu besar." });
+    }
+    if (!parseSafeRasterDataUrl(frameText)) {
+      return res.status(400).json({ success: false, message: "Format frame livecam tidak valid." });
+    }
+    // LEGACY_LIVECAM_FRAME_VALIDATION_V3
+    livecamFrame = { ...livecamFrame, key: normalizedLivecamKey, frame: frameText };
   }
 
   if (sessionKey) {
@@ -12782,6 +12826,94 @@ function signalingStudentKey(req: any, user: any, studentId: any, target?: any) 
   return 'student::' + tenant + '::' + String(studentId);
 }
 
+// SIGNALING_TRANSPORT_BRIDGE_V4: WebSocket and HTTP polling are interchangeable
+// transports. Prefer an active socket, otherwise queue the signal for the HTTP poller.
+function sendSignalToSocket(targetWs: any, senderId: string, signal: any): boolean {
+  if (!targetWs || targetWs.readyState !== 1) return false;
+  try {
+    targetWs.send(JSON.stringify({ type: 'signal', senderId, signal }));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function flushQueuedSignalsToSocket(targetKey: string, targetWs: any) {
+  const box = examSignalingMessages[targetKey];
+  if (!box || !targetWs || targetWs.readyState !== 1) return;
+  const remaining: any = {};
+  for (const [senderId, rawQueue] of Object.entries(box)) {
+    const queue = Array.isArray(rawQueue) ? rawQueue : [];
+    const unsent: any[] = [];
+    for (const item of queue) {
+      if (!sendSignalToSocket(targetWs, String((item as any)?.senderId || senderId), (item as any)?.signal)) {
+        unsent.push(item);
+      }
+    }
+    if (unsent.length > 0) remaining[senderId] = unsent;
+  }
+  if (Object.keys(remaining).length > 0) examSignalingMessages[targetKey] = remaining;
+  else delete examSignalingMessages[targetKey];
+}
+
+function findActiveStaffSocket(tenant: string, staffId: string): any | null {
+  const canonicalTenant = canonicalRealtimeTenant(tenant);
+  const direct = wsClients.get(signalingStaffKeyForTenant(canonicalTenant, staffId));
+  if (direct?.readyState === 1) return direct;
+
+  // BOSS/superadmin sockets are normally registered under their own default tenant.
+  for (const candidateWs of wsClients.values()) {
+    const candidateUser = candidateWs?.__authUser;
+    const candidateRole = String(candidateUser?.role || '').toLowerCase();
+    if (candidateWs?.readyState === 1 &&
+        String(candidateUser?.id || '') === String(staffId) &&
+        (candidateRole === 'bos' || candidateRole === 'superadmin')) {
+      return candidateWs;
+    }
+  }
+  return null;
+}
+
+function deliverSignalToStudent(tenant: string, studentId: string, senderId: string, signal: any): 'ws' | 'http' {
+  const canonicalTenant = canonicalRealtimeTenant(tenant);
+  const socketKey = 'student::' + canonicalTenant + '::' + String(studentId);
+  if (sendSignalToSocket(wsClients.get(socketKey), senderId, signal)) return 'ws';
+  enqueueExamSignal(socketKey, senderId, signal);
+  return 'http';
+}
+
+function deliverSignalToStaff(tenant: string, staffId: string, senderId: string, signal: any): 'ws' | 'http' | 'none' {
+  const canonicalTenant = canonicalRealtimeTenant(tenant);
+  const staffSocket = findActiveStaffSocket(canonicalTenant, String(staffId));
+  if (sendSignalToSocket(staffSocket, senderId, signal)) return 'ws';
+
+  pruneSignalingStaffRoutes();
+  const routeKey = signalingStaffKeyForTenant(canonicalTenant, staffId);
+  const route = signalingStaffRoutes.get(routeKey);
+  if (!route) return 'none';
+  route.lastSeenAt = Date.now();
+  enqueueExamSignal(routeKey, senderId, signal);
+  return 'http';
+}
+
+function signalingStaffCandidatesForTenant(tenant: string): any[] {
+  pruneSignalingStaffRoutes();
+  const canonicalTenant = canonicalRealtimeTenant(tenant);
+  const prefix = 'staff::' + canonicalTenant + '::';
+  const byId = new Map<string, any>();
+
+  for (const [key, socket] of wsClients.entries()) {
+    if (!key.startsWith(prefix) || socket?.readyState !== 1) continue;
+    const user = socket.__authUser;
+    if (user?.id !== undefined && user?.id !== null) byId.set(String(user.id), user);
+  }
+  for (const [key, route] of signalingStaffRoutes.entries()) {
+    if (!key.startsWith(prefix) || !route?.user) continue;
+    byId.set(String(route.user.id), route.user);
+  }
+  return Array.from(byId.values());
+}
+
 // TEACHER_LIVECAM_SCOPE_V1: a teacher may signal only a student who currently has
 // an active attempt in an exam the teacher is allowed to monitor.
 function teacherCanMonitorStudentRealtime(req: any, user: any, targetStudent: any): boolean {
@@ -12823,30 +12955,23 @@ app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
     if (!senderStudent) return res.status(403).json({ success: false, message: "Identitas siswa signaling tidak valid." });
 
     if (recipientId === 'admin') {
-      // Compatibility for an older browser tab: safely fan out only to active,
-      // authorized staff routes instead of a shared tenant-wide admin inbox.
-      pruneSignalingStaffRoutes();
       let delivered = 0;
-      for (const [routeKey, route] of signalingStaffRoutes.entries()) {
-        if (!routeKey.startsWith('staff::' + tenant + '::')) continue;
-        const monitorUser = route?.user;
+      for (const monitorUser of signalingStaffCandidatesForTenant(tenant)) {
         const monitorRole = String(monitorUser?.role || '').toLowerCase();
         if (!isStaffAuthRole(monitorRole)) continue;
         if (monitorRole === 'teacher' || monitorRole === 'guru') {
           const monitorReq: any = { user: monitorUser, headers: {}, query: {}, body: {} };
           if (!teacherCanMonitorStudentRealtime(monitorReq, monitorUser, senderStudent)) continue;
         }
-        enqueueExamSignal(routeKey, senderId, signal);
-        delivered++;
+        if (deliverSignalToStaff(tenant, String(monitorUser.id), senderId, signal) !== 'none') delivered++;
       }
       return res.json({ success: true, delivered });
     }
 
-    const targetKey = signalingStaffKeyForTenant(tenant, recipientId);
-    pruneSignalingStaffRoutes();
-    const route = signalingStaffRoutes.get(targetKey);
-    if (!route) return res.status(404).json({ success: false, message: "Pengawas tujuan tidak aktif." });
-    const monitorUser = route.user;
+    const targetWs = findActiveStaffSocket(tenant, recipientId);
+    const route = signalingStaffRoutes.get(signalingStaffKeyForTenant(tenant, recipientId));
+    const monitorUser = targetWs?.__authUser || route?.user;
+    if (!monitorUser) return res.status(404).json({ success: false, message: "Pengawas tujuan tidak aktif." });
     const monitorRole = String(monitorUser?.role || '').toLowerCase();
     if (!isStaffAuthRole(monitorRole)) return res.status(403).json({ success: false, message: "Pengawas tujuan tidak valid." });
     if (monitorRole === 'teacher' || monitorRole === 'guru') {
@@ -12855,9 +12980,10 @@ app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
         return res.status(403).json({ success: false, message: "Guru tujuan tidak berwenang memonitor siswa ini." });
       }
     }
-    route.lastSeenAt = Date.now();
-    enqueueExamSignal(targetKey, senderId, signal);
-    return res.json({ success: true });
+    const delivered = deliverSignalToStaff(tenant, recipientId, senderId, signal);
+    return delivered === 'none'
+      ? res.status(404).json({ success: false, message: "Pengawas tujuan tidak aktif." })
+      : res.json({ success: true, transport: delivered });
   }
 
   const targetCandidates = (students || []).filter((x: any) => String(x.id) === recipientId);
@@ -12873,8 +12999,8 @@ app.post("/api/exam/signaling", requireAuth, (req: any, res) => {
   }
 
   rememberSignalingStaffRoute(user, signalingItemTenant(target));
-  enqueueExamSignal(signalingStudentKey(req, user, recipientId, target), senderId, signal);
-  res.json({ success: true });
+  const transport = deliverSignalToStudent(signalingItemTenant(target), recipientId, senderId, signal);
+  res.json({ success: true, transport });
 });
 
 app.get("/api/exam/signaling", requireAuth, (req: any, res) => {
@@ -12952,15 +13078,13 @@ app.post("/api/exam/livekit-token", requireAuth, async (req: any, res) => {
       if (rejectExamAttemptContext(res, context)) return;
     }
 
-    const apiKey = appSettings.livekitApiKey || process.env.LIVEKIT_API_KEY || '';
-    const apiSecret = appSettings.livekitApiSecret || process.env.LIVEKIT_API_SECRET || '';
-    const serverUrl = appSettings.livekitUrl || process.env.LIVEKIT_URL || '';
+    const { apiKey, apiSecret, serverUrl, configured, onlineLocalhost } = resolveLiveKitRuntimeConfig();
     // LIVEKIT_EXPLICIT_CREDENTIALS_V3: never mint tokens with public fallback keys.
     // If LiveKit is not configured, the existing P2P WebRTC path remains the fallback.
     if (!apiKey || !apiSecret || !serverUrl) {
       return res.status(503).json({ success: false, message: "LiveKit belum dikonfigurasi; gunakan fallback P2P WebRTC." });
     }
-    if (isOnlineMode && /localhost|127\.0\.0\.1/i.test(serverUrl)) {
+    if (onlineLocalhost || !configured) {
       return res.status(503).json({ success: false, message: "LiveKit online harus menggunakan endpoint non-localhost." });
     }
     // Keep the legacy logical room name accepted from the frontend, but isolate the
@@ -16694,7 +16818,7 @@ app.post("/api/exams", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bo
 
       for (const item of req.body) {
         if (!item || typeof item !== 'object') continue;
-        if (teacherCanUseExamPayload(req, item)) {
+        if (teacherCanMutateExamPayload(req, item)) {
           allowedIncoming.push(item);
           continue;
         }
@@ -16719,7 +16843,7 @@ app.post("/api/exams", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bo
         : mergeTenantListData(exams, req.body, req);
     }
   } else if (req.body && req.body.id) {
-    if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, req.body)) {
+    if (isTeacherRequest(req) && !teacherCanMutateExamPayload(req, req.body)) {
       return res.status(403).json({ success: false, message: "Guru hanya dapat membuat atau mengubah ujian untuk mata pelajaran/bank soal yang diampu." });
     }
     const tagged = tagNewRecord(req.body, req);
@@ -16727,8 +16851,8 @@ app.post("/api/exams", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bo
     if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID ujian ambigu lintas tenant.' });
     const idx = resolved.index;
     if (idx >= 0) {
-      if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, exams[idx])) {
-        return res.status(403).json({ success: false, message: "Guru tidak dapat mengubah ujian di luar mata pelajaran yang diampu." });
+      if (isTeacherRequest(req) && !teacherCanMutateExamPayload(req, exams[idx])) {
+        return res.status(403).json({ success: false, message: "Guru tidak dapat mengubah event atau ujian di luar mata pelajaran yang diampu." });
       }
       exams[idx] = { ...exams[idx], ...tagged };
     } else {
@@ -16743,8 +16867,8 @@ app.delete("/api/exams/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
   const resolved = resolveTenantItemIndexById(exams, id, req, false);
   if (resolved.ambiguous) return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant." });
   if (resolved.index < 0) return res.status(404).json({ success: false, message: "Ujian tidak ditemukan pada madrasah ini." });
-  if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, resolved.item)) {
-    return res.status(403).json({ success: false, message: "Guru hanya dapat menghapus ujian mata pelajaran/bank soal yang diampu." });
+  if (isTeacherRequest(req) && !teacherCanMutateExamPayload(req, resolved.item)) {
+    return res.status(403).json({ success: false, message: "Guru hanya dapat menghapus ujian non-event pada mata pelajaran/bank soal yang diampu." });
   }
   exams.splice(resolved.index, 1);
   await saveData('exams', exams);
@@ -17725,6 +17849,9 @@ app.get("/api/settings", (req, res) => {
   const safeSettings = authenticatedUser
     ? sanitizeSettingsForClient(sourceSettings)
     : sanitizeSettingsForPublic(sourceSettings);
+  if (safeSettings && typeof safeSettings === 'object') {
+    safeSettings.livekitConfigured = resolveLiveKitRuntimeConfig().configured;
+  }
   res.setHeader('Cache-Control', 'no-store');
   res.json({ success: true, settings: safeSettings, isOfflineMode });
 });
@@ -17735,7 +17862,9 @@ app.put("/api/settings", requireAuth, requireRole(['bos', 'superadmin']), async 
   const safeGlobalSettings = sanitizeSettingsMutation(req.body, false);
   appSettings = { ...appSettings, ...safeGlobalSettings };
   await saveData('settings', appSettings);
-  res.json({ success: true, settings: sanitizeSettingsForClient(globalSettingsBase()) });
+  const responseSettings = sanitizeSettingsForClient(globalSettingsBase()) || {};
+  responseSettings.livekitConfigured = resolveLiveKitRuntimeConfig().configured;
+  res.json({ success: true, settings: responseSettings });
 });
 
 // Tenant-scoped account credential export for disaster-recovery backups.
@@ -19289,6 +19418,7 @@ async function startServer() {
             const previous = clients.get(storageKey);
             if (previous && previous !== ws && previous.readyState === 1) try { previous.close(4000, 'Replaced'); } catch (_) {}
             clients.set(storageKey, ws);
+            flushQueuedSignalsToSocket(storageKey, ws);
           } else if (data.type === "signal") {
             if (!user || !storageKey || !publicId) { ws.close(4001, 'Register first'); return; }
             const recipient = String(data.recipientId || ''), role = String(user.role || '').toLowerCase();
@@ -19302,41 +19432,28 @@ async function startServer() {
               if (!senderStudent) return;
 
               if (recipient === 'admin') {
-                for (const [candidateKey, candidateWs] of clients.entries()) {
-                  if (!candidateKey.startsWith('staff::' + tenant + '::') || candidateWs?.readyState !== 1) continue;
-                  const monitorUser = candidateWs.__authUser;
+                for (const monitorUser of signalingStaffCandidatesForTenant(tenant)) {
                   const monitorRole = String(monitorUser?.role || '').toLowerCase();
                   if (!isStaffAuthRole(monitorRole)) continue;
                   if (monitorRole === 'teacher' || monitorRole === 'guru') {
                     const monitorReq: any = { user: monitorUser, headers: {}, query: {}, body: {} };
                     if (!teacherCanMonitorStudentRealtime(monitorReq, monitorUser, senderStudent)) continue;
                   }
-                  candidateWs.send(JSON.stringify({ type: "signal", senderId: publicId, signal: data.signal }));
+                  deliverSignalToStaff(tenant, String(monitorUser.id), publicId, data.signal);
                 }
                 return;
               }
 
-              let targetWs = clients.get(signalingStaffKeyForTenant(tenant, recipient));
-              if (!targetWs || targetWs.readyState !== 1) {
-                for (const candidateWs of clients.values()) {
-                  const candidateUser = candidateWs?.__authUser;
-                  const candidateRole = String(candidateUser?.role || '').toLowerCase();
-                  if (candidateWs?.readyState === 1 && String(candidateUser?.id || '') === recipient &&
-                      (candidateRole === 'bos' || candidateRole === 'superadmin')) {
-                    targetWs = candidateWs;
-                    break;
-                  }
-                }
-              }
-              if (!targetWs || targetWs.readyState !== 1) return;
-              const monitorUser = targetWs.__authUser;
+              const targetWs = findActiveStaffSocket(tenant, recipient);
+              const targetRoute = signalingStaffRoutes.get(signalingStaffKeyForTenant(tenant, recipient));
+              const monitorUser = targetWs?.__authUser || targetRoute?.user;
               const monitorRole = String(monitorUser?.role || '').toLowerCase();
-              if (!isStaffAuthRole(monitorRole)) return;
+              if (!monitorUser || !isStaffAuthRole(monitorRole)) return;
               if (monitorRole === 'teacher' || monitorRole === 'guru') {
                 const monitorReq: any = { user: monitorUser, headers: {}, query: {}, body: {} };
                 if (!teacherCanMonitorStudentRealtime(monitorReq, monitorUser, senderStudent)) return;
               }
-              targetWs.send(JSON.stringify({ type: "signal", senderId: publicId, signal: data.signal }));
+              deliverSignalToStaff(tenant, recipient, publicId, data.signal);
               return;
             }
 
@@ -19353,10 +19470,8 @@ async function startServer() {
               if (!teacherCanMonitorStudentRealtime(wsReq, user, target)) return;
             }
 
-            const targetWs = clients.get('student::' + targetTenant + '::' + recipient);
-            if (targetWs?.readyState === 1) {
-              targetWs.send(JSON.stringify({ type: "signal", senderId: publicId, signal: data.signal }));
-            }
+            rememberSignalingStaffRoute(user, targetTenant);
+            deliverSignalToStudent(targetTenant, recipient, publicId, data.signal);
           }
         } catch (e) { console.error("Signaling WS message error:", e); }
       });

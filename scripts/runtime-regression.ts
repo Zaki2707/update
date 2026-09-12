@@ -551,18 +551,21 @@ await test('Realtime: teacher SSE events follow academic exam and LKPD scope', (
   assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { studentId: 's-1' }, 'm-1'), false);
 });
 
-await test('Realtime: P2P signaling uses one authenticated route per staff account', () => {
+await test('Realtime: P2P signaling bridges WebSocket and HTTP fallback per account', () => {
   assert.match(serverSource, /SIGNALING_PER_STAFF_ROUTE_V3/);
+  assert.match(serverSource, /SIGNALING_TRANSPORT_BRIDGE_V4/);
   assert.match(serverSource, /function signalingStaffKeyForTenant/);
-  assert.match(serverSource, /function rememberSignalingStaffRoute/);
+  assert.match(serverSource, /function deliverSignalToStudent/);
+  assert.match(serverSource, /function deliverSignalToStaff/);
+  assert.match(serverSource, /function flushQueuedSignalsToSocket/);
 
   const postStart = serverSource.indexOf('app.post("/api/exam/signaling"');
   const getStart = serverSource.indexOf('app.get("/api/exam/signaling"', postStart);
   const livekitStart = serverSource.indexOf('// LiveKit grants are derived', getStart);
   const postRoute = serverSource.slice(postStart, getStart);
   const getRoute = serverSource.slice(getStart, livekitStart);
-  assert.match(postRoute, /rememberSignalingStaffRoute\(user, signalingItemTenant\(target\)\)/);
-  assert.match(postRoute, /signalingStaffKeyForTenant\(tenant, recipientId\)/);
+  assert.match(postRoute, /deliverSignalToStaff\(tenant, recipientId, senderId, signal\)/);
+  assert.match(postRoute, /deliverSignalToStudent\(signalingItemTenant\(target\), recipientId, senderId, signal\)/);
   assert.match(getRoute, /key = rememberSignalingStaffRoute\(user, routeTenant\)/);
 
   const wsStart = serverSource.indexOf('wss.on("connection"');
@@ -570,9 +573,35 @@ await test('Realtime: P2P signaling uses one authenticated route per staff accou
   const wsBlock = serverSource.slice(wsStart, wsEnd > wsStart ? wsEnd : undefined);
   assert.match(wsBlock, /publicId = String\(auth\.id\)/);
   assert.match(wsBlock, /signalingStaffKeyForTenant\(tenant, auth\.id\)/);
-  assert.match(wsBlock, /candidateKey\.startsWith\('staff::' \+ tenant \+ '::'\)/);
-  assert.match(wsBlock, /teacherCanMonitorStudentRealtime\(monitorReq, monitorUser, senderStudent\)/);
+  assert.match(wsBlock, /flushQueuedSignalsToSocket\(storageKey, ws\)/);
+  assert.match(wsBlock, /deliverSignalToStaff\(tenant, recipient, publicId, data\.signal\)/);
+  assert.match(wsBlock, /deliverSignalToStudent\(targetTenant, recipient, publicId, data\.signal\)/);
   assert.doesNotMatch(wsBlock, /storageKey = publicId === 'admin'/);
+
+  const sent: any[] = [];
+  const context: any = vm.createContext({
+    examSignalingMessages: {},
+    wsClients: new Map(),
+    signalingStaffRoutes: new Map(),
+    canonicalRealtimeTenant: (value: any) => String(value || 'default'),
+    signalingStaffKeyForTenant: (tenant: any, id: any) => 'staff::' + String(tenant) + '::' + String(id),
+    JSON,
+  });
+  for (const name of ['enqueueExamSignal', 'sendSignalToSocket', 'flushQueuedSignalsToSocket', 'deliverSignalToStudent']) {
+    vm.runInContext(serverFunction(name), context);
+  }
+  const ws = { readyState: 1, send: (payload: string) => sent.push(JSON.parse(payload)) };
+  context.wsClients.set('student::m-1::s-1', ws);
+  assert.equal(context.deliverSignalToStudent('m-1', 's-1', 't-1', { type: 'offer' }), 'ws');
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], { type: 'signal', senderId: 't-1', signal: { type: 'offer' } });
+
+  context.wsClients.clear();
+  assert.equal(context.deliverSignalToStudent('m-1', 's-1', 't-1', { type: 'candidate' }), 'http');
+  assert.equal(context.examSignalingMessages['student::m-1::s-1']['t-1'].length, 1);
+  context.flushQueuedSignalsToSocket('student::m-1::s-1', ws);
+  assert.equal(sent.length, 2);
+  assert.equal(context.examSignalingMessages['student::m-1::s-1'], undefined);
 });
 
 await test('Livecam: runtime frames are ephemeral, TTL-pruned, and cleared on finalization', () => {
@@ -618,6 +647,60 @@ await test('LiveKit: token minting requires explicit credentials in every mode',
   assert.doesNotMatch(route, /devkey/);
   assert.doesNotMatch(route, /apiSecret \|\| "secret"/);
   assert.doesNotMatch(route, /ws:\/\/localhost:7880/);
+});
+
+await test('LiveKit: browser capability is server-authoritative and falls back to P2P on runtime failure', () => {
+  assert.match(serverSource, /LIVEKIT_RUNTIME_CAPABILITY_V4/);
+  assert.match(serverSource, /function resolveLiveKitRuntimeConfig/);
+  assert.match(serverSource, /safeSettings\.livekitConfigured = resolveLiveKitRuntimeConfig\(\)\.configured/);
+  assert.match(serverSource, /sanitizedSettings\.livekitConfigured = resolveLiveKitRuntimeConfig\(\)\.configured/);
+  assert.match(assessmentSource, /LIVEKIT_CLIENT_CAPABILITY_V4/);
+  assert.match(assessmentSource, /s\.livekitConfigured === true/);
+  assert.match(assessmentSource, /LIVEKIT_TO_P2P_FAILOVER_V4/);
+  assert.match(assessmentSource, /window\._liveKitRuntimeUnavailable = true/);
+  assert.match(assessmentSource, /window\.initSignalingWebSocket\(String\(studentId\)/);
+  assert.doesNotMatch(assessmentSource, /const key = s\.livekitApiKey \|\| ''/);
+});
+
+await test('CBT monitoring: legacy livecam frames use the same bounded raster validation', () => {
+  const start = serverSource.indexOf('app.post("/api/exam-monitoring-state"');
+  const end = serverSource.indexOf('// Reset Individual Student Exam Progress API', start);
+  const route = serverSource.slice(start, end > start ? end : undefined);
+  assert.match(route, /LEGACY_LIVECAM_FRAME_VALIDATION_V3/);
+  assert.match(route, /Payload frame livecam monitoring tidak valid/);
+  assert.match(route, /Buffer\.byteLength\(frameText, 'utf8'\) > 2 \* 1024 \* 1024/);
+  assert.match(route, /parseSafeRasterDataUrl\(frameText\)/);
+});
+
+await test('Assessment: persisted event and violation text is escaped before innerHTML', () => {
+  assert.match(assessmentSource, /assessmentEscapeHtml\(ev\.title\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(ev\.description \|\| 'Kelompok jadwal ujian'\)/);
+  assert.match(assessmentSource, /assessmentInlineArg\(ev\.id\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(v\.studentName \|\| 'Peserta Ujian'\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(v\.className\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(v\.reason \|\| 'Keluar Tab \/ Aplikasi Ujian'\)/);
+  assert.ok((assessmentSource.match(/assessmentSafeImageSrc\(snap\)/g) || []).length >= 3);
+  assert.doesNotMatch(assessmentSource, /<img src="\$\{snap\}"/);
+  assert.match(serverSource, /VIOLATION_PLAIN_TEXT_V3/);
+});
+
+await test('Assessment: teachers cannot mutate EVENT containers but can still read them', () => {
+  assert.match(serverSource, /TEACHER_EVENT_MUTATION_SCOPE_V3/);
+  const context: any = vm.createContext({
+    isTeacherRequest: () => true,
+    teacherCanUseExamPayload: (_req: any, payload: any) => payload?.subject === 'allowed',
+  });
+  vm.runInContext(serverFunction('teacherCanMutateExamPayload'), context);
+  assert.equal(context.teacherCanMutateExamPayload({}, { recordType: 'EVENT' }), false);
+  assert.equal(context.teacherCanMutateExamPayload({}, { recordType: 'EXAM', subject: 'allowed' }), true);
+  assert.equal(context.teacherCanMutateExamPayload({}, { recordType: 'EXAM', subject: 'blocked' }), false);
+
+  const start = serverSource.indexOf('app.post("/api/exams"');
+  const end = serverSource.indexOf('// Rooms API', start);
+  const routes = serverSource.slice(start, end > start ? end : undefined);
+  assert.match(routes, /teacherCanMutateExamPayload\(req, item\)/);
+  assert.match(routes, /teacherCanMutateExamPayload\(req, req\.body\)/);
+  assert.match(routes, /teacherCanMutateExamPayload\(req, resolved\.item\)/);
 });
 
 await test('Auth: legacy slug-only account records remain valid for canonical tenant tokens', () => {
