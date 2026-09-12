@@ -21,6 +21,7 @@ import './adminModules.js';
 import './cbtModules.js';
 import './pedagogyNonAIEngine.js';
 import './modulAjarModule.js';
+import './modulAjar2Module.js';
 import './settingsAndMisc.js';
 import './themePackageModule.js';
 import './themeEngineV2.js';
