@@ -2113,7 +2113,10 @@ function broadcastExamEvent(event: any) {
       const role = String(user.role || '').toLowerCase();
       const isBoss = role === 'bos' || role === 'superadmin';
       const isStudent = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
-      if (!isBoss && eventTenant && String(user.madrasahId || 'default') !== eventTenant) return true;
+      // REALTIME_TENANT_CANONICAL_SCOPE_V2: legacy slug-only sessions must be
+      // compared using the same canonical tenant identity as the event.
+      const clientTenant = canonicalRealtimeTenant(user.madrasahId || user.madrasahSlug || 'default');
+      if (!isBoss && eventTenant && clientTenant !== eventTenant) return true;
       if (!isBoss && !eventTenant && !isStudent) return true;
       if (isStudent && String(event?.studentId || '') !== String(user.id || '')) return true;
       res.write(`data: ${payload}\n\n`);
@@ -19114,6 +19117,7 @@ async function startServer() {
               ws.close(4003, 'Client identity mismatch'); return;
             }
             user = auth; publicId = requested || String(auth.id);
+            ws.__authUser = auth;
             const tenant = signalingUserTenant(auth);
             storageKey = publicId === 'admin'
               ? ('admin::' + tenant)
@@ -19144,6 +19148,20 @@ async function startServer() {
               targetKey = 'student::' + targetTenant + '::' + recipient;
             }
             const targetWs = clients.get(targetKey);
+            if (student && targetWs?.readyState === 1) {
+              // WS_STUDENT_TO_TEACHER_SCOPE_V2: the shared logical "admin" target
+              // must not bypass the same teacher/student authorization used by HTTP signaling.
+              const monitorUser = targetWs.__authUser;
+              if (!monitorUser) return;
+              const monitorRole = String(monitorUser.role || '').toLowerCase();
+              if (monitorRole === 'teacher' || monitorRole === 'guru') {
+                const senderStudent = (students || []).find((x: any) =>
+                  String(x.id) === String(publicId) && signalingItemTenant(x) === tenant
+                );
+                const monitorReq: any = { user: monitorUser, headers: {}, query: {}, body: {} };
+                if (!senderStudent || !teacherCanMonitorStudentRealtime(monitorReq, monitorUser, senderStudent)) return;
+              }
+            }
             if (targetWs?.readyState === 1) targetWs.send(JSON.stringify({ type: "signal", senderId: publicId, signal: data.signal }));
           }
         } catch (e) { console.error("Signaling WS message error:", e); }
