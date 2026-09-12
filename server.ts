@@ -3328,6 +3328,9 @@ app.get("/api/photos/:id", async (req, res) => {
 
 // In-Memory Data Store initialized directly from local_store.json baseline
 const bootStore = isOnlineMode ? {} : readLocalStore();
+// Runtime camera frames must never survive process restart, even if an older
+// installation once persisted them before RUNTIME_LIVECAM_EPHEMERAL_V3.
+delete bootStore['studentLivecamFrames'];
 photoCloudinaryMap = bootStore['photoCloudinaryMap'] || {};
 
 let schoolLocationSettings = bootStore['schoolLocationSettings'] || {
@@ -19276,9 +19279,13 @@ async function startServer() {
             publicId = String(auth.id);
             ws.__authUser = auth;
             const tenant = signalingUserTenant(auth);
-            storageKey = student
+            const nextStorageKey = student
               ? ('student::' + tenant + '::' + publicId)
               : signalingStaffKeyForTenant(tenant, auth.id);
+            if (storageKey && storageKey !== nextStorageKey && clients.get(storageKey) === ws) {
+              clients.delete(storageKey);
+            }
+            storageKey = nextStorageKey;
             const previous = clients.get(storageKey);
             if (previous && previous !== ws && previous.readyState === 1) try { previous.close(4000, 'Replaced'); } catch (_) {}
             clients.set(storageKey, ws);
