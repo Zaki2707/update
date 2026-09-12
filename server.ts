@@ -5357,12 +5357,8 @@ app.post("/api/games/:id/submit", async (req, res) => {
     } else {
       const normTarget = normalizeGameText(game.answerKey);
       if (normTarget) {
+        // Exact equality after normalization: never award XP for a partial substring answer.
         isCorrect = (normSubmitted === normTarget);
-        if (!isCorrect && normSubmitted.length > 2 && normTarget.length > 2) {
-          if (normSubmitted.includes(normTarget) || normTarget.includes(normSubmitted)) {
-            isCorrect = true;
-          }
-        }
       } else {
         isCorrect = false;
       }

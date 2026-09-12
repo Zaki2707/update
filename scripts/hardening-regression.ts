@@ -245,6 +245,15 @@ function testServerGuards() {
   assert.match(server, /TEACHER_SELF_UPDATE_SCOPE/);
   assert.match(server, /SUBJECT_RENAME_CASCADE/);
   assert.match(fs.readFileSync('src/cbtModules.js', 'utf8'), /QUESTION_BANK_LOAD_GUARD/);
+  const cbtSource = fs.readFileSync('src/cbtModules.js', 'utf8');
+  assert.match(cbtSource, /qbEscapeHtml\(q\.question \|\| ''\)/);
+  assert.match(cbtSource, /qbSafeImageSrc\(q\.imageUrl \|\| q\.image\)/);
+  assert.match(cbtSource, /qbEscapeHtml\(previewText\)/);
+  const gameSubmitStart = server.indexOf('app.post("/api/games/:id/submit"');
+  const gameSubmitEnd = server.indexOf('\napp.', gameSubmitStart + 20);
+  const gameSubmitRoute = server.slice(gameSubmitStart, gameSubmitEnd > gameSubmitStart ? gameSubmitEnd : undefined);
+  assert.match(gameSubmitRoute, /isCorrect = \(normSubmitted === normTarget\);/);
+  assert.doesNotMatch(gameSubmitRoute, /normSubmitted\.includes\(normTarget\)|normTarget\.includes\(normSubmitted\)/);
   assert.match(fs.readFileSync('src/modulAjarModule.js', 'utf8'), /IMPORT_GROUP_SERVER_AUTHORITATIVE/);
   assert.match(server, /=== examTenant/);
   assert.match(server, /=== lkpdTenant/);
