@@ -7,6 +7,24 @@ const appState = window.appState || {};
 const safeSetLocalStorage = window.safeSetLocalStorage || function(k, v) { try { localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)); } catch(e){} };
 const showToast = window.showToast || function(m, t) { console.log(m); };
 
+function gameEscapeHtml(value) {
+    const raw = String(value === undefined || value === null ? '' : value);
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(raw);
+    return raw.replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    }[ch]));
+}
+function gameEscapeAttr(value) {
+    const raw = String(value === undefined || value === null ? '' : value);
+    if (typeof window.escapeHtmlAttr === 'function') return window.escapeHtmlAttr(raw);
+    return gameEscapeHtml(raw);
+}
+function gameSafeImageSrc(value) {
+    const raw = String(value || '');
+    const normalized = typeof window.getPhotoHtmlSrc === 'function' ? window.getPhotoHtmlSrc(raw) : raw;
+    return gameEscapeAttr(normalized);
+}
+
 // --- CONFIRMATION MODAL POPUP HELPER ---
 export function showGameConfirmModal({ title, message, confirmText = 'Ya, Hapus', cancelText = 'Batal', isDanger = true, onConfirm }) {
     const modalHtml = `
@@ -16,15 +34,15 @@ export function showGameConfirmModal({ title, message, confirmText = 'Ya, Hapus'
                     <i class="fa-solid ${isDanger ? 'fa-trash-can' : 'fa-triangle-exclamation'}"></i>
                 </div>
                 <div>
-                    <h3 class="text-lg font-black text-slate-900">${title || 'Konfirmasi Tindakan'}</h3>
-                    <p class="text-xs text-slate-500 mt-1.5 leading-relaxed">${message || 'Apakah Anda yakin ingin melanjutkan tindakan ini? Data yang dihapus tidak dapat dipulihkan.'}</p>
+                    <h3 class="text-lg font-black text-slate-900">${gameEscapeHtml(title || 'Konfirmasi Tindakan')}</h3>
+                    <p class="text-xs text-slate-500 mt-1.5 leading-relaxed">${gameEscapeHtml(message || 'Apakah Anda yakin ingin melanjutkan tindakan ini? Data yang dihapus tidak dapat dipulihkan.')}</p>
                 </div>
                 <div class="grid grid-cols-2 gap-2.5 pt-2">
                     <button type="button" id="game-confirm-cancel-btn" class="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs rounded-xl transition cursor-pointer">
-                        ${cancelText}
+                        ${gameEscapeHtml(cancelText)}
                     </button>
                     <button type="button" id="game-confirm-ok-btn" class="w-full py-2.5 ${isDanger ? 'bg-rose-600 hover:bg-rose-700 text-white' : 'bg-amber-500 hover:bg-amber-600 text-slate-950'} font-extrabold text-xs rounded-xl shadow-md transition cursor-pointer">
-                        ${confirmText}
+                        ${gameEscapeHtml(confirmText)}
                     </button>
                 </div>
             </div>
@@ -656,8 +674,8 @@ export function renderGameAdminModule(container) {
                                         ${g.difficulty || 'Mudah'}
                                     </span>
                                 </div>
-                                <h3 class="font-extrabold text-base text-slate-800 group-hover:text-emerald-700 transition line-clamp-1">${g.title}</h3>
-                                <p class="text-xs text-slate-500 mt-1 line-clamp-2">${g.prompt || 'Selesaikan tantangan untuk mendapatkan XP.'}</p>
+                                <h3 class="font-extrabold text-base text-slate-800 group-hover:text-emerald-700 transition line-clamp-1">${gameEscapeHtml(g.title)}</h3>
+                                <p class="text-xs text-slate-500 mt-1 line-clamp-2">${gameEscapeHtml(g.prompt || 'Selesaikan tantangan untuk mendapatkan XP.')}</p>
                             </div>
 
                             <div class="space-y-3 pt-3 border-t border-slate-100 text-xs">
@@ -1989,7 +2007,7 @@ window.renderLocGameFields = function() {
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                     <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Judul Game <span class="text-rose-500">*</span></label>
-                    <input type="text" id="game-title" value="${game.title || ''}" required placeholder="Contoh: Game Tebak Hardware" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:bg-white text-xs">
+                    <input type="text" id="game-title" value="${gameEscapeAttr(game.title || '')}" required placeholder="Contoh: Game Tebak Hardware" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:bg-white text-xs">
                 </div>
                 <div>
                     <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Jenis Game <span class="text-rose-500">*</span></label>
@@ -2020,7 +2038,7 @@ window.renderLocGameFields = function() {
 
             <div>
                 <label class="block font-bold text-slate-800 mb-1 uppercase text-[10px]">Instruksi / Soal Utama Game <span class="text-rose-500">*</span></label>
-                <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:bg-white text-xs">${game.prompt || ''}</textarea>
+                <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:bg-white text-xs">${gameEscapeHtml(game.prompt || '')}</textarea>
             </div>
 
             <!-- Dynamic Question Content Area -->
@@ -2516,7 +2534,7 @@ window.openAddFloorModal = function(modeId, floorIndex = null) {
                         <label class="block font-bold text-white mb-1">Pilih Game Edukasi Terhubung <span class="text-rose-500">*</span></label>
                         <select id="flr-game" class="w-full px-3 py-2.5 bg-slate-800 border border-slate-700 rounded-xl focus:bg-slate-950 font-bold text-white">
                             ${games.map(g => `
-                                <option value="${g.id}" ${flr.gameId === g.id ? 'selected' : ''}>[${g.gameType}] ${g.title}</option>
+                                <option value="${g.id}" ${flr.gameId === g.id ? 'selected' : ''}>[${g.gameType}] ${gameEscapeHtml(g.title)}</option>
                             `).join('')}
                         </select>
                     </div>
@@ -2823,7 +2841,7 @@ window.openGameMetadataModal = function(existingGame = null) {
 
                     <div class="space-y-1">
                         <label class="block font-bold text-slate-700 uppercase">Judul Permainan <span class="text-rose-500">*</span></label>
-                        <input type="text" id="edit-game-title" required value="${g.title || ''}" placeholder="Contoh: Teka-Teki Silang Komputer Dasar" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                        <input type="text" id="edit-game-title" required value="${gameEscapeAttr(g.title || '')}" placeholder="Contoh: Teka-Teki Silang Komputer Dasar" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -3043,7 +3061,7 @@ window.openGameContentEditorModal = function(gameId) {
                                 </span>
                                 <span class="text-xs text-slate-400 font-semibold">${game.subjectId || 'Umum'} • ${game.classId || 'Semua Kelas'}</span>
                             </div>
-                            <h3 class="font-extrabold text-base text-white mt-0.5">${game.title}</h3>
+                            <h3 class="font-extrabold text-base text-white mt-0.5">${gameEscapeHtml(game.title)}</h3>
                         </div>
                     </div>
                     <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="text-slate-400 hover:text-white p-2 text-lg">
@@ -3066,7 +3084,7 @@ window.openGameContentEditorModal = function(gameId) {
                     <!-- Common Prompt Field -->
                     <div class="space-y-1">
                         <label class="block font-bold text-slate-700 uppercase">Instruksi / Soal Utama Game <span class="text-rose-500">*</span></label>
-                        <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">${game.prompt || ''}</textarea>
+                        <textarea id="edit-content-prompt" rows="2" placeholder="Masukkan instruksi atau narasi tantangan bagi siswa..." class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">${gameEscapeHtml(game.prompt || '')}</textarea>
                     </div>
 
                     <!-- Dynamic Editor Content Container -->
@@ -3301,7 +3319,7 @@ function renderSpecializedGameEditor(game) {
 
                     <div class="space-y-1">
                         <label class="block font-bold text-slate-700">Penjelasan / Umbal Balik (Feedback)</label>
-                        <input type="text" id="edit-content-explanation" value="${game.explanation || ''}" placeholder="Penjelasan edukatif setelah siswa menjawab..." class="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl font-medium">
+                        <input type="text" id="edit-content-explanation" value="${gameEscapeAttr(game.explanation || '')}" placeholder="Penjelasan edukatif setelah siswa menjawab..." class="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl font-medium">
                     </div>
                 </div>
             </div>
@@ -3336,7 +3354,7 @@ function renderSpecializedGameEditor(game) {
 
                     <div class="space-y-1 sm:col-span-2">
                         <label class="block font-bold text-slate-700">Kunci Jawaban (Satu Kata/Frasa)</label>
-                        <input type="text" id="edit-content-answer" value="${game.answerKey || ''}" placeholder="Contoh: MONITOR" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-black uppercase text-blue-800 tracking-widest text-sm">
+                        <input type="text" id="edit-content-answer" value="${gameEscapeAttr(game.answerKey || '')}" placeholder="Contoh: MONITOR" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-black uppercase text-blue-800 tracking-widest text-sm">
                     </div>
 
                     <!-- 4 Progressive Hints Input -->
@@ -3408,7 +3426,7 @@ function renderSpecializedGameEditor(game) {
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div class="space-y-1">
                     <label class="block font-bold text-slate-700">Kunci Jawaban Utuh <span class="text-rose-500">*</span></label>
-                    <input type="text" id="edit-content-answer" value="${game.answerKey || ''}" placeholder="Contoh: KEYBOARD" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-black uppercase text-emerald-800 tracking-widest text-sm">
+                    <input type="text" id="edit-content-answer" value="${gameEscapeAttr(game.answerKey || '')}" placeholder="Contoh: KEYBOARD" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-black uppercase text-emerald-800 tracking-widest text-sm">
                 </div>
 
                 <div class="space-y-2 bg-white p-3 rounded-2xl border border-emerald-200">
@@ -3831,7 +3849,7 @@ function renderStudentKatalogTab(games) {
                                 ${isDone ? '<span class="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-black uppercase">🏆 Quest Selesai</span>' : '<span class="px-2.5 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold uppercase">Belum Selesai</span>'}
                             </div>
 
-                            <h3 class="font-extrabold text-lg text-slate-850 group-hover:text-indigo-600 transition leading-snug">${g.title}</h3>
+                            <h3 class="font-extrabold text-lg text-slate-850 group-hover:text-indigo-600 transition leading-snug">${gameEscapeHtml(g.title)}</h3>
                             <p class="text-xs text-slate-500 line-clamp-2">${g.prompt || 'Selesaikan permainan ini untuk menguji pengetahuanmu.'}</p>
                         </div>
 
@@ -4209,7 +4227,7 @@ window.launchInteractiveGameModal = function(gameId, isPreview = false, modeOpti
                             <i class="fa-solid fa-gamepad"></i>
                         </div>
                         <div>
-                            <h3 class="font-extrabold text-sm sm:text-base leading-snug line-clamp-1">${game.title}</h3>
+                            <h3 class="font-extrabold text-sm sm:text-base leading-snug line-clamp-1">${gameEscapeHtml(game.title)}</h3>
                             <span class="text-[10px] text-amber-400 font-bold uppercase tracking-wider mr-2">+${game.rewardXp || 100} XP</span>
                         </div>
                     </div>
@@ -4273,9 +4291,8 @@ function renderGameEngineUI(game) {
         return;
     }
     if (gameType === 'tebak_kata') {
-        const rawKey = String(game.answerKey || 'KEYBOARD').trim().toUpperCase();
-        const cleanKeyNoSpace = rawKey.replace(/[^A-Z0-9]/g, '');
-        const answerLength = cleanKeyNoSpace.length || 8;
+        const previewKeyLength = String(game.answerKey || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').length;
+        const answerLength = Math.max(1, parseInt(game.answerLength, 10) || previewKeyLength || 8);
 
         container.innerHTML = `
             <div class="space-y-4 max-w-lg mx-auto w-full animate-fade-in">
@@ -4284,8 +4301,8 @@ function renderGameEngineUI(game) {
                     <span class="text-[10px] font-extrabold text-emerald-800 uppercase tracking-wider bg-emerald-200/70 px-3 py-1 rounded-full inline-block">
                         <i class="fa-solid fa-lightbulb mr-1"></i> Soal Tantangan
                     </span>
-                    <p class="text-sm font-extrabold text-slate-800 leading-relaxed">${game.prompt || 'Selesaikan kata yang tepat.'}</p>
-                    ${game.imageUrl ? `<img src="${game.imageUrl}" class="w-52 h-36 object-cover rounded-2xl border-2 border-emerald-300 mx-auto mt-3 shadow-sm">` : ''}
+                    <p class="text-sm font-extrabold text-slate-800 leading-relaxed">${gameEscapeHtml(game.prompt || 'Selesaikan kata yang tepat.')}</p>
+                    ${game.imageUrl ? `<img src="${gameSafeImageSrc(game.imageUrl)}" class="w-52 h-36 object-cover rounded-2xl border-2 border-emerald-300 mx-auto mt-3 shadow-sm">` : ''}
                     
                     ${game.hints && game.hints.length > 0 ? `
                         <div class="pt-2">
@@ -4293,7 +4310,7 @@ function renderGameEngineUI(game) {
                                 <i class="fa-solid fa-key text-amber-500"></i> Lihat Clue / Petunjuk
                             </button>
                             <div id="hint-box-display" class="hidden mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 font-semibold text-center">
-                                ${game.hints.join(' • ')}
+                                ${gameEscapeHtml(game.hints.join(' • '))}
                             </div>
                         </div>
                     ` : ''}
@@ -4350,9 +4367,12 @@ function renderGameEngineUI(game) {
     }
     // ENGINE 2: SUSUN KATA (ANAGRAM)
     else if (gameType === 'susun_kata') {
-        const rawKey = String(game.answerKey || 'MANDIRI').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-        const letters = rawKey.split('');
-        const scrambled = [...letters].sort(() => 0.5 - Math.random());
+        const serverScramble = Array.isArray(game.scrambledLetters)
+            ? game.scrambledLetters.map(ch => String(ch || '').toUpperCase().replace(/[^A-Z0-9]/g, '')).filter(Boolean)
+            : [];
+        const previewKey = String(game.answerKey || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const letters = serverScramble.length ? serverScramble : previewKey.split('');
+        const scrambled = serverScramble.length ? [...serverScramble] : [...letters].sort(() => 0.5 - Math.random());
 
         activeGameSession.scrambledPool = scrambled;
         activeGameSession.selectedTiles = [];
@@ -4363,7 +4383,7 @@ function renderGameEngineUI(game) {
                     <span class="text-[10px] font-extrabold text-violet-800 uppercase tracking-wider bg-violet-200/60 px-3 py-1 rounded-full inline-block">
                         🔀 Susun Huruf
                     </span>
-                    <p class="text-sm font-extrabold text-slate-800">${game.prompt || 'Susun huruf-huruf di bawah ini menjadi kata yang benar!'}</p>
+                    <p class="text-sm font-extrabold text-slate-800">${gameEscapeHtml(game.prompt || 'Susun huruf-huruf di bawah ini menjadi kata yang benar!')}</p>
                 </div>
 
                 <!-- Answer Slots -->
@@ -4399,7 +4419,7 @@ function renderGameEngineUI(game) {
                     <span class="text-xs font-extrabold text-sky-800 uppercase tracking-wider bg-sky-100 px-3 py-1 rounded-full">
                         🎯 Pernyataan Evaluasi
                     </span>
-                    <p class="text-base font-extrabold text-slate-800 leading-relaxed">${game.prompt}</p>
+                    <p class="text-base font-extrabold text-slate-800 leading-relaxed">${gameEscapeHtml(game.prompt)}</p>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
@@ -4448,8 +4468,8 @@ function renderGameEngineUI(game) {
                     <span class="text-xs font-extrabold text-emerald-800 uppercase tracking-wider bg-emerald-200/60 px-3 py-1 rounded-full">
                         🧩 Soal Permainan
                     </span>
-                    <p class="text-sm font-extrabold text-slate-800">${game.prompt || 'Selesaikan permainan ini!'}</p>
-                    ${game.imageUrl ? `<img src="${game.imageUrl}" class="w-48 h-32 object-cover rounded-xl border border-slate-200 mx-auto mt-2">` : ''}
+                    <p class="text-sm font-extrabold text-slate-800">${gameEscapeHtml(game.prompt || 'Selesaikan permainan ini!')}</p>
+                    ${game.imageUrl ? `<img src="${gameSafeImageSrc(game.imageUrl)}" class="w-48 h-32 object-cover rounded-xl border border-slate-200 mx-auto mt-2">` : ''}
                 </div>
 
                 <div class="space-y-3">
@@ -4469,8 +4489,8 @@ function renderGameEngineUI(game) {
 window.appendLetterBoxInput = function(letter) {
     if (!activeGameSession) return;
 
-    const rawKey = String(activeGameSession.game.answerKey || 'KEYBOARD').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const answerLength = rawKey.length || 8;
+    const previewKeyLength = String(activeGameSession.game.answerKey || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').length;
+    const answerLength = Math.max(1, parseInt(activeGameSession.game.answerLength, 10) || previewKeyLength || 8);
 
     if (activeGameSession.userInputs.length < answerLength) {
         activeGameSession.userInputs.push(letter);
@@ -4502,8 +4522,8 @@ window.syncDirectInputToBoxes = function(val) {
 function updateLetterBoxesVisual() {
     if (!activeGameSession) return;
 
-    const rawKey = String(activeGameSession.game.answerKey || 'KEYBOARD').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const answerLength = rawKey.length || 8;
+    const previewKeyLength = String(activeGameSession.game.answerKey || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').length;
+    const answerLength = Math.max(1, parseInt(activeGameSession.game.answerLength, 10) || previewKeyLength || 8);
 
     for (let i = 0; i < answerLength; i++) {
         const box = document.getElementById(`letter-box-${i}`);
@@ -4761,7 +4781,9 @@ window.submitGameSessionAnswer = async function(overrideAns = null, overridePass
                         🎉
                     </div>
                     <h2 class="text-2xl font-black text-emerald-800">Jawaban Benar! Hebat!</h2>
-                    <p class="text-xs font-bold text-slate-600">Kamu mendapatkan <span class="text-amber-600 font-extrabold">+${data.earnedXp || 100} XP</span></p>
+                    ${data.rewardVerified === false
+                        ? '<p class="text-xs font-bold text-slate-500">Tantangan selesai. Mode interaktif ini tidak memberi XP tanpa verifikasi server.</p>'
+                        : `<p class="text-xs font-bold text-slate-600">Kamu mendapatkan <span class="text-amber-600 font-extrabold">+${Number(data.earnedXp || 0)} XP</span></p>`}
 
                     <button type="button" onclick="closeActiveGameSession(); if(window.renderGameStudentModule) renderGameStudentModule(document.getElementById('view-container'));" class="px-8 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-2xl shadow-lg transition cursor-pointer">
                         Lanjutkan Belajar
@@ -4769,17 +4791,15 @@ window.submitGameSessionAnswer = async function(overrideAns = null, overridePass
                 </div>
             `;
         } else {
-            const answerReveal = game.correctAnswer || game.answerKey || '-';
-
             container.innerHTML = `
                 <div class="space-y-5 animate-fade-in text-center py-4">
                     <div class="w-20 h-20 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center text-4xl mx-auto border-4 border-rose-500">
                         ❌
                     </div>
                     <h2 class="text-2xl font-black text-rose-800">Jawaban Belum Tepat</h2>
-                    <p class="text-xs text-slate-500">Jawabanmu: <span class="font-bold text-slate-800">${submittedAnswer || '-'}</span></p>
-                    <p class="text-xs font-bold text-emerald-700 bg-emerald-50 px-4 py-2 rounded-xl inline-block border border-emerald-200">
-                        Kunci Jawaban: <span class="font-black">${answerReveal}</span>
+                    <p class="text-xs text-slate-500">Jawabanmu: <span class="font-bold text-slate-800">${gameEscapeHtml(submittedAnswer || '-')}</span></p>
+                    <p class="text-xs font-bold text-slate-600 bg-slate-50 px-4 py-2 rounded-xl inline-block border border-slate-200">
+                        Kunci jawaban diverifikasi aman di server.
                     </p>
 
                     <div class="pt-2">
@@ -4924,7 +4944,7 @@ function renderCrosswordSessionLayout() {
                             </span>
                             <span class="text-amber-400 font-extrabold">${Object.keys(completedClues).length} / ${clues.length} Kolom Selesai</span>
                         </div>
-                        <h4 class="font-bold text-sm text-slate-100 mt-0.5">${activeGameSession.game.prompt || 'Isi kolom mendatar dan menurun berikut!'}</h4>
+                        <h4 class="font-bold text-sm text-slate-100 mt-0.5">${gameEscapeHtml(activeGameSession.game.prompt || 'Isi kolom mendatar dan menurun berikut!')}</h4>
                     </div>
                 </div>
 
@@ -4998,7 +5018,7 @@ function renderCrosswordSessionLayout() {
                                 </span>
                                 <span class="font-bold text-slate-400 text-[11px]">+${activeClue.points || 20} XP &middot; ${activeClue.answer.length} Kolom Huruf</span>
                             </div>
-                            <p class="text-xs font-bold text-slate-200">${activeClue.clue}</p>
+                            <p class="text-xs font-bold text-slate-200">${gameEscapeHtml(activeClue.clue)}</p>
                             
                             <div class="flex items-center gap-2 pt-1">
                                 <input type="text"
@@ -5087,7 +5107,7 @@ function renderClueCard(c, activeClueId, completedClues) {
                     ${isCompleted ? '✓ Selesai (+ ' + c.points + ' XP)' : '+' + c.points + ' XP'}
                 </span>
             </div>
-            <p class="text-xs font-semibold mt-1 leading-snug ${isActive ? 'text-indigo-100' : 'text-slate-700'}">${c.clue}</p>
+            <p class="text-xs font-semibold mt-1 leading-snug ${isActive ? 'text-indigo-100' : 'text-slate-700'}">${gameEscapeHtml(c.clue)}</p>
         </div>
     `;
 }
@@ -5323,7 +5343,6 @@ window.renderTebakGambarEngineUI = function(game) {
         revealedCount: 1, // Opens 1/4 first
         hints,
         baseXp: Number(game.rewardXp) || 100,
-        rawKey: String(game.answerKey || game.correctAnswer || '').trim().toUpperCase(),
         typedLetters: []
     };
 
@@ -5358,7 +5377,7 @@ window.renderTebakGambarLayout = function() {
                     <span class="text-[10px] uppercase tracking-wider font-extrabold bg-white/20 px-2.5 py-0.5 rounded-full inline-block mb-1">
                         🖼️ Tebak Gambar Progresif
                     </span>
-                    <h3 class="text-sm font-black">${game.title || 'Tebak Gambar'}</h3>
+                    <h3 class="text-sm font-black">${gameEscapeHtml(game.title || 'Tebak Gambar')}</h3>
                 </div>
                 <div class="text-right">
                     <span class="text-[10px] text-emerald-100 font-bold block">Potensi Nilai/XP</span>
@@ -5371,7 +5390,7 @@ window.renderTebakGambarLayout = function() {
             <!-- Image with 4 Quadrant Cover Overlays -->
             <div class="relative w-full aspect-square max-w-[300px] mx-auto rounded-3xl overflow-hidden border-4 border-slate-800 shadow-xl bg-slate-900">
                 ${game.imageUrl ? `
-                    <img src="${game.imageUrl}" class="w-full h-full object-cover">
+                    <img src="${gameSafeImageSrc(game.imageUrl)}" class="w-full h-full object-cover">
                 ` : `
                     <div class="w-full h-full flex items-center justify-center text-slate-500 font-bold text-xs p-4 text-center">
                         (Gambar tidak tersedia)
@@ -5431,7 +5450,7 @@ window.renderTebakGambarLayout = function() {
                                     </span>
                                 </div>
                                 <p class="mt-1 text-[11px] ${isUnlocked ? 'font-semibold text-slate-800' : 'text-slate-400'}">
-                                    ${isUnlocked ? (hint || `Petunjuk bagian ${idx + 1}`) : `Buka bagian gambar ke-${idx + 1} untuk melihat clue ini.`}
+                                    ${gameEscapeHtml(isUnlocked ? (hint || `Petunjuk bagian ${idx + 1}`) : `Buka bagian gambar ke-${idx + 1} untuk melihat clue ini.`)}
                                 </p>
                             </div>
                         `;
@@ -5678,7 +5697,7 @@ window.renderWordSearchLayout = function() {
                 <div class="mt-2 space-y-0.5">
                     <span class="text-[10px] font-bold text-purple-200 block uppercase tracking-wide">Petunjuk / Clue Utama:</span>
                     <h3 class="text-base font-black text-amber-300 flex items-center gap-2">
-                        <i class="fa-solid fa-lightbulb text-amber-400"></i> ${clueText}
+                        <i class="fa-solid fa-lightbulb text-amber-400"></i> ${gameEscapeHtml(clueText)}
                     </h3>
                 </div>
             </div>
@@ -5929,8 +5948,8 @@ window.renderMemoryMatchLayout = function() {
                     <span class="text-[10px] uppercase font-black bg-white/20 px-2.5 py-0.5 rounded-full tracking-wider inline-block mb-1">
                         🧠 Memory Match (Kartu Memori)
                     </span>
-                    <h3 class="text-sm font-black text-amber-200">${game.title || 'Cocokkan Kartu Memori'}</h3>
-                    <p class="text-xs text-pink-100 font-medium mt-0.5">${game.prompt || 'Balikkan 2 kartu untuk menemukan pasangan istilah dan definisi!'}</p>
+                    <h3 class="text-sm font-black text-amber-200">${gameEscapeHtml(game.title || 'Cocokkan Kartu Memori')}</h3>
+                    <p class="text-xs text-pink-100 font-medium mt-0.5">${gameEscapeHtml(game.prompt || 'Balikkan 2 kartu untuk menemukan pasangan istilah dan definisi!')}</p>
                 </div>
                 <div class="text-right space-y-1">
                     <span class="text-[10px] text-pink-200 font-bold block uppercase">Pasangan</span>
@@ -6100,9 +6119,9 @@ window.renderImagePuzzleLayout = function() {
                             Langkah: ${moves}x
                         </span>
                     </div>
-                    <h3 class="text-sm font-black text-white">${game.title || 'Susun Gambar Utuh'}</h3>
+                    <h3 class="text-sm font-black text-white">${gameEscapeHtml(game.title || 'Susun Gambar Utuh')}</h3>
                     <p class="text-[11px] text-slate-300 font-medium leading-tight">
-                        ${game.prompt || 'Klik 1 bagian gambar lalu klik bagian lain untuk bertukar posisi!'}
+                        ${gameEscapeHtml(game.prompt || 'Klik 1 bagian gambar lalu klik bagian lain untuk bertukar posisi!')}
                     </p>
                 </div>
 
@@ -6806,7 +6825,7 @@ window.renderGameMonitoringDashboard = async function() {
                     <i class="fa-solid fa-gamepad text-emerald-400 text-xs"></i>
                     <select onchange="appState.gameMonitoringGameId = this.value; renderGameMonitoringDashboard();" class="bg-transparent text-xs font-bold text-slate-200 focus:outline-none cursor-pointer">
                         <option value="all" class="bg-slate-900 text-white">🎮 Semua Game</option>
-                        ${games.map(g => `<option value="${g.id}" ${String(appState.gameMonitoringGameId) === String(g.id) ? 'selected' : ''} class="bg-slate-900 text-white">${g.title}</option>`).join('')}
+                        ${games.map(g => `<option value="${g.id}" ${String(appState.gameMonitoringGameId) === String(g.id) ? 'selected' : ''} class="bg-slate-900 text-white">${gameEscapeHtml(g.title)}</option>`).join('')}
                     </select>
                 </div>
 
