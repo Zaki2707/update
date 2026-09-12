@@ -3369,7 +3369,8 @@ async function renderStudentCBTList(container, isRefresh = false) {
     const currentActiveExamKey = activeSessionKeys.find(k => possiblePrefixes.some(pref => k.startsWith(pref)));
 
     if (currentActiveExamKey) {
-        const exId = currentActiveExamKey.split('_')[1];
+        const matchedPrefix = possiblePrefixes.find(pref => currentActiveExamKey.startsWith(pref));
+        const exId = matchedPrefix ? currentActiveExamKey.slice(matchedPrefix.length) : '';
         const exExists = (appState.exams || []).find(e => String(e.id) === String(exId));
         if (exExists) {
             startStudentExam(exId);
@@ -3812,30 +3813,81 @@ async function startStudentExam(examId) {
         return;
     }
     
-    // 1. Poin 5 & 6: Fetch server-generated, server-shuffled, and sanitized questions
+    // CBT_LOAD_ORDER_V2: activate/restore the authoritative attempt before requesting its question packet.
+    // The server intentionally refuses /start-questions until an active attempt exists.
+    let serverAttemptReady = false;
+    try {
+        const preflightController = new AbortController();
+        const preflightTimeout = setTimeout(() => preflightController.abort(), 4000);
+        let preflightRes;
+        try {
+            preflightRes = await fetch('/api/exam/attempt/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ studentId: st.id, examId: ex.id }),
+                signal: preflightController.signal
+            });
+        } finally {
+            clearTimeout(preflightTimeout);
+        }
+        const preflightData = await preflightRes.json().catch(() => ({ success: false }));
+        if (!preflightData.success) {
+            showToast(preflightData.message || 'Ujian tidak dapat dimulai atau dilanjutkan.', 'error');
+            return;
+        }
+        serverAttemptReady = true;
+    } catch (err) {
+        // Preserve offline-first continuation only for an already-active local attempt.
+        if (!hasActiveSession) {
+            console.warn('Gagal mengaktifkan attempt CBT di server:', err);
+            showToast('Gagal memulai ujian. Periksa koneksi lalu coba lagi.', 'error');
+            return;
+        }
+        console.warn('Server attempt sementara tidak terjangkau; mencoba cache CBT yang sudah disanitasi.', err);
+    }
+
+    // 1. Fetch server-generated, server-shuffled, and sanitized questions.
+    // Legacy browser caches are sanitized again before any offline continuation.
     if (!appState.studentExamQuestions) appState.studentExamQuestions = JSON.parse(localStorage.getItem('madrasah_student_exam_questions')) || {};
-    let questions = appState.studentExamQuestions[st.id + '_' + ex.id];
-    if (!questions || !Array.isArray(questions) || questions.length === 0) {
+    const examQuestionKey = st.id + '_' + ex.id;
+    let questions = appState.studentExamQuestions[examQuestionKey];
+    if (Array.isArray(questions) && questions.length > 0) {
+        questions = questions.map(stripStudentQuestionSecrets).filter(Boolean);
+    } else {
+        questions = [];
+    }
+
+    if (serverAttemptReady) {
         try {
             const qRes = await fetch('/api/exam/attempt/start-questions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ studentId: st.id, examId: ex.id })
             });
-            const qData = await qRes.json();
-            if (qData.success && Array.isArray(qData.questions) && qData.questions.length > 0) {
-                questions = qData.questions;
+            const qData = await qRes.json().catch(() => ({ success: false }));
+            if (!qData.success) {
+                showToast(qData.message || 'Paket soal ujian gagal dimuat.', 'error');
+                return;
+            }
+            if (Array.isArray(qData.questions) && qData.questions.length > 0) {
+                questions = qData.questions.map(stripStudentQuestionSecrets).filter(Boolean);
             }
         } catch (err) {
-            console.warn('Network error fetching server questions, falling back to local sanitized set:', err);
+            if (questions.length === 0) {
+                console.warn('Network error fetching server questions:', err);
+                showToast('Paket soal ujian belum dapat dimuat. Periksa koneksi lalu coba lagi.', 'error');
+                return;
+            }
+            console.warn('Network error fetching server questions, using sanitized resume cache:', err);
         }
-
-        if (!questions || !Array.isArray(questions) || questions.length === 0) {
-            questions = [];
-        }
-        appState.studentExamQuestions[st.id + '_' + ex.id] = questions;
-        safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
     }
+
+    if (!Array.isArray(questions) || questions.length === 0) {
+        showToast('Paket soal ujian kosong. Hubungi guru atau administrator ujian.', 'error');
+        return;
+    }
+    appState.studentExamQuestions[examQuestionKey] = questions;
+    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
 
     // 2. Ensure active exam session & answers & timer continuation
     if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions')) || {};
