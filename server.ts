@@ -849,6 +849,218 @@ function isTrustedCloudinaryImageUrl(value: any): boolean {
   }
 }
 
+
+type LegacyFirestoreRecoveryConfig = {
+  projectId: string;
+  databaseId: string;
+};
+
+let legacyFirestoreTokenCache: { token: string; expiresAt: number } | null = null;
+
+function getLegacyFirestoreRecoveryConfig(): LegacyFirestoreRecoveryConfig {
+  let fileConfig: any = {};
+  try {
+    const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(configPath)) {
+      fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    }
+  } catch (err: any) {
+    console.warn('[Legacy Photo Recovery] Could not read firebase-applet-config.json:', err?.message || err);
+  }
+
+  const projectId = String(
+    process.env.LEGACY_FIRESTORE_PROJECT_ID ||
+    fileConfig?.projectId ||
+    ''
+  ).trim();
+  const databaseId = String(
+    process.env.LEGACY_FIRESTORE_DATABASE_ID ||
+    fileConfig?.firestoreDatabaseId ||
+    '(default)'
+  ).trim();
+
+  if (!projectId) {
+    throw new Error('Konfigurasi project Firestore legacy tidak tersedia.');
+  }
+  return { projectId, databaseId: databaseId || '(default)' };
+}
+
+async function getLegacyFirestoreAccessToken(): Promise<string> {
+  if (!isTrustedCloudRunRuntime || !isOnlineMode) {
+    throw new Error('Pemulihan Firestore legacy hanya diizinkan pada Cloud Run mode online.');
+  }
+
+  const now = Date.now();
+  if (legacyFirestoreTokenCache && legacyFirestoreTokenCache.expiresAt > now + 60_000) {
+    return legacyFirestoreTokenCache.token;
+  }
+
+  const tokenResponse = await fetch(
+    'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+    { headers: { 'Metadata-Flavor': 'Google' } }
+  );
+  if (!tokenResponse.ok) {
+    throw new Error(`Metadata service gagal memberikan token (${tokenResponse.status}).`);
+  }
+  const payload: any = await tokenResponse.json();
+  const token = String(payload?.access_token || '');
+  const expiresIn = Math.max(60, Number(payload?.expires_in || 300));
+  if (!token) throw new Error('Token service account Cloud Run tidak tersedia.');
+
+  legacyFirestoreTokenCache = {
+    token,
+    expiresAt: now + expiresIn * 1000
+  };
+  return token;
+}
+
+async function readLegacyFirestorePhoto(photoId: string): Promise<
+  | { status: 'found'; dataUrl: string }
+  | { status: 'missing' }
+  | { status: 'invalid' }
+> {
+  const safeId = String(photoId || '').trim();
+  // Historical Firestore auto IDs used by the old photo store are 20 alphanumeric chars.
+  if (!/^[A-Za-z0-9]{20}$/.test(safeId)) return { status: 'invalid' };
+
+  const { projectId, databaseId } = getLegacyFirestoreRecoveryConfig();
+  const accessToken = await getLegacyFirestoreAccessToken();
+  const url =
+    `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}` +
+    `/databases/${encodeURIComponent(databaseId)}/documents/photos/${encodeURIComponent(safeId)}`;
+
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  if (response.status === 404) return { status: 'missing' };
+  if (response.status === 401 || response.status === 403) {
+    const err: any = new Error('Service account Cloud Run belum memiliki izin membaca Firestore legacy.');
+    err.code = 'LEGACY_FIRESTORE_PERMISSION';
+    throw err;
+  }
+  if (!response.ok) {
+    throw new Error(`Firestore legacy gagal dibaca (${response.status}).`);
+  }
+
+  const docPayload: any = await response.json();
+  const fields = docPayload?.fields || {};
+  const dataUrl = String(
+    fields?.data?.stringValue ||
+    fields?.photo?.stringValue ||
+    fields?.base64?.stringValue ||
+    ''
+  ).trim();
+
+  if (!dataUrl || !parseSafeRasterDataUrl(dataUrl)) return { status: 'invalid' };
+  return { status: 'found', dataUrl };
+}
+
+async function recoverLegacyStudentProfilePhotos(req: any): Promise<{
+  studentProfilesWithReference: number;
+  legacyCandidates: number;
+  alreadyInCloudinary: number;
+  recoveredFromFirestore: number;
+  missingInFirestore: number;
+  invalidLegacyDocuments: number;
+  skippedNonLegacy: number;
+  uploadFailed: number;
+  mapped: number;
+}> {
+  if (!isTrustedCloudRunRuntime || !isOnlineMode) {
+    throw new Error('Pemulihan foto legacy hanya dapat dijalankan pada Cloud Run mode online.');
+  }
+  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+    throw new Error('Cloudinary wajib dikonfigurasi sebelum pemulihan foto legacy.');
+  }
+
+  // Validate recovery configuration before making any external reads.
+  getLegacyFirestoreRecoveryConfig();
+
+  const tenantStudents = filterByMadrasah(students || [], req);
+  const profileRefs = tenantStudents
+    .map((student: any) => String(student?.photo || '').trim())
+    .filter(Boolean);
+
+  const candidateIds = new Set<string>();
+  let skippedNonLegacy = 0;
+  for (const ref of profileRefs) {
+    const parsedId = getCloudinaryPhotoIdFromReference(ref);
+    const fallbackRaw = ref
+      .replace(/^PHOTO_REF:/i, '')
+      .replace(/^\/api\/photos\//i, '')
+      .replace(/^madrasah_photos\//i, '')
+      .split(/[?#]/)[0]
+      .trim();
+    const id = parsedId || (/^[A-Za-z0-9]{20}$/.test(fallbackRaw) ? fallbackRaw : '');
+    if (id && /^[A-Za-z0-9]{20}$/.test(id)) candidateIds.add(id);
+    else skippedNonLegacy++;
+  }
+
+  const cloudByCleanId = await listActualCloudinaryPhotos();
+  let alreadyInCloudinary = 0;
+  let recoveredFromFirestore = 0;
+  let missingInFirestore = 0;
+  let invalidLegacyDocuments = 0;
+  let uploadFailed = 0;
+
+  for (const photoId of candidateIds) {
+    const normalizedId = normalizeCloudinaryPhotoId(photoId);
+    const existing = cloudByCleanId.get(normalizedId) || cloudByCleanId.get(photoId);
+    if (existing) {
+      photoCloudinaryMap[photoId] = existing.url;
+      photoCloudinaryMap[normalizedId] = existing.url;
+      photoCloudinaryMap[existing.fullId] = existing.url;
+      alreadyInCloudinary++;
+      continue;
+    }
+
+    const legacy = await readLegacyFirestorePhoto(photoId);
+    if (legacy.status === 'missing') {
+      missingInFirestore++;
+      continue;
+    }
+    if (legacy.status === 'invalid') {
+      invalidLegacyDocuments++;
+      continue;
+    }
+
+    // Do not let an old/stale alias make uploadToCloudinary incorrectly skip the upload.
+    delete photoCloudinaryMap[photoId];
+    delete photoCloudinaryMap[normalizedId];
+    delete photoCloudinaryMap[`madrasah_photos/${normalizedId}`];
+
+    const cloudUrl = await uploadToCloudinary(legacy.dataUrl, photoId);
+    if (!cloudUrl) {
+      uploadFailed++;
+      continue;
+    }
+
+    photoCloudinaryMap[photoId] = cloudUrl;
+    photoCloudinaryMap[normalizedId] = cloudUrl;
+    photoCloudinaryMap[`madrasah_photos/${normalizedId}`] = cloudUrl;
+    cloudByCleanId.set(normalizedId, {
+      url: cloudUrl,
+      fullId: `madrasah_photos/${normalizedId}`
+    });
+    recoveredFromFirestore++;
+  }
+
+  await saveData('photoCloudinaryMap', photoCloudinaryMap, true);
+
+  return {
+    studentProfilesWithReference: profileRefs.length,
+    legacyCandidates: candidateIds.size,
+    alreadyInCloudinary,
+    recoveredFromFirestore,
+    missingInFirestore,
+    invalidLegacyDocuments,
+    skippedNonLegacy,
+    uploadFailed,
+    mapped: Object.keys(photoCloudinaryMap).length
+  };
+}
+
 async function saveBase64ToFirestore(base64Str: string): Promise<string> {
   if (!base64Str || !base64Str.startsWith("data:image/")) return base64Str;
 
@@ -2608,6 +2820,7 @@ app.use((req: any, res, next) => {
     p === '/api/db-pull-cloud' ||
     p === '/api/cloudinary/sync' ||
     p === '/api/cloudinary/repair-missing' ||
+    p === '/api/cloudinary/recover-legacy-student-photos' ||
     p.startsWith('/api/system/backup') ||
     p.startsWith('/api/system/restore') ||
     (p === '/api/settings' && method !== 'GET');
@@ -2626,6 +2839,9 @@ app.use((req: any, res, next) => {
   }
   if (isMutation && !enforceTenantMutationOwnership(req, res, authUser)) return;
 
+  if (p === '/api/cloudinary/recover-legacy-student-photos') {
+    if (!enforceApiRateLimit(req, res, `legacy-photo-recovery:${authUser.id}`, 3, 60 * 60 * 1000)) return;
+  }
   if (p === '/api/realtime-token') {
     if (!enforceApiRateLimit(req, res, `realtime:${authUser.id}`, 120, 10 * 60 * 1000)) return;
   }
@@ -5133,7 +5349,7 @@ app.get("/api/db-status", async (req, res) => {
       await Promise.race([cloudinary.api.ping(), timeoutPromise]);
       status.cloudinary.connected = true;
       status.cloudinary.message = "Terhubung sukses ke Cloudinary!";
-      status.cloudinary.details = `Penyimpanan foto Cloudinary (${process.env.CLOUDINARY_CLOUD_NAME}) aktif. ${Object.keys(photoCloudinaryMap).length} foto terpetakan secara aman.`;
+      status.cloudinary.details = `Penyimpanan foto Cloudinary (${process.env.CLOUDINARY_CLOUD_NAME}) aktif. ${Object.keys(photoCloudinaryMap).length} entri mapping foto tersedia.`;
     }
   } catch (err: any) {
     status.cloudinary.connected = false;
@@ -5173,7 +5389,7 @@ app.post("/api/cloudinary/sync", async (req, res) => {
     const result = await syncAllPhotosToCloudinary();
     res.json({
       success: true,
-      message: `Sinkronisasi Cloudinary berhasil! Total foto terpetakan: ${result.mapped}`,
+      message: `Sinkronisasi Cloudinary berhasil! Aset aktual: ${result.totalCloudinary}; entri mapping: ${result.mapped}.`,
       result
     });
   } catch (err: any) {
@@ -5199,6 +5415,34 @@ app.post("/api/cloudinary/repair-missing", requireAuth, requireRole(['admin', 'b
     });
   }
 });
+
+// 1b.3 One-time recovery of legacy Firestore student profile photos.
+// This does NOT reconnect Firestore as the application's persistence backend.
+// It uses the Cloud Run service account only for explicit admin-triggered reads,
+// then writes recovered images to the authoritative Cloudinary store using the same legacy ID.
+app.post("/api/cloudinary/recover-legacy-student-photos", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const result = await recoverLegacyStudentProfilePhotos(req);
+    return res.json({
+      success: true,
+      message: `Pemulihan selesai. ${result.recoveredFromFirestore} foto profil siswa berhasil dipulihkan dari Firestore legacy ke Cloudinary.`,
+      result
+    });
+  } catch (err: any) {
+    console.error('[Legacy Photo Recovery] Failed:', err?.message || err);
+    if (err?.code === 'LEGACY_FIRESTORE_PERMISSION') {
+      return res.status(503).json({
+        success: false,
+        message: 'Service account Cloud Run belum memiliki izin membaca Firestore legacy.'
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      message: safeServerError(err, 'Pemulihan foto siswa dari Firestore legacy gagal.')
+    });
+  }
+});
+
 
 // 1c. Force Reconnect & Pull data from Google Cloud SQL to local JSON store
 app.post("/api/db-pull-cloud", async (req, res) => {
