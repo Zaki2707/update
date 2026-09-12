@@ -15,6 +15,7 @@ const serverSource = source;
 const modulesSource = fs.readFileSync('src/modulesScript.js', 'utf8');
 const adminModulesSource = fs.readFileSync('src/adminModules.js', 'utf8');
 const appSource = fs.readFileSync('src/appScript.js', 'utf8');
+const assessmentSource = fs.readFileSync('src/assessmentModule.js', 'utf8');
 const ast = ts.createSourceFile('server.ts', source, ts.ScriptTarget.ES2022, true);
 const quiet = { log() {}, warn() {}, error() {} };
 const transpile = (text: string) => ts.transpileModule(text, {
@@ -340,6 +341,20 @@ await test('CBT: schedule gate is authoritative in WIB', () => {
 
 await test('CBT: teacher attempt context retains assignment boundary', () => {
   assert.match(serverFunction('getExamAttemptContext'), /teacherCanUseExamPayload\(req,\s*exam\)/);
+});
+
+await test('CBT: student load activates attempt before requesting questions', () => {
+  const start = assessmentSource.indexOf('async function startStudentExam(examId)');
+  const end = assessmentSource.indexOf('\nfunction ', start + 20);
+  const fn = assessmentSource.slice(start, end > start ? end : undefined);
+  const attemptStart = fn.indexOf("fetch('/api/exam/attempt/start'");
+  const questionStart = fn.indexOf("fetch('/api/exam/attempt/start-questions'");
+  assert.ok(attemptStart >= 0, 'student CBT load is missing authoritative attempt start');
+  assert.ok(questionStart > attemptStart, 'question packet is requested before the attempt is active');
+  assert.match(fn, /questions = questions\.map\(stripStudentQuestionSecrets\)\.filter\(Boolean\)/);
+  assert.match(fn, /Paket soal ujian kosong/);
+  assert.doesNotMatch(assessmentSource, /currentActiveExamKey\.split\('_'\)\[1\]/);
+  assert.match(assessmentSource, /currentActiveExamKey\.slice\(matchedPrefix\.length\)/);
 });
 
 await test('Student master writes are admin-owned and self password may remain unchanged', () => {
