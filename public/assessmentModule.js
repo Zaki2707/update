@@ -18,6 +18,13 @@ function assessmentSafeImageSrc(value) {
     const normalized = typeof window.getPhotoHtmlSrc === 'function' ? window.getPhotoHtmlSrc(raw) : raw;
     return assessmentEscapeAttr(normalized);
 }
+function assessmentInlineArg(value) {
+    const literal = JSON.stringify(String(value === undefined || value === null ? '' : value))
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026');
+    return assessmentEscapeAttr(literal);
+}
 
 function safeSetStorage(key, value) {
     if (typeof window.safeSetLocalStorage === 'function') {
@@ -821,16 +828,16 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                 </div>
                                                 <div>
                                                     <h4 class="font-bold text-slate-800 text-base flex items-center gap-2">
-                                                        ${ev.title}
+                                                        ${assessmentEscapeHtml(ev.title)}
                                                         ${isHarian ? '<span class="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-bold">Default Harian</span>' : ''}
                                                     </h4>
-                                                    <p class="text-xs text-slate-400 mt-0.5 line-clamp-1">${ev.description || 'Kelompok jadwal ujian'}</p>
+                                                    <p class="text-xs text-slate-400 mt-0.5 line-clamp-1">${assessmentEscapeHtml(ev.description || 'Kelompok jadwal ujian')}</p>
                                                 </div>
                                             </div>
                                             ${!isTeacher ? `
                                             <div class="flex items-center space-x-2">
-                                                <button type="button" onclick="openEventModal('${ev.id}')" class="p-2 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-xl transition" title="Edit Event"><i class="fa-solid fa-pen"></i></button>
-                                                ${!isHarian ? `<button type="button" onclick="deleteExam('${ev.id}')" class="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition" title="Hapus Event"><i class="fa-solid fa-trash"></i></button>` : ''}
+                                                <button type="button" onclick="openEventModal(${assessmentInlineArg(ev.id)})" class="p-2 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-xl transition" title="Edit Event"><i class="fa-solid fa-pen"></i></button>
+                                                ${!isHarian ? `<button type="button" onclick="deleteExam(${assessmentInlineArg(ev.id)})" class="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition" title="Hapus Event"><i class="fa-solid fa-trash"></i></button>` : ''}
                                             </div>
                                             ` : ''}
                                         </div>
@@ -841,11 +848,11 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                         </div>
                                     </div>
                                     <div class="pt-2 flex gap-2">
-                                        <button type="button" onclick="openEventManagement('${ev.id}')" class="flex-1 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-2xl text-xs shadow transition flex items-center justify-center space-x-2">
+                                        <button type="button" onclick="openEventManagement(${assessmentInlineArg(ev.id)})" class="flex-1 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-2xl text-xs shadow transition flex items-center justify-center space-x-2">
                                             <i class="fa-solid fa-layer-group"></i><span>Kelola Jadwal (${evJadwals.length})</span>
                                         </button>
                                         ${!isTeacher ? `
-                                        <button type="button" onclick="openExamModal(null, '${ev.id}')" class="px-4 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-semibold rounded-2xl text-xs border border-emerald-200 transition flex items-center space-x-1.5" title="Tambah Jadwal ke Event Ini">
+                                        <button type="button" onclick="openExamModal(null, ${assessmentInlineArg(ev.id)})" class="px-4 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-semibold rounded-2xl text-xs border border-emerald-200 transition flex items-center space-x-1.5" title="Tambah Jadwal ke Event Ini">
                                             <i class="fa-solid fa-plus"></i><span>Tambah Jadwal</span>
                                         </button>
                                         ` : ''}
@@ -870,12 +877,12 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                     <div class="space-y-6">
                         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-6 rounded-3xl shadow-sm border border-slate-100 gap-4">
                             <div>
-                                <h3 class="font-bold text-slate-800">Daftar Jadwal Ujian: ${currentEvent ? currentEvent.title : 'Event Tidak Ditemukan'}</h3>
+                                <h3 class="font-bold text-slate-800">Daftar Jadwal Ujian: ${assessmentEscapeHtml(currentEvent ? currentEvent.title : 'Event Tidak Ditemukan')}</h3>
                                 <p class="text-xs text-slate-400">Atur parameter lengkap ujian</p>
                             </div>
                             <div class="flex gap-2">
                                 <button type="button" onclick="appState.assessmentEventId = null; renderAssessmentModule(document.getElementById('view-container'), 'jadwal', null);" class="px-5 py-3 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-2xl text-xs transition flex items-center space-x-2"><i class="fa-solid fa-arrow-left"></i><span>Kembali ke Event</span></button>
-                                ${!isTeacher ? `<button type="button" onclick="openExamModal(null, '${appState.assessmentEventId}')" class="px-5 py-3 bg-emerald-600 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2"><i class="fa-solid fa-plus"></i><span>Buat Jadwal</span></button>` : ''}
+                                ${!isTeacher ? `<button type="button" onclick="openExamModal(null, ${assessmentInlineArg(appState.assessmentEventId)})" class="px-5 py-3 bg-emerald-600 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2"><i class="fa-solid fa-plus"></i><span>Buat Jadwal</span></button>` : ''}
                             </div>
                         </div>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -884,15 +891,15 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                     <div class="flex justify-between items-start">
                                         <h4 class="font-bold text-slate-800 text-base">${assessmentEscapeHtml(ex.title)}</h4>
                                         ${!isTeacher ? `<div class="flex items-center space-x-3">
-                                            <button type="button" onclick="openExamModal('${ex.id}', '${ex.eventId}')" class="text-slate-400 hover:text-emerald-500 transition" title="Edit Jadwal"><i class="fa-solid fa-pen"></i></button>
-                                            <button type="button" onclick="deleteExam('${ex.id}')" class="text-rose-400 hover:text-rose-600 transition" title="Hapus Jadwal"><i class="fa-solid fa-trash"></i></button>
+                                            <button type="button" onclick="openExamModal(${assessmentInlineArg(ex.id)}, ${assessmentInlineArg(ex.eventId)})" class="text-slate-400 hover:text-emerald-500 transition" title="Edit Jadwal"><i class="fa-solid fa-pen"></i></button>
+                                            <button type="button" onclick="deleteExam(${assessmentInlineArg(ex.id)})" class="text-rose-400 hover:text-rose-600 transition" title="Hapus Jadwal"><i class="fa-solid fa-trash"></i></button>
                                         </div>` : ''}
                                     </div>
                                     <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs text-slate-600 bg-slate-50 p-3 rounded-2xl">
-                                        <div><span class="text-slate-400">Mapel:</span> <b class="block truncate">${ex.subject}</b></div>
-                                        <div><span class="text-slate-400">Bank Soal:</span> <b class="block font-mono font-bold">${ex.bankCode}</b></div>
-                                        <div><span class="text-slate-400">Tanggal & Jam:</span> <b class="block">${ex.date} (${ex.startTime || '07:30'})</b></div>
-                                        <div><span class="text-slate-400">Durasi:</span> <b class="block">${ex.duration} Mins</b></div>
+                                        <div><span class="text-slate-400">Mapel:</span> <b class="block truncate">${assessmentEscapeHtml(ex.subject || '')}</b></div>
+                                        <div><span class="text-slate-400">Bank Soal:</span> <b class="block font-mono font-bold">${assessmentEscapeHtml(ex.bankCode || '')}</b></div>
+                                        <div><span class="text-slate-400">Tanggal & Jam:</span> <b class="block">${assessmentEscapeHtml(ex.date || '')} (${assessmentEscapeHtml(ex.startTime || '07:30')})</b></div>
+                                        <div><span class="text-slate-400">Durasi:</span> <b class="block">${assessmentEscapeHtml(ex.duration ?? '')} Mins</b></div>
                                         <div><span class="text-slate-400">Jml Soal:</span> <b class="block text-emerald-600 font-bold">${ex.questionCount || ex.qCount ? (ex.questionCount || ex.qCount) + ' Soal' : getExamQuestions(ex).length + ' Soal'}</b></div>
                                         <div><span class="text-slate-400">Status Schedule:</span> <b class="block">${(() => {
                                             const sInfo = getExamScheduleInfo(ex);
@@ -1431,12 +1438,12 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                                 <span class="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 font-black text-[10px] rounded-full border border-emerald-400/30">
                                                                     LKPD Interaktif
                                                                 </span>
-                                                                <span class="text-xs text-emerald-200 font-semibold">${lk.className || 'Semua Kelas'}</span>
+                                                                <span class="text-xs text-emerald-200 font-semibold">${assessmentEscapeHtml(lk.className || 'Semua Kelas')}</span>
                                                             </div>
-                                                            <h4 class="font-black text-base text-white">${lk.title}</h4>
+                                                            <h4 class="font-black text-base text-white">${assessmentEscapeHtml(lk.title)}</h4>
                                                             <p class="text-xs text-slate-400 line-clamp-1 mt-1">${lk.markers?.length || 0} Titik Penanda Soal &bull; ${lk.submissions?.length || 0} Jawaban Siswa Masuk</p>
                                                         </div>
-                                                        <button type="button" onclick="appState.activeMonitoringLkpdId = '${lk.id}'; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null);" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-2xl text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer">
+                                                        <button type="button" onclick="appState.activeMonitoringLkpdId = ${assessmentInlineArg(lk.id)}; renderAssessmentModule(document.getElementById('view-container'), 'monitoring', null);" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-2xl text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer">
                                                             <i class="fa-solid fa-desktop"></i> <span>Mulai Live Monitoring LKPD</span>
                                                         </button>
                                                     </div>
@@ -1455,12 +1462,12 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                             <span class="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-300 font-black text-[10px] rounded-full border border-indigo-400/30">
                                                                 CBT Exam
                                                             </span>
-                                                            <span class="text-xs text-slate-400 font-semibold">${ex.className || 'Semua Kelas'}</span>
+                                                            <span class="text-xs text-slate-400 font-semibold">${assessmentEscapeHtml(ex.className || 'Semua Kelas')}</span>
                                                         </div>
                                                         <h4 class="font-bold text-base text-white">${assessmentEscapeHtml(ex.title)}</h4>
-                                                        <p class="text-xs text-slate-400 mt-1">${ex.subjectName || ex.subject || 'Mapel'}</p>
+                                                        <p class="text-xs text-slate-400 mt-1">${assessmentEscapeHtml(ex.subjectName || ex.subject || 'Mapel')}</p>
                                                     </div>
-                                                    <button type="button" onclick="renderAssessmentModule(document.getElementById('view-container'), 'monitoring', '${ex.id}')" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-2xl text-xs shadow transition cursor-pointer">Mulai Live Monitoring CBT</button>
+                                                    <button type="button" onclick="renderAssessmentModule(document.getElementById('view-container'), 'monitoring', ${assessmentInlineArg(ex.id)})" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-2xl text-xs shadow transition cursor-pointer">Mulai Live Monitoring CBT</button>
                                                 </div>
                                             `).join('')}
                                         </div>
@@ -1846,14 +1853,14 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                 <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">1. Pilih Rombel / Kelas</label>
                                 <select id="eval-class-select" onchange="onEvaluasiFilterChange()" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-700">
                                     <option value="">-- Pilih Kelas --</option>
-                                    ${appState.classes.map(c => `<option value="${c.id}" ${String(appState.evaluasiSelectedClassId) === String(c.id) ? 'selected' : ''}>${c.name}</option>`).join('')}
+                                    ${appState.classes.map(c => `<option value="${assessmentEscapeAttr(c.id)}" ${String(appState.evaluasiSelectedClassId) === String(c.id) ? 'selected' : ''}>${assessmentEscapeHtml(c.name)}</option>`).join('')}
                                 </select>
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">2. Pilih Jadwal Ujian CBT</label>
                                 <select id="eval-exam-select" onchange="onEvaluasiFilterChange()" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-700">
                                     <option value="">-- Pilih Jadwal Ujian --</option>
-                                    ${displayExams.filter(e => e.recordType !== 'EVENT').map(e => `<option value="${e.id}" ${String(appState.evaluasiSelectedExamId) === String(e.id) ? 'selected' : ''}>${e.title}</option>`).join('')}
+                                    ${displayExams.filter(e => e.recordType !== 'EVENT').map(e => `<option value="${assessmentEscapeAttr(e.id)}" ${String(appState.evaluasiSelectedExamId) === String(e.id) ? 'selected' : ''}>${assessmentEscapeHtml(e.title)}</option>`).join('')}
                                 </select>
                             </div>
                             <div>
@@ -3690,7 +3697,7 @@ async function renderStudentCBTList(container, isRefresh = false) {
                         <span class="px-2.5 py-1 bg-teal-100 text-teal-800 rounded-xl text-[10px] font-bold">LKPD Interaktif</span>
                         <span class="text-xs font-mono text-slate-400"><i class="fa-solid fa-clock mr-1 text-slate-400"></i>${lk.durationMinutes || 45} Menit</span>
                     </div>
-                    <h3 class="font-bold text-slate-800 text-lg mt-2">${lk.title}</h3>
+                    <h3 class="font-bold text-slate-800 text-lg mt-2">${assessmentEscapeHtml(lk.title)}</h3>
                     <p class="text-xs text-slate-500 mt-1"><i class="fa-solid fa-calendar-days mr-1.5 text-teal-600"></i>${lk.date || '-'} &nbsp;|&nbsp; <i class="fa-solid fa-book mr-1.5 text-teal-600"></i>${lk.subjectName || lk.subjectId || 'Mata Pelajaran'} &nbsp;|&nbsp; <i class="fa-solid fa-users mr-1 text-teal-600"></i>${lk.className || 'Kelas'}</p>
                     <p class="text-xs text-slate-400 mt-2 line-clamp-2">${lk.description || 'Lembar kerja peserta didik interaktif.'}</p>
                 </div>
@@ -5740,13 +5747,13 @@ window.renderViolationsListUI = function(list) {
                     </div>
                     <div>
                         <div class="font-bold text-slate-800 flex items-center gap-1.5">
-                            <span>${v.studentName || 'Peserta Ujian'}</span>
-                            ${v.className ? `<span class="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-lg text-[10px]">${v.className}</span>` : ''}
+                            <span>${assessmentEscapeHtml(v.studentName || 'Peserta Ujian')}</span>
+                            ${v.className ? `<span class="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-lg text-[10px]">${assessmentEscapeHtml(v.className)}</span>` : ''}
                             ${v.autoBlocked ? `<span class="px-2 py-0.5 bg-rose-600 text-white rounded-lg text-[9px] font-bold">DIBLOKIR OTOMATIS</span>` : ''}
                         </div>
                         <p class="text-[11px] text-slate-500 mt-0.5">
                             <i class="fa-solid fa-triangle-exclamation text-amber-500 mr-1"></i>
-                            ${v.reason || 'Keluar Tab / Aplikasi Ujian'} &bull; Pelanggaran ke-${v.tabSwitches || 1}
+                            ${assessmentEscapeHtml(v.reason || 'Keluar Tab / Aplikasi Ujian')} &bull; Pelanggaran ke-${v.tabSwitches || 1}
                         </p>
                     </div>
                 </div>
@@ -9422,7 +9429,7 @@ function _executeFocusStudentLivecam(studentId) {
                 const snap = frames[studentId + '_' + examId];
                 if (snap) {
                     loaderEl.innerHTML = `
-                        <img src="${snap}" alt="Focused Snapshot" class="w-full h-full object-cover">
+                        <img src="${assessmentSafeImageSrc(snap)}" alt="Focused Snapshot" class="w-full h-full object-cover">
                         <div class="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/90 text-amber-300 border border-amber-500/30 text-[10px] font-bold rounded-full flex items-center space-x-1 shadow-lg">
                             <i class="fa-solid fa-circle-exclamation text-amber-400"></i>
                             <span>Menggunakan Snapshot (WebRTC Menghubungkan...)</span>
@@ -9774,7 +9781,7 @@ function initAdminWebRTCForStudent(studentId) {
                 const snap = frames[studentId + '_' + examId];
                 if (snap) {
                     fallbackEl.innerHTML = `
-                        <img src="${snap}" alt="Live Snapshot" class="w-full h-full object-cover">
+                        <img src="${assessmentSafeImageSrc(snap)}" alt="Live Snapshot" class="w-full h-full object-cover">
                         <div class="absolute top-2 right-2 px-2 py-0.5 bg-emerald-600/90 text-white text-[9px] font-bold rounded-full flex items-center space-x-1 shadow animate-pulse">
                             <span class="w-1.5 h-1.5 rounded-full bg-white"></span>
                             <span>SNAPSHOT LIVE</span>
@@ -9815,7 +9822,7 @@ function initAdminWebRTCForStudent(studentId) {
             const fallbackEl = document.getElementById(`webrtc-fallback-${studentId}`);
             if (snap && fallbackEl && fallbackEl.querySelector('img') === null) {
                 fallbackEl.innerHTML = `
-                    <img src="${snap}" alt="Live Snapshot" class="w-full h-full object-cover">
+                    <img src="${assessmentSafeImageSrc(snap)}" alt="Live Snapshot" class="w-full h-full object-cover">
                     <div class="absolute top-2 right-2 px-2 py-0.5 bg-emerald-600/90 text-white text-[9px] font-bold rounded-full flex items-center space-x-1 shadow animate-pulse">
                         <span class="w-1.5 h-1.5 rounded-full bg-white"></span>
                         <span>SNAPSHOT LIVE</span>
@@ -9841,12 +9848,11 @@ function initAdminWebRTCForStudent(studentId) {
 
 window._adminLiveKitRooms = window._adminLiveKitRooms || {};
 
+// LIVEKIT_CLIENT_CAPABILITY_V4: server resolves URL/key/secret and exposes
+// only a safe boolean. Runtime failure switches this browser tab to P2P.
 function isLiveKitConfigured() {
     const s = appState && appState.settings;
-    if (!s) return false;
-    const url = s.livekitUrl || '';
-    const key = s.livekitApiKey || '';
-    return url.trim() !== '' && !url.includes('localhost') && !url.includes('127.0.0.1') && key.trim() !== '';
+    return Boolean(s && s.livekitConfigured === true && window._liveKitRuntimeUnavailable !== true);
 }
 
 async function startAdminLiveKit(examId) {
@@ -9920,6 +9926,7 @@ async function startAdminLiveKit(examId) {
         });
         
         await room.connect(serverUrl, token);
+        window._liveKitRuntimeUnavailable = false;
         console.log("Admin connected to LiveKit SFU room:", roomName);
         
         room.participants.forEach((participant) => {
@@ -9949,6 +9956,7 @@ async function startAdminLiveKit(examId) {
         });
         
     } catch (err) {
+        window._liveKitRuntimeUnavailable = true;
         const isCancelled = err && (err.name === "ConnectionError" || (err.message && (err.message.includes("Cancelled") || err.message.includes("abort"))));
         if (isCancelled) {
             console.log("LiveKit subscriber connection aborted gracefully.");
@@ -10024,6 +10032,7 @@ async function startStudentLiveKit(examId, studentId) {
         window._studentLiveKitRoom = room;
         
         await room.connect(serverUrl, token);
+        window._liveKitRuntimeUnavailable = false;
         console.log("Connected to LiveKit SFU room:", roomName);
         
         const videoTrack = window.__studentWebcamStream.getVideoTracks()[0];
@@ -10039,6 +10048,12 @@ async function startStudentLiveKit(examId, studentId) {
             console.log("Successfully published student camera track to LiveKit SFU with Simulcast + Bitrate (300kbps) enabled!");
         }
     } catch (err) {
+        window._liveKitRuntimeUnavailable = true;
+        // LIVEKIT_TO_P2P_FAILOVER_V4: student camera setup normally chooses one
+        // transport once, so start signaling immediately when LiveKit fails.
+        window.initSignalingWebSocket(String(studentId), (senderId, signal) => {
+            window.handleSingleIncomingSignalForStudent(senderId, signal, studentId);
+        });
         const isCancelled = err && (err.name === "ConnectionError" || (err.message && (err.message.includes("Cancelled") || err.message.includes("abort"))));
         if (isCancelled) {
             console.log("LiveKit publisher connection aborted gracefully.");
