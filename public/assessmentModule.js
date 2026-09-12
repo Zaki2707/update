@@ -4473,6 +4473,9 @@ async function startStudentExam(examId) {
             }
         } else if (activeExamSession && activeExamSession.timeLeft <= 0) {
             clearInterval(window.__examTimerInterval);
+            window.__examTimerInterval = null;
+            freezeExpiredCbtSessionForFinalization();
+            renderActiveExamScreen();
             submitExamFinal();
         }
     }, 1000);
@@ -4655,11 +4658,50 @@ window.initStudentExamCamera = function() {
         });
 };
 
+function isCbtSessionFrozen(session = activeExamSession) {
+    if (!session) return false;
+    const timeLeft = Number(session.timeLeft);
+    return session.isExpiredFrozen === true ||
+        session.status === 'expired_pending_submit' ||
+        (Number.isFinite(timeLeft) && timeLeft <= 0);
+}
+
+function freezeExpiredCbtSessionForFinalization() {
+    if (!activeExamSession) return;
+    // CBT_EXPIRED_FINALIZATION_FREEZE_V3: capture once and make the deadline state
+    // immutable in the browser. Retrying finalization always reuses this snapshot.
+    if (!activeExamSession.finalAnswersSnapshot) {
+        activeExamSession.finalAnswersSnapshot = { ...(activeExamSession.answers || {}) };
+    }
+    activeExamSession.answers = { ...activeExamSession.finalAnswersSnapshot };
+    activeExamSession.timeLeft = 0;
+    activeExamSession.status = 'expired_pending_submit';
+    activeExamSession.isExpiredFrozen = true;
+
+    const st = appState.currentUser && appState.currentUser.id ? appState.currentUser : (appState.students[0] || {});
+    const key = st.id && activeExamSession.exam?.id ? String(st.id) + '_' + String(activeExamSession.exam.id) : '';
+    if (key) {
+        if (!appState.activeExamSessions) appState.activeExamSessions = JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
+        appState.activeExamSessions[key] = {
+            ...(appState.activeExamSessions[key] || {}),
+            examId: activeExamSession.exam.id,
+            status: 'expired_pending_submit',
+            answers: { ...activeExamSession.finalAnswersSnapshot },
+            currentIndex: activeExamSession.currentIndex || 0,
+            timeLeft: 0,
+            answeredCount: Object.keys(activeExamSession.finalAnswersSnapshot).length,
+            totalQuestions: activeExamSession.questions?.length || 0
+        };
+        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+    }
+}
+
 function renderActiveExamScreen() {
     const container = document.getElementById('view-container');
     const sess = activeExamSession;
     if (!sess) return;
     const q = sess.questions[sess.currentIndex];
+    const isExpiredFrozen = isCbtSessionFrozen(sess);
 
     const st = appState.currentUser && appState.currentUser.id ? appState.currentUser : (appState.students[0] || {});
     const isBlocked = isStudentBlocked(sess.exam.id, st.id);
@@ -4730,15 +4772,21 @@ function renderActiveExamScreen() {
                 </div>
             </div>
 
+            ${isExpiredFrozen ? `
+                <div class="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-3 text-xs font-semibold">
+                    <i class="fa-solid fa-lock mr-1.5"></i> Waktu ujian sudah habis. Jawaban dikunci; sistem hanya mencoba menyelesaikan pengiriman hasil yang telah tersimpan.
+                </div>
+            ` : ''}
+
             <!-- Question Box -->
             <div class="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border space-y-6">
                 <p class="font-semibold text-slate-800 text-base leading-relaxed select-none">${assessmentEscapeHtml(q.question)}</p>
                 ${((q.imageUrl || q.image) && (!q.question || !q.question.includes(q.imageUrl || q.image))) ? `<div class="my-3 flex justify-center"><img src="${assessmentSafeImageSrc(q.imageUrl || q.image)}" class="max-h-64 rounded-2xl border border-slate-200 object-contain shadow-sm" alt="Gambar Soal"/></div>` : ''}
                 <div class="space-y-3">
                     ${(q.type === 'esay' || q.type === 'essay') ? `
-                        <textarea onchange="saveExamAnswer('${q.id}', this.value)" rows="6" class="w-full p-4 border rounded-2xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 transition resize-none text-sm" placeholder="Ketik jawaban esay Anda di sini...">${assessmentEscapeHtml(sess.answers[q.id] || '')}</textarea>
+                        <textarea onchange="saveExamAnswer('${q.id}', this.value)" ${isExpiredFrozen ? 'disabled' : ''} rows="6" class="w-full p-4 border rounded-2xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 transition resize-none text-sm ${isExpiredFrozen ? 'opacity-70 cursor-not-allowed' : ''}" placeholder="Ketik jawaban esay Anda di sini...">${assessmentEscapeHtml(sess.answers[q.id] || '')}</textarea>
                     ` : (q.options || []).map((opt, oIdx) => `
-                        <div onclick="selectExamOption(${oIdx})" class="flex items-center space-x-3 p-4 rounded-2xl border cursor-pointer transition select-none ${sess.answers[q.id] === opt ? 'bg-emerald-50 border-emerald-500 font-bold text-emerald-900 shadow-sm' : 'bg-slate-50 hover:bg-slate-100'}">
+                        <div onclick="selectExamOption(${oIdx})" class="flex items-center space-x-3 p-4 rounded-2xl border transition select-none ${isExpiredFrozen ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'} ${sess.answers[q.id] === opt ? 'bg-emerald-50 border-emerald-500 font-bold text-emerald-900 shadow-sm' : 'bg-slate-50 hover:bg-slate-100'}">
                             <span class="w-7 h-7 rounded-xl flex items-center justify-center text-xs font-bold ${sess.answers[q.id] === opt ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'}">${String.fromCharCode(65 + oIdx)}</span>
                             <span class="text-sm">${assessmentEscapeHtml(opt)}</span>
                         </div>
@@ -4993,6 +5041,10 @@ if (!window._offlineSyncListenerAdded) {
 }
 
 function saveExamAnswer(qId, val) {
+    if (isCbtSessionFrozen(activeExamSession)) {
+        showToast('Waktu ujian sudah habis. Jawaban telah dikunci.', 'warning');
+        return;
+    }
     if (activeExamSession) {
         activeExamSession.answers[qId] = val;
         
@@ -5121,7 +5173,13 @@ async function submitExamFinal() {
     }
 
     const key = String(st.id) + '_' + String(ex.id);
-    const answers = { ...(sessionSnapshot.answers || {}) };
+    const expiredFinalization = isCbtSessionFrozen(sessionSnapshot);
+    if (expiredFinalization && !sessionSnapshot.finalAnswersSnapshot) {
+        sessionSnapshot.finalAnswersSnapshot = { ...(sessionSnapshot.answers || {}) };
+    }
+    const answers = {
+        ...(expiredFinalization ? sessionSnapshot.finalAnswersSnapshot : (sessionSnapshot.answers || {}))
+    };
     const questions = Array.isArray(sessionSnapshot.questions)
         ? sessionSnapshot.questions
         : (appState.studentExamQuestions ? (appState.studentExamQuestions[key] || []) : []);
@@ -5209,14 +5267,24 @@ async function submitExamFinal() {
         appState.activeExamSessions[key] = {
             ...(appState.activeExamSessions[key] || {}),
             examId: ex.id,
-            status: 'active',
+            status: expiredFinalization ? 'expired_pending_submit' : 'active',
             answers,
             currentIndex: sessionSnapshot.currentIndex || 0,
-            timeLeft: sessionSnapshot.timeLeft,
+            timeLeft: expiredFinalization ? 0 : sessionSnapshot.timeLeft,
             endsAt: appState.activeExamSessions[key]?.endsAt || null,
             answeredCount: Object.keys(answers).length,
-            totalQuestions: questions.length
+            totalQuestions: questions.length,
+            isExpiredFrozen: expiredFinalization,
+            ...(expiredFinalization ? { finalAnswersSnapshot: { ...answers } } : {})
         };
+        if (expiredFinalization && activeExamSession) {
+            activeExamSession.status = 'expired_pending_submit';
+            activeExamSession.timeLeft = 0;
+            activeExamSession.isExpiredFrozen = true;
+            activeExamSession.finalAnswersSnapshot = { ...answers };
+            activeExamSession.answers = { ...answers };
+            renderActiveExamScreen();
+        }
         safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
         const message = String(err?.message || 'Server belum mengonfirmasi penyelesaian ujian.');
         showToast(`Pengiriman belum dikonfirmasi server. ${message} Jawaban tetap tersimpan dan dapat dikirim ulang.`, 'error');

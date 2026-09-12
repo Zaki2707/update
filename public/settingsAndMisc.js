@@ -3493,6 +3493,7 @@ async function loadDataFromServer() {
         if (window.navigateTo && document.getElementById('main-app') && !document.getElementById('main-app').classList.contains('hidden')) {
             window.navigateTo(lastRoute);
         }
+        return true;
     } catch (err) {
         console.warn('Fallback ke parallel loading karena:', err);
         // Fallback to parallel requests if /api/all-data failed (highly unlikely but safe)
@@ -3541,12 +3542,17 @@ async function loadDataFromServer() {
             if (grdRes.success) appState.grades = grdRes.grades;
             if (tAttRes.success) appState.teacherAttendance = tAttRes.teacherAttendance;
 
+            const fallbackResponses = [tchRes, stdRes, clsRes, subRes, attRes, grpRes, qRes, schRes, examRes, roomRes, jourRes, catRes, genExRes, setRes, lpRes, grdRes, tAttRes];
+            if (!fallbackResponses.some(item => item && item.success === true)) return false;
+
             const lastRoute = localStorage.getItem('madrasah_last_route') || 'dashboard';
             if (window.navigateTo && document.getElementById('main-app') && !document.getElementById('main-app').classList.contains('hidden')) {
                 window.navigateTo(lastRoute);
             }
+            return true;
         } catch(fallbackErr) {
             console.log('Mode lokal aktif.');
+            return false;
         }
     }
 }

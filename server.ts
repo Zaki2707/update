@@ -4257,22 +4257,137 @@ interface AuthSession {
   name?: string;
   classId?: string;
   madrasahId?: string;
+  madrasahSlug?: string;
+  authStamp: string;
   exp: number;
 }
 
-function createAuthToken(user: any): string {
+function authSessionStamp(role: any, id: any, username: any, madrasahId: any, credentialProof: any): string {
+  if (!JWT_SECRET || !credentialProof) return "";
+  const normalized = [
+    String(role || '').trim().toLowerCase(),
+    String(id || '').trim(),
+    String(username || '').trim().toLowerCase(),
+    String(madrasahId || 'default').trim(),
+    String(credentialProof)
+  ].join("\n");
+  return crypto.createHmac("sha256", JWT_SECRET)
+    .update(`AUTH_SESSION_CREDENTIAL_STAMP_V2\n${normalized}`)
+    .digest("base64url");
+}
+
+function constantTimeStringEqual(left: any, right: any): boolean {
+  const a = Buffer.from(String(left || ''));
+  const b = Buffer.from(String(right || ''));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function authRecordMatchesTokenTenant(record: any, tenantId: any): boolean {
+  const target = String(tenantId || 'default').trim();
+  const values = [
+    String(record?.madrasahId || '').trim(),
+    String(record?.madrasahSlug || '').trim()
+  ].filter(Boolean);
+  if (values.length === 0) return target === 'default';
+  return values.includes(target);
+}
+
+function validateAuthSessionAgainstCurrentState(session: AuthSession): boolean {
+  // AUTH_SESSION_CREDENTIAL_STAMP_V2: tokens are bound to the live account record.
+  // Password/username/role changes, account deletion, and tenant deactivation revoke
+  // an already-issued token immediately instead of waiting for its TTL.
+  if (!session || !session.authStamp) return false;
+
+  const role = String(session.role || '').trim().toLowerCase();
+  const id = String(session.id || '').trim();
+  const username = String(session.username || '').trim();
+  const tenantId = String(session.madrasahId || 'default').trim() || 'default';
+  const stampMatches = (credential: any, expectedRole = role, expectedUsername = username, expectedTenant = tenantId) =>
+    constantTimeStringEqual(
+      session.authStamp,
+      authSessionStamp(expectedRole, id, expectedUsername, expectedTenant, credential)
+    );
+
+  if (role === 'bos' || role === 'superadmin') {
+    const bossUser = String(process.env.BOSS_USERNAME || '').trim();
+    const bossPass = String(process.env.BOSS_PASSWORD || '');
+    return isBossRuntimeEnabled() &&
+      id === 'BOSS' &&
+      username.toLowerCase() === bossUser.toLowerCase() &&
+      stampMatches(bossPass, 'bos', bossUser, 'default');
+  }
+
+  if (role === 'admin' || role === 'administrator') {
+    const targetMadrasah = (madrasahs || []).find((m: any) =>
+      String(m.id) === tenantId || String(m.slug) === tenantId
+    );
+    if (!targetMadrasah || targetMadrasah.isActive === false) return false;
+
+    if (id === 'ADMIN') {
+      const currentUsername = String(appSettings?.adminUser || 'admin').trim();
+      const currentCredential = String(appSettings?.adminPass || '');
+      return Boolean(currentCredential) &&
+        username.toLowerCase() === currentUsername.toLowerCase() &&
+        stampMatches(currentCredential, 'admin', currentUsername, String(targetMadrasah.id || tenantId));
+    }
+
+    if (id !== `ADMIN_${String(targetMadrasah.id)}`) return false;
+    const currentUsername = String(targetMadrasah.adminUser || '').trim();
+    const currentCredential = String(targetMadrasah.adminPass || '');
+    return Boolean(currentUsername && currentCredential) &&
+      username.toLowerCase() === currentUsername.toLowerCase() &&
+      stampMatches(currentCredential, 'admin', currentUsername, String(targetMadrasah.id || tenantId));
+  }
+
+  if (role === 'teacher' || role === 'guru') {
+    const teacher = (teachers || []).find((item: any) =>
+      String(item?.id || '') === id && authRecordMatchesTokenTenant(item, tenantId)
+    );
+    if (!teacher) return false;
+    const currentUsername = String(teacher.username || teacher.nip || '').trim();
+    const currentCredential = String(teacher.password || '');
+    return Boolean(currentUsername && currentCredential) &&
+      username.toLowerCase() === currentUsername.toLowerCase() &&
+      stampMatches(currentCredential, 'teacher', currentUsername, tenantId);
+  }
+
+  if (['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role)) {
+    const student = (students || []).find((item: any) =>
+      String(item?.id || '') === id && authRecordMatchesTokenTenant(item, tenantId)
+    );
+    if (!student) return false;
+    const currentRole = normalizeStudentStoredRole(student.role);
+    const currentUsername = String(student.username || student.nis || '').trim();
+    const currentCredential = String(student.password || '');
+    return Boolean(currentUsername && currentCredential) &&
+      role === currentRole &&
+      username.toLowerCase() === currentUsername.toLowerCase() &&
+      stampMatches(currentCredential, currentRole, currentUsername, tenantId);
+  }
+
+  return false;
+}
+
+function createAuthToken(user: any, credentialProof: any): string {
   if (!JWT_SECRET) {
     throw new Error("JWT_SECRET is required but not configured in the environment variables.");
   }
+  if (!credentialProof) {
+    throw new Error("Credential proof is required to issue an authenticated session.");
+  }
   const header = { alg: "HS256", typ: "JWT" };
   const role = String(user.role || (user.nip ? 'teacher' : (user.nis ? 'student' : 'admin'))).toLowerCase();
+  const username = String(user.username || user.nis || user.nip || '');
+  const madrasahId = String(user.madrasahId || 'default');
   const payload: AuthSession = {
     id: String(user.id),
-    role: role,
-    username: String(user.username || user.nis || user.nip || ''),
+    role,
+    username,
     name: user.name || '',
     classId: user.classId || user.class_id || '',
-    madrasahId: user.madrasahId || 'default',
+    madrasahId,
+    madrasahSlug: user.madrasahSlug || '',
+    authStamp: authSessionStamp(role, user.id, username, madrasahId, credentialProof),
     exp: Math.floor(Date.now() / 1000) + JWT_TTL_SECONDS
   };
   const b64Header = Buffer.from(JSON.stringify(header)).toString("base64url");
@@ -4291,12 +4406,11 @@ function verifyAuthToken(token: string): AuthSession | null {
   if (parts.length !== 3) return null;
   const [b64Header, b64Payload, signature] = parts;
   const expectedSig = crypto.createHmac("sha256", JWT_SECRET).update(`${b64Header}.${b64Payload}`).digest("base64url");
-  if (signature !== expectedSig) return null;
+  if (!constantTimeStringEqual(signature, expectedSig)) return null;
   try {
-    const payload = JSON.parse(Buffer.from(b64Payload, "base64url").toString("utf-8"));
-    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
-      return null;
-    }
+    const payload = JSON.parse(Buffer.from(b64Payload, "base64url").toString("utf-8")) as AuthSession;
+    if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (!validateAuthSessionAgainstCurrentState(payload)) return null;
     return payload;
   } catch (e) {
     return null;
@@ -6236,7 +6350,7 @@ app.post("/api/login", async (req, res) => {
       madrasahId: "default",
       madrasahSlug: "default"
     };
-    const token = createAuthToken(bossUser);
+    const token = createAuthToken(bossUser, bossPassEnv);
     return res.json({
       success: true,
       token,
@@ -6264,7 +6378,7 @@ app.post("/api/login", async (req, res) => {
       schoolName: foundMadrasah.name,
       cbtTokenBalance: foundMadrasah.cbtTokenBalance !== undefined ? foundMadrasah.cbtTokenBalance : 0
     };
-    const token = createAuthToken(adminUserObj);
+    const token = createAuthToken(adminUserObj, foundMadrasah.adminPass);
     return res.json({
       success: true,
       token,
@@ -6315,7 +6429,7 @@ app.post("/api/login", async (req, res) => {
       cbtTokenBalance: defaultM?.cbtTokenBalance || 0
     };
 
-    const token = createAuthToken(defAdminUser);
+    const token = createAuthToken(defAdminUser, adminPassVal);
 
     return res.json({
       success: true,
@@ -6341,7 +6455,7 @@ app.post("/api/login", async (req, res) => {
       madrasahSlug: teacher.madrasahSlug || requestedTenant?.slug || teacher.madrasahId || 'default',
       cbtTokenBalance: teacher.cbtTokenBalance !== undefined ? teacher.cbtTokenBalance : 0
     };
-    const token = createAuthToken(teacherUser);
+    const token = createAuthToken(teacherUser, teacher.password);
     return res.json({
       success: true,
       token,
@@ -6374,7 +6488,7 @@ app.post("/api/login", async (req, res) => {
       photo: normalizePhotoReferenceForClient(student.photo),
       no_hp: student.no_hp
     };
-    const token = createAuthToken(studentUser);
+    const token = createAuthToken(studentUser, student.password);
     return res.json({
       success: true,
       token,
@@ -8316,7 +8430,7 @@ app.put("/api/student/profile", requireAuth, requireRole(['student', 'siswa', 'c
     photo: normalizePhotoReferenceForClient(student.photo),
     no_hp: student.no_hp
   };
-  const token = createAuthToken(sessionUser);
+  const token = createAuthToken(sessionUser, student.password);
   const { password: _, passwordRaw: __, ...safeStudent } = student;
   const clientStudent = {
     ...safeStudent,
@@ -11982,16 +12096,26 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
     return filtered;
   };
 
-  // Normal student submit may send the student's own final answer payload.
-  // Staff Force Finish must NEVER trust answers supplied by the admin browser.
-  const incomingAnswers = isStaffForceFinish ? {} : filterAllowedAnswers(answers);
-  const persistedAnswers = filterAllowedAnswers(studentExamAnswers[key]);
-  const savedSessionAnswers = isStaffForceFinish
-    ? filterAllowedAnswers(activeExamSessions[key]?.answers)
-    : {};
+  // CBT_EXPIRED_FINALIZATION_FREEZE_V3:
+  // Once the authoritative deadline has passed, finalization may still complete, but
+  // client-supplied answer mutations are ignored. Only answers already accepted by the
+  // server before expiry participate in grading.
+  const liveSession = activeExamSessions[key];
+  const sessionEndsAt = Number(liveSession?.endsAt || 0);
+  const sessionTimeLeft = Number(liveSession?.timeLeft);
+  const sessionExpired = Boolean(!isStaffForceFinish && liveSession && (
+    (Number.isFinite(sessionEndsAt) && sessionEndsAt > 0 && Date.now() >= sessionEndsAt) ||
+    ((!Number.isFinite(sessionEndsAt) || sessionEndsAt <= 0) && Number.isFinite(sessionTimeLeft) && sessionTimeLeft <= 0)
+  ));
 
-  // Server-authoritative precedence: persisted answers -> latest live-session answers ->
-  // student's own final payload (normal submit only). Invalid/stale question IDs are dropped.
+  // Staff Force Finish must NEVER trust answers supplied by the admin browser.
+  // Expired normal submissions likewise cannot introduce new client answers.
+  const incomingAnswers = (isStaffForceFinish || sessionExpired) ? {} : filterAllowedAnswers(answers);
+  const persistedAnswers = filterAllowedAnswers(studentExamAnswers[key]);
+  const savedSessionAnswers = filterAllowedAnswers(liveSession?.answers);
+
+  // Server-authoritative precedence: persisted answers -> accepted live-session answers ->
+  // current client payload only while the attempt is still within its deadline.
   studentExamAnswers[key] = { ...persistedAnswers, ...savedSessionAnswers, ...incomingAnswers };
   const finalAns = studentExamAnswers[key];
 
