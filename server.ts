@@ -3062,6 +3062,7 @@ app.use((req: any, res, next) => {
     p === '/api/cloudinary/repair-missing' ||
     p === '/api/cloudinary/recover-legacy-student-photos' ||
     p === '/api/students/recover-profile-photos-from-backup' ||
+    p === '/api/lesson-plans/recover-legacy-bundle' ||
     p.startsWith('/api/system/backup') ||
     p.startsWith('/api/system/restore') ||
     (p === '/api/settings' && method !== 'GET');
@@ -3085,6 +3086,9 @@ app.use((req: any, res, next) => {
   }
   if (p === '/api/students/recover-profile-photos-from-backup') {
     if (!enforceApiRateLimit(req, res, `backup-photo-recovery:${authUser.id}`, 40, 60 * 60 * 1000)) return;
+  }
+  if (p === '/api/lesson-plans/recover-legacy-bundle') {
+    if (!enforceApiRateLimit(req, res, `lesson-plan-recovery:${authUser.id}`, 6, 60 * 60 * 1000)) return;
   }
   if (p === '/api/realtime-token') {
     if (!enforceApiRateLimit(req, res, `realtime:${authUser.id}`, 120, 10 * 60 * 1000)) return;
@@ -14097,6 +14101,257 @@ let lessonPlans: LessonPlan[] = (bootStore['lessonPlans'] && bootStore['lessonPl
     daftarPustaka: "Fauzi, Ahmad. 2024. Buku Teks Mata Pelajaran Terkait."
   }
 ];
+
+
+function normalizeLessonPlanRecoveryText(value: any): string {
+  return String(value ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function lessonPlanRecoveryTenant(req: any): { id: string; slug: string } {
+  const requested = String(getRequestMadrasahId(req) || 'default').trim() || 'default';
+  const match = (madrasahs || []).find((m: any) =>
+    String(m?.id || '') === requested || String(m?.slug || '') === requested
+  );
+  const id = String(match?.id || requested || 'default').trim() || 'default';
+  const slug = String(match?.slug || id).trim() || id;
+  return { id, slug };
+}
+
+function deterministicLegacyRecoveryId(prefix: string, tenantId: string, legacyId: string): string {
+  const digest = crypto.createHash('sha256')
+    .update(`${tenantId}::${legacyId}`)
+    .digest('hex')
+    .slice(0, 24);
+  return `${prefix}_${digest}`;
+}
+
+async function recoverLegacyLessonPlanBundle(req: any, body: any): Promise<any> {
+  if (!isOnlineMode) {
+    throw new Error('Recovery modul legacy ini hanya digunakan pada mode online.');
+  }
+
+  const dryRun = body?.dryRun === true;
+  const incomingPlans = Array.isArray(body?.plans) ? body.plans : [];
+  const incomingGroups = Array.isArray(body?.groups) ? body.groups : [];
+  const targetSubjectName = String(body?.targetSubjectName || '').trim();
+  const targetSubjectIdInput = String(body?.targetSubjectId || '').trim();
+
+  if (incomingPlans.length < 1 || incomingPlans.length > 100) {
+    throw new Error('Bundle recovery harus berisi 1-100 modul.');
+  }
+  if (incomingGroups.length < 1 || incomingGroups.length > 20) {
+    throw new Error('Bundle recovery harus berisi 1-20 kelompok.');
+  }
+
+  const tenant = lessonPlanRecoveryTenant(req);
+  const tenantSubjects = filterByMadrasah(subjects || [], req);
+  let targetSubject: any = null;
+
+  if (targetSubjectIdInput) {
+    const matches = tenantSubjects.filter((subject: any) =>
+      String(subject?.id || '') === targetSubjectIdInput ||
+      String(subject?.code || '') === targetSubjectIdInput
+    );
+    if (matches.length === 1) targetSubject = matches[0];
+    else if (matches.length > 1) throw new Error('Mapel target ambigu pada tenant aktif.');
+  }
+
+  if (!targetSubject && targetSubjectName) {
+    const normalizedName = normalizeLessonPlanRecoveryText(targetSubjectName);
+    const matches = tenantSubjects.filter((subject: any) =>
+      normalizeLessonPlanRecoveryText(subject?.name) === normalizedName ||
+      normalizeLessonPlanRecoveryText(subject?.code) === normalizedName
+    );
+    if (matches.length === 1) targetSubject = matches[0];
+    else if (matches.length > 1) throw new Error('Nama mapel target ambigu pada tenant aktif.');
+  }
+
+  if (!targetSubject) {
+    throw new Error('Mapel target recovery tidak ditemukan pada tenant aktif.');
+  }
+
+  const targetSubjectId = String(targetSubject.id || targetSubject.code || '').trim();
+  const targetSubjectDisplayName = String(targetSubject.name || targetSubject.code || targetSubjectId).trim();
+  if (!targetSubjectId) throw new Error('ID mapel target tidak valid.');
+
+  const groupMap = new Map<string, any>();
+  for (const rawGroup of incomingGroups) {
+    if (!rawGroup || typeof rawGroup !== 'object') continue;
+    const legacyGroupId = String(rawGroup.legacyGroupId || rawGroup.id || '').trim();
+    const name = String(rawGroup.name || rawGroup.groupName || '').trim();
+    if (!legacyGroupId || !name || legacyGroupId.length > 160 || name.length > 160) continue;
+
+    const recoveredGroupId = deterministicLegacyRecoveryId('recgrp', tenant.id, legacyGroupId);
+    groupMap.set(legacyGroupId, {
+      legacyGroupId,
+      recoveredGroupId,
+      name,
+      description: String(rawGroup.description || '').trim().slice(0, 500)
+    });
+  }
+  if (groupMap.size === 0) throw new Error('Tidak ada kelompok recovery yang valid.');
+
+  const stats: any = {
+    dryRun,
+    targetSubjectId,
+    targetSubjectName: targetSubjectDisplayName,
+    inputPlans: incomingPlans.length,
+    inputGroups: incomingGroups.length,
+    validGroups: groupMap.size,
+    validPlans: 0,
+    foundLegacyInDatabase: 0,
+    restoredFromBundle: 0,
+    alreadyRecovered: 0,
+    invalidPlans: 0,
+    ambiguousLegacyIds: 0,
+    recoveredPlans: 0,
+    recoveredGroups: groupMap.size,
+    groupCounts: {} as Record<string, number>
+  };
+
+  const nextLessonPlans = Array.isArray(lessonPlans) ? [...lessonPlans] : [];
+  const nextImportGroups = Array.isArray(importGroups) ? [...importGroups] : [];
+  const seenLegacyIds = new Set<string>();
+
+  for (const rawPlan of incomingPlans) {
+    if (!rawPlan || typeof rawPlan !== 'object') {
+      stats.invalidPlans++;
+      continue;
+    }
+    const legacyId = String(rawPlan.legacyId || rawPlan.id || '').trim();
+    const legacyGroupId = String(rawPlan.legacyGroupId || rawPlan.groupId || rawPlan.group_id || '').trim();
+    const mappedGroup = groupMap.get(legacyGroupId);
+
+    if (!legacyId || legacyId.length > 180 || !mappedGroup || seenLegacyIds.has(legacyId)) {
+      stats.invalidPlans++;
+      continue;
+    }
+    seenLegacyIds.add(legacyId);
+    stats.validPlans++;
+    stats.groupCounts[mappedGroup.name] = (stats.groupCounts[mappedGroup.name] || 0) + 1;
+
+    const alreadyIndexes: number[] = [];
+    const legacyIndexes: number[] = [];
+    for (let i = 0; i < nextLessonPlans.length; i++) {
+      const item = nextLessonPlans[i];
+      if (!item) continue;
+      if (
+        String(item?.legacyRecoverySourceId || '') === legacyId &&
+        isItemForCurrentMadrasah(item, req)
+      ) {
+        alreadyIndexes.push(i);
+      }
+      if (
+        String(item?.id || '') === legacyId &&
+        !String(item?.madrasahId || '').trim() &&
+        !String(item?.madrasahSlug || '').trim()
+      ) {
+        legacyIndexes.push(i);
+      }
+    }
+
+    if (alreadyIndexes.length > 1 || legacyIndexes.length > 1) {
+      stats.ambiguousLegacyIds++;
+      continue;
+    }
+
+    let base: any;
+    let targetIndex = -1;
+    let finalId = '';
+
+    if (alreadyIndexes.length === 1) {
+      targetIndex = alreadyIndexes[0];
+      base = { ...nextLessonPlans[targetIndex] };
+      finalId = String(base.id || deterministicLegacyRecoveryId('reclp', tenant.id, legacyId));
+      stats.alreadyRecovered++;
+    } else if (legacyIndexes.length === 1) {
+      targetIndex = legacyIndexes[0];
+      base = { ...nextLessonPlans[targetIndex] };
+      finalId = legacyId;
+      stats.foundLegacyInDatabase++;
+    } else {
+      base = { ...rawPlan };
+      finalId = deterministicLegacyRecoveryId('reclp', tenant.id, legacyId);
+      stats.restoredFromBundle++;
+    }
+
+    for (const key of ['madrasahId', 'madrasahSlug', 'madrasah_id', 'madrasah_slug', 'tenantId']) {
+      delete base[key];
+    }
+    for (const key of LESSON_PLAN_CHILD_KEYS) {
+      delete base[key];
+    }
+
+    const recovered = {
+      ...base,
+      id: finalId,
+      subjectId: targetSubjectId,
+      subjectName: targetSubjectDisplayName,
+      groupId: mappedGroup.recoveredGroupId,
+      groupName: mappedGroup.name,
+      madrasahId: tenant.id,
+      madrasahSlug: tenant.slug,
+      legacyRecoverySourceId: legacyId,
+      legacyRecoveryGroupId: legacyGroupId,
+      __legacyMode2RecoveredV1: true
+    };
+
+    if (targetIndex >= 0) nextLessonPlans[targetIndex] = recovered;
+    else nextLessonPlans.push(recovered);
+    stats.recoveredPlans++;
+  }
+
+  for (const mappedGroup of groupMap.values()) {
+    const idx = nextImportGroups.findIndex((group: any) =>
+      String(group?.id || '') === mappedGroup.recoveredGroupId &&
+      isItemForCurrentMadrasah(group, req)
+    );
+    const groupRecord = {
+      ...(idx >= 0 ? nextImportGroups[idx] : {}),
+      id: mappedGroup.recoveredGroupId,
+      subjectId: targetSubjectId,
+      name: mappedGroup.name,
+      description: mappedGroup.description,
+      madrasahId: tenant.id,
+      madrasahSlug: tenant.slug,
+      legacyRecoveryGroupId: mappedGroup.legacyGroupId,
+      __legacyMode2RecoveredV1: true
+    };
+    if (idx >= 0) nextImportGroups[idx] = groupRecord;
+    else nextImportGroups.push(groupRecord);
+  }
+
+  if (dryRun) return stats;
+
+  lessonPlans = nextLessonPlans;
+  importGroups = nextImportGroups;
+
+  // Save plans first. Each recovered plan also carries groupName, so Mode 2 can
+  // still derive the two folders even if the secondary group write is interrupted.
+  await saveData('lessonPlans', lessonPlans, true);
+  await saveData('importGroups', importGroups, true);
+
+  return stats;
+}
+
+app.post("/api/lesson-plans/recover-legacy-bundle", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const result = await recoverLegacyLessonPlanBundle(req, req.body || {});
+    return res.json({
+      success: true,
+      message: result.dryRun
+        ? `Preview recovery: ${result.recoveredPlans} modul siap dipulihkan ke ${result.targetSubjectName} dalam ${result.recoveredGroups} kelompok.`
+        : `Recovery selesai: ${result.recoveredPlans} modul tersedia di ${result.targetSubjectName} dalam ${result.recoveredGroups} kelompok.`,
+      result
+    });
+  } catch (err: any) {
+    console.error('[LessonPlan Legacy Recovery] Failed:', err?.message || err);
+    return res.status(500).json({
+      success: false,
+      message: safeServerError(err, 'Recovery modul ajar legacy gagal.')
+    });
+  }
+});
 
 app.get("/api/lesson-plans", (req, res) => {
   const { subjectId } = req.query;
