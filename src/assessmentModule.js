@@ -3861,6 +3861,7 @@ async function startStudentExam(examId) {
     const key2 = String(stId) + '_' + String(ex.id);
 
     const activeSessions = appState.activeExamSessions || JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
+    const hadLocalSession = Boolean(activeSessions[key1] || activeSessions[key2]);
     const hasActiveSession = Boolean(
         (activeSessions[key1] && activeSessions[key1].status === 'active' && activeSessions[key1].timeLeft > 0) ||
         (activeSessions[key2] && activeSessions[key2].status === 'active' && activeSessions[key2].timeLeft > 0)
@@ -3925,7 +3926,7 @@ async function startStudentExam(examId) {
         ? Object.keys(preflightSession.answers).length : 0;
     const serverQuestionCount = Number(preflightSession?.totalQuestions || 0);
 
-    if (serverAttemptReady && hasActiveSession && preflightSession && serverAnswerCount === 0 && serverQuestionCount === 0) {
+    if (serverAttemptReady && hadLocalSession && preflightSession && serverAnswerCount === 0 && serverQuestionCount === 0) {
         // CBT_RESET_RECONCILE_V2: the browser believed an attempt was active, but
         // the authoritative server has just created a fresh empty attempt. Treat
         // all matching local state/queued writes as belonging to the old reset attempt.
