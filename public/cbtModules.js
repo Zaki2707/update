@@ -3246,13 +3246,13 @@ function loadActiveBankQuestionsToConvert(activeCode) {
     const formattedLines = [];
     questions.forEach((q, idx) => {
         const num = idx + 1;
-        const qText = qbDecodeLegacyEntities(q.question || '');
+        const qText = q.question || '';
         const opts = q.options || [];
-        const optA = qbDecodeLegacyEntities(opts[0] || '');
-        const optB = qbDecodeLegacyEntities(opts[1] || '');
-        const optC = qbDecodeLegacyEntities(opts[2] || '');
-        const optD = qbDecodeLegacyEntities(opts[3] || '');
-        const optE = qbDecodeLegacyEntities(opts[4] || '');
+        const optA = opts[0] || '';
+        const optB = opts[1] || '';
+        const optC = opts[2] || '';
+        const optD = opts[3] || '';
+        const optE = opts[4] || '';
         
         let kj = 'A';
         if (typeof q.answer === 'number' && q.answer >= 0 && q.answer < 5) {
@@ -3421,8 +3421,7 @@ function runQuestionConversion(activeCode = '') {
 function parseRawTextToCBTFormat(rawText, defaultTS = 'PG', defaultKD = '1.0.1', defaultKJ = 'A', autoMath = true, parseMode = 'auto', optionCount = 5) {
     if (!rawText || !rawText.trim()) return { text: '', parsedQuestions: [], optionCount };
 
-    const normalizedRawText = qbDecodeLegacyEntities(rawText);
-    const lines = normalizedRawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const lines = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     const parsedQuestions = [];
 
     if (parseMode === 'enter') {
