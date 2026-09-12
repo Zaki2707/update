@@ -173,7 +173,7 @@ const checks = [
   ['Teacher LiveKit access is assignment scoped', server.includes('Guru hanya dapat membuka livecam untuk ujian mata pelajaran/bank soal yang diampu.') && server.includes('isTeacherRequest(req) && !teacherCanUseExamPayload(req, exam)')],
   ['WebSocket staff identity is tenant and account namespaced', server.includes('SIGNALING_PER_STAFF_ROUTE_V3') && server.includes("return 'staff::' + canonicalRealtimeTenant(tenant) + '::' + String(staffId || '')") && server.includes('signalingStaffKeyForTenant(tenant, auth.id)') && server.includes('publicId = String(auth.id)')],
   ['HTTP student signaling queue is tenant namespaced', server.includes("return 'student::' + tenant + '::' + String(studentId)")],
-  ['WebSocket student identity is tenant namespaced', server.includes("'student::' + tenant + '::' + publicId") && server.includes('storageKey = student')],
+  ['WebSocket student identity is tenant namespaced', server.includes("'student::' + tenant + '::' + publicId") && server.includes('const nextStorageKey = student')],
   ['LiveKit physical room is tenant namespaced', server.includes("const physicalRoomName = 'room_tenant_'") && server.includes('at.addGrant({ room: physicalRoomName')],
   ['Grade upsert is tenant scoped', server.includes('g => isItemForCurrentMadrasah(g, req) &&') && server.includes('Nilai hanya dapat dibuat untuk siswa dan kelas pada tenant yang sama.')],
   ['Student delete cascades are tenant scoped', server.includes('!isItemForCurrentMadrasah(a, req) ||') && server.includes('!isItemForCurrentMadrasah(g, req) ||')],
