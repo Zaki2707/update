@@ -8,6 +8,8 @@ const modules = fs.readFileSync('src/modulesScript.js', 'utf8');
 const adminModules = fs.readFileSync('src/adminModules.js', 'utf8');
 const settingsModule = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
 const chatModule = fs.readFileSync('src/chatModule.js', 'utf8');
+const gameModule = fs.readFileSync('src/gameModule.js', 'utf8');
+const lkpdModule = fs.readFileSync('src/lkpdModule.js', 'utf8');
 const gitignore = fs.readFileSync('.gitignore', 'utf8');
 const firestoreRules = fs.readFileSync('firestore.rules', 'utf8');
 let trackedFiles = new Set();
@@ -61,6 +63,16 @@ const checks = [
   ['WebSocket server verifies JWT', server.includes("verifyAuthToken(String(data.token || ''))") && server.includes("ws.close(4001, 'Unauthorized')") && server.includes("ws.close(4003, 'Client identity mismatch')")],
   ['No hardcoded SQL password fallback', !/password:\s*process\.env\.SQL_PASSWORD\s*\|\|/.test(server)],
   ['No weak built-in admin password', !/adminPass:\s*['\"]admin123['\"]/.test(server)],
+  ['No weak built-in teacher password', !server.includes('password || "guru123"') && !adminModules.includes("password: 'guru123'") && !adminModules.includes("item.password || 'guru123'")],
+  ['Teacher temporary credentials are one-time and generated', server.includes('temporaryPassword: rawPassword') && adminModules.includes('showTeacherTemporaryCredential') && adminModules.includes('teacher_temporary_credentials')],
+  ['Student game payload strips direct solution fields', server.includes('function sanitizeGameForStudent') && server.includes('delete safe.answerKey') && server.includes('delete safe.correctAnswer') && server.includes('list.map(sanitizeGameForStudent)')],
+  ['Client-only game completion cannot mint XP', server.includes('rewardVerified = serverVerified') && server.includes('isCorrect && rewardVerified && !alreadyRewardedToday')],
+  ['LKPD student answers are HTML-escaped before teacher rendering', lkpdModule.includes('lkpdEscapeHtml(answerText)') && lkpdModule.includes('studentAns ? lkpdEscapeHtml(studentAns)')],
+  ['CBT question and essay output is HTML-escaped', assessment.includes('assessmentEscapeHtml(q.question)') && assessment.includes("assessmentEscapeHtml(sess.answers[q.id] || '')") && assessment.includes('assessmentEscapeHtml(opt)')],
+  ['Chat is admin-student only', server.includes('Chat hanya tersedia untuk administrator dan siswa.') && server.includes('const isChatAdmin = adminRoles.has(role)')],
+  ['Legacy ChildGuard client integration is retired', server.includes("code: 'CHILDGUARD_RETIRED'") && !server.includes("const studentSyncKeys = new Set(['attendance', 'lkpdList', 'childguardStatus'])")],
+  ['Failed online writes restore committed memory', server.includes('persistedMemorySnapshots') && server.includes('rollbackMemoryToPersistedSnapshot(key)')],
+  ['Role conversion uses atomic multi-key persistence', server.includes("{ key: 'teachers', value: nextTeachers }") && server.includes("{ key: 'students', value: nextStudents }") && server.includes('await saveDataBatch([')],
   ['CBT teacher attempt scope enforced', server.includes('teacherCanUseExamPayload(req, exam)') && server.includes('Guru hanya dapat mengakses attempt ujian')],
   ['Student master writes are admin-owned', server.includes('app.post("/api/students", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])') && server.includes('app.put("/api/students/:id", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])')],
   ['Class master writes are admin-owned', server.includes('app.post("/api/classes", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])') && server.includes('app.delete("/api/classes/:id", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])')],
