@@ -5043,6 +5043,7 @@ window.saveQuestionBankGroup = saveQuestionBankGroup;
 window.deleteQuestionBankGroup = deleteQuestionBankGroup;
 window.deleteIndividualQuestion = deleteIndividualQuestion;
 window.openAIGeneratorModal = openAIGeneratorModal;
+window.executeNonAIGenerator = executeNonAIGenerator;
 window.executeAIGenerator = executeAIGenerator;
 window.downloadWordTemplate = downloadWordTemplate;
 window.openPreviewQuestionBankModal = openPreviewQuestionBankModal;
