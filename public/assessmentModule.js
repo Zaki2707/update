@@ -3308,18 +3308,9 @@ function reconcileStudentCbtServerSummary(studentId, examList, summary) {
                     queuedAnswers[String(item.questionId)] = item.answer;
                 }
             });
-            // CBT_RESUME_LOCAL_ANSWER_PRECEDENCE_V2: server answers are the baseline,
-            // but locally persisted/write-ahead answers may be newer after logout/reconnect.
-            const localStoredAnswers = appState.studentExamAnswers[key] && typeof appState.studentExamAnswers[key] === 'object'
-                ? appState.studentExamAnswers[key] : {};
-            const localSessionAnswers = appState.activeExamSessions[key]?.answers && typeof appState.activeExamSessions[key].answers === 'object'
-                ? appState.activeExamSessions[key].answers : {};
-            const mergedAnswers = {
-                ...(serverSession.answers || {}),
-                ...localStoredAnswers,
-                ...localSessionAnswers,
-                ...queuedAnswers
-            };
+            // CBT_RESUME_PENDING_ANSWER_PRECEDENCE_V2: confirmed server state wins over
+            // ordinary local cache; only still-pending write-ahead answers may override it.
+            const mergedAnswers = { ...(serverSession.answers || {}), ...queuedAnswers };
             appState.activeExamSessions[key] = {
                 ...serverSession,
                 answers: mergedAnswers,
@@ -4048,8 +4039,10 @@ async function startStudentExam(examId) {
                 if (res.session.endsAt) sessionData.endsAt = res.session.endsAt;
                 if (typeof res.session.remainingTime === 'number') sessionData.timeLeft = res.session.remainingTime;
                 if (res.session.answers && Object.keys(res.session.answers).length > 0) {
-                    // Preserve newer local/write-ahead answers until the server confirms them.
-                    sessionData.answers = { ...res.session.answers, ...sessionData.answers };
+                    // Server wins over ordinary local cache; only write-ahead answers
+                    // that are still pending may override the server snapshot.
+                    const pendingResumeAnswers = getPendingAnswersForExam(st.id, ex.id);
+                    sessionData.answers = { ...sessionData.answers, ...res.session.answers, ...pendingResumeAnswers };
                     sessionData.answeredCount = Object.keys(sessionData.answers).length;
                 }
                 if (typeof res.session.currentIndex === 'number') {
@@ -4105,8 +4098,10 @@ async function startStudentExam(examId) {
                 if (res.session.endsAt) sessionData.endsAt = res.session.endsAt;
                 if (typeof res.session.remainingTime === 'number') sessionData.timeLeft = res.session.remainingTime;
                 if (res.session.answers && Object.keys(res.session.answers).length > 0) {
-                    // Preserve newer local/write-ahead answers until the server confirms them.
-                    sessionData.answers = { ...res.session.answers, ...sessionData.answers };
+                    // Server wins over ordinary local cache; only write-ahead answers
+                    // that are still pending may override the server snapshot.
+                    const pendingResumeAnswers = getPendingAnswersForExam(st.id, ex.id);
+                    sessionData.answers = { ...sessionData.answers, ...res.session.answers, ...pendingResumeAnswers };
                     sessionData.answeredCount = Object.keys(sessionData.answers).length;
                 }
                 if (typeof res.session.currentIndex === 'number') {
@@ -4775,6 +4770,18 @@ function setPendingOfflineQueue(q) {
             localStorage.setItem('cbt_pending_offline_answers', JSON.stringify(q));
         }
     } catch(e) {}
+}
+
+function getPendingAnswersForExam(studentId, examId) {
+    const pending = {};
+    getPendingOfflineQueue().forEach(item => {
+        if (String(item?.studentId) === String(studentId) &&
+            String(item?.examId) === String(examId) &&
+            item?.questionId !== undefined) {
+            pending[String(item.questionId)] = item.answer;
+        }
+    });
+    return pending;
 }
 
 function upsertPendingOfflineAnswer(payload) {
