@@ -14,6 +14,8 @@ Response.prototype.json = async function () {
   }
 };
 
+import '@fortawesome/fontawesome-free/css/all.min.css';
+import 'katex/dist/katex.min.css';
 import './index.css';
 import './appScript.js';
 import './modulesScript.js';
