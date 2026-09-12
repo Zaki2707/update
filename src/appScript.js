@@ -1443,9 +1443,9 @@ function applyLoginCustomization() {
     const renderLogoContent = (container) => {
         if (!container) return;
         if (currentSchoolLogo.startsWith('data:image/') || currentSchoolLogo.startsWith('http://') || currentSchoolLogo.startsWith('https://')) {
-            container.innerHTML = `<img src="${currentSchoolLogo}" class="w-full h-full object-cover" referrerPolicy="no-referrer" alt="Logo">`;
+            container.innerHTML = `<img src="${escapeHtmlAttr(currentSchoolLogo)}" class="w-full h-full object-cover" referrerPolicy="no-referrer" alt="Logo">`;
         } else {
-            container.innerHTML = `<i class="fa-solid ${currentSchoolLogo}"></i>`;
+            container.innerHTML = `<i class="fa-solid ${escapeHtmlAttr(currentSchoolLogo)}"></i>`;
         }
 
         // Apply background color
@@ -2613,7 +2613,7 @@ function renderMainDashboard(container) {
     }
 
     const role = String(appState.role || '').toLowerCase().trim();
-    const currentUserName = appState.currentUser ? appState.currentUser.name : 'Administrator';
+    const currentUserName = escapeHtml(appState.currentUser ? appState.currentUser.name : 'Administrator');
 
     container.innerHTML = `
         <div class="space-y-6 max-w-7xl mx-auto">
@@ -2651,7 +2651,7 @@ function renderMainDashboard(container) {
 
             <!-- RUNNING TEXT / MARQUEE BANNER -->
             ${(() => {
-                const runningText = (appState.settings && appState.settings.runningText) ? appState.settings.runningText : 'Selamat Datang di Portal Sistem Informasi Madrasah Terintegrasi! Tetap Semangat Berprestasi.';
+                const runningText = escapeHtml((appState.settings && appState.settings.runningText) ? appState.settings.runningText : 'Selamat Datang di Portal Sistem Informasi Madrasah Terintegrasi! Tetap Semangat Berprestasi.');
                 return `
                     <div class="bg-emerald-50/90 border border-emerald-200/80 text-emerald-950 rounded-2xl p-2.5 sm:p-3 flex items-center space-x-3 shadow-sm overflow-hidden">
                         <div class="shrink-0 w-8 h-8 bg-emerald-600 text-white rounded-xl flex items-center justify-center text-xs shadow-sm">

@@ -14,6 +14,7 @@ const source = fs.readFileSync('server.ts', 'utf8');
 const serverSource = source;
 const modulesSource = fs.readFileSync('src/modulesScript.js', 'utf8');
 const adminModulesSource = fs.readFileSync('src/adminModules.js', 'utf8');
+const cbtModulesSource = fs.readFileSync('src/cbtModules.js', 'utf8');
 const appSource = fs.readFileSync('src/appScript.js', 'utf8');
 const settingsSource = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
 const assessmentSource = fs.readFileSync('src/assessmentModule.js', 'utf8');
@@ -543,6 +544,25 @@ await test('Auth: JWT is bound to current credential and active tenant state', (
   assert.match(serverSource, /validateAuthSessionAgainstCurrentState\(payload\)/);
   assert.match(serverSource, /createAuthToken\(studentUser, student\.password\)/);
   assert.match(serverSource, /createAuthToken\(teacherUser, teacher\.password\)/);
+});
+
+await test('Frontend: dynamic account and school text is escaped before HTML rendering', () => {
+  assert.match(appSource, /const currentUserName = escapeHtml\(/);
+  assert.match(appSource, /const runningText = escapeHtml\(/);
+  assert.match(appSource, /escapeHtmlAttr\(currentSchoolLogo\)/);
+  assert.match(modulesSource, /moduleEscapeHtml\(st\.name \|\| 'Siswa'\)/);
+  assert.match(modulesSource, /moduleEscapeHtml\(cls \? cls\.name : 'Umum'\)/);
+  assert.match(modulesSource, /moduleEscapeAttr\(st\.username \|\| 'siswa1'\)/);
+});
+
+await test('Frontend: persisted student and CBT journal records are escaped at HTML sinks', () => {
+  assert.match(adminModulesSource, /adminEscapeHtml\(student\.name\)/);
+  assert.match(adminModulesSource, /adminEscapeHtml\(student\.username\)/);
+  assert.match(adminModulesSource, /adminInlineArg\(student\.id\)/);
+  assert.match(cbtModulesSource, /qbEscapeHtml\(s\.name\)/);
+  assert.match(cbtModulesSource, /qbEscapeHtml\(j\.material\)/);
+  assert.match(cbtModulesSource, /qbEscapeAttr\(journal\.material \|\| ''\)/);
+  assert.match(cbtModulesSource, /qbInlineArg\(j\.id\)/);
 });
 
 await test('Student master writes are admin-owned and self password may remain unchanged', () => {

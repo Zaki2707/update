@@ -384,13 +384,13 @@ function openQuestionBankGroupModal() {
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Mata Pelajaran</label>
                         <select id="gb-mapel" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" required>
-                            ${allowedSubjects.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}
+                            ${allowedSubjects.map(s => `<option value="${qbEscapeAttr(s.id)}">${qbEscapeHtml(s.name)}</option>`).join('')}
                         </select>
                     </div>
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Kelas</label>
                         <select id="gb-kelas" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" required>
-                            ${(appState.classes || []).map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+                            ${(appState.classes || []).map(c => `<option value="${qbEscapeAttr(c.id)}">${qbEscapeHtml(c.name)}</option>`).join('')}
                         </select>
                     </div>
                     <div class="flex justify-end space-x-2 pt-2">
@@ -2175,7 +2175,7 @@ function renderJournalModule(container) {
                         <label class="block text-xs uppercase font-semibold text-slate-500 mb-1.5">Mata Pelajaran</label>
                         <select onchange="appState.activeJournalSubjectId = this.value; renderJournalModule(document.getElementById('view-container'))" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500">
                             <option value="">-- Pilih Mata Pelajaran --</option>
-                            ${subjects.map(s => `<option value="${s.id}">${s.name} (${s.code || ''})</option>`).join('')}
+                            ${subjects.map(s => `<option value="${qbEscapeAttr(s.id)}">${qbEscapeHtml(s.name)} (${qbEscapeHtml(s.code || '')})</option>`).join('')}
                         </select>
                     </div>
                 </div>
@@ -2193,7 +2193,7 @@ function renderJournalModule(container) {
                         </div>
                         <div>
                             <span class="text-[10px] font-extrabold text-emerald-800 uppercase tracking-wide">Mata Pelajaran Terpilih</span>
-                            <h2 class="text-sm font-bold text-emerald-900">${subObj ? subObj.name : ''} (${subObj ? subObj.code : ''})</h2>
+                            <h2 class="text-sm font-bold text-emerald-900">${qbEscapeHtml(subObj ? subObj.name : '')} (${qbEscapeHtml(subObj ? subObj.code : '')})</h2>
                         </div>
                     </div>
                     <button type="button" onclick="appState.activeJournalSubjectId = ''; renderJournalModule(document.getElementById('view-container'))" class="px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-emerald-200 font-bold rounded-xl text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-sm">
@@ -2214,14 +2214,14 @@ function renderJournalModule(container) {
                                 <div class="bg-white p-5 rounded-2xl border border-slate-100 hover:border-emerald-200 shadow-sm flex flex-col justify-between space-y-4 hover:shadow transition duration-200">
                                     <div class="flex items-start justify-between">
                                         <div class="space-y-1">
-                                            <div class="text-slate-800 font-extrabold text-sm uppercase">${c.name}</div>
-                                            <div class="text-[10px] text-slate-400 font-medium">Angkatan: ${c.generation || '-'}</div>
+                                            <div class="text-slate-800 font-extrabold text-sm uppercase">${qbEscapeHtml(c.name)}</div>
+                                            <div class="text-[10px] text-slate-400 font-medium">Angkatan: ${qbEscapeHtml(c.generation || '-')}</div>
                                         </div>
                                         <div class="px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-100 text-[10px] font-extrabold text-emerald-700 whitespace-nowrap">
                                             ${count} Jurnal
                                         </div>
                                     </div>
-                                    <button type="button" onclick="appState.activeJournalClassId = '${c.id}'; renderJournalModule(document.getElementById('view-container'))" class="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-sm">
+                                    <button type="button" onclick="appState.activeJournalClassId = ${qbInlineArg(c.id)}; renderJournalModule(document.getElementById('view-container'))" class="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-sm">
                                         <i class="fa-solid fa-sliders"></i><span>Kelola & Generate Jurnal</span>
                                     </button>
                                 </div>
@@ -2243,7 +2243,7 @@ function renderJournalModule(container) {
                         </div>
                         <div>
                             <span class="text-[10px] font-extrabold text-emerald-800 uppercase tracking-wide">Jurnal Mengajar Kelas</span>
-                            <h2 class="text-sm font-bold text-emerald-900">${subObj ? subObj.name : ''} - Kelas ${classObj ? classObj.name : ''}</h2>
+                            <h2 class="text-sm font-bold text-emerald-900">${qbEscapeHtml(subObj ? subObj.name : '')} - Kelas ${qbEscapeHtml(classObj ? classObj.name : '')}</h2>
                         </div>
                     </div>
                     <div class="flex items-center gap-2 flex-wrap">
@@ -2268,16 +2268,16 @@ function renderJournalModule(container) {
                     ` : filteredJournals.map(j => `
                         <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 hover:border-emerald-100 transition duration-150 space-y-3 relative group">
                             <div class="flex justify-between items-center">
-                                <span class="text-xs font-bold text-emerald-700"><i class="fa-solid fa-calendar-days mr-1.5"></i>${j.date}</span>
+                                <span class="text-xs font-bold text-emerald-700"><i class="fa-solid fa-calendar-days mr-1.5"></i>${qbEscapeHtml(j.date)}</span>
                                 <div class="flex items-center gap-2">
-                                    <span class="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-xl text-[10px] font-bold border border-emerald-100">Ketercapaian: ${j.achievement}</span>
-                                    <button type="button" onclick="openEditJournalModal('${j.id}')" class="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs transition cursor-pointer" title="Edit Jurnal"><i class="fa-solid fa-pen-to-square"></i></button>
-                                    <button type="button" onclick="deleteJournal('${j.id}')" class="p-2 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-xs transition cursor-pointer" title="Hapus Jurnal"><i class="fa-solid fa-trash"></i></button>
+                                    <span class="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-xl text-[10px] font-bold border border-emerald-100">Ketercapaian: ${qbEscapeHtml(j.achievement)}</span>
+                                    <button type="button" onclick="openEditJournalModal(${qbInlineArg(j.id)})" class="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs transition cursor-pointer" title="Edit Jurnal"><i class="fa-solid fa-pen-to-square"></i></button>
+                                    <button type="button" onclick="deleteJournal(${qbInlineArg(j.id)})" class="p-2 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-xs transition cursor-pointer" title="Hapus Jurnal"><i class="fa-solid fa-trash"></i></button>
                                 </div>
                             </div>
-                            <h3 class="font-bold text-slate-800 text-base">Materi: ${j.material}</h3>
-                            <p class="text-xs text-slate-600 whitespace-pre-line leading-relaxed">${j.enrichment || '-'}</p>
-                            ${j.notes ? `<p class="text-[11px] text-slate-400 italic mt-2">Catatan: ${j.notes}</p>` : ''}
+                            <h3 class="font-bold text-slate-800 text-base">Materi: ${qbEscapeHtml(j.material)}</h3>
+                            <p class="text-xs text-slate-600 whitespace-pre-line leading-relaxed">${qbEscapeHtml(j.enrichment || '-')}</p>
+                            ${j.notes ? `<p class="text-[11px] text-slate-400 italic mt-2">Catatan: ${qbEscapeHtml(j.notes)}</p>` : ''}
                         </div>
                     `).join('')}
                 </div>
@@ -2354,12 +2354,12 @@ function openEditJournalModal(id) {
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
             <div id="modal-content-box" class="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-6 space-y-4">
                 <div class="flex justify-between items-center"><h3 class="font-bold text-slate-800">Edit Jurnal Mengajar</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-lg text-slate-400 hover:text-slate-600"></i></button></div>
-                <form onsubmit="saveEditedJournal(event, '${journal.id}')" class="space-y-3 text-xs sm:text-sm">
+                <form onsubmit="saveEditedJournal(event, ${qbInlineArg(journal.id)})" class="space-y-3 text-xs sm:text-sm">
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1 font-semibold">Tanggal Kegiatan Jurnal</label>
-                        <input type="date" id="j-date" value="${currentDate}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl text-slate-800 font-medium">
+                        <input type="date" id="j-date" value="${qbEscapeAttr(currentDate)}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl text-slate-800 font-medium">
                     </div>
-                    <div><label class="block text-xs uppercase text-slate-500 mb-1 font-semibold">Materi / Topik</label><input type="text" id="j-mat" value="${journal.material || ''}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl"></div>
+                    <div><label class="block text-xs uppercase text-slate-500 mb-1 font-semibold">Materi / Topik</label><input type="text" id="j-mat" value="${qbEscapeAttr(journal.material || '')}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl"></div>
                     <div>
                         <div class="flex justify-between items-center mb-1">
                             <label class="block text-xs uppercase text-slate-500 font-semibold">Pengayaan / Uraian Kegiatan</label>
@@ -2372,11 +2372,11 @@ function openEditJournalModal(id) {
                                 </button>
                             </div>
                         </div>
-                        <textarea id="j-enrichment" rows="4" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl">${journal.enrichment || ''}</textarea>
+                        <textarea id="j-enrichment" rows="4" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl">${qbEscapeHtml(journal.enrichment || '')}</textarea>
                     </div>
                     <div class="grid grid-cols-2 gap-3">
-                        <div><label class="block text-xs uppercase text-slate-500 mb-1 font-semibold">Ketercapaian</label><input type="text" id="j-ach" value="${journal.achievement || '95%'}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl"></div>
-                        <div><label class="block text-xs uppercase text-slate-500 mb-1 font-semibold">Catatan Guru</label><input type="text" id="j-not" value="${journal.notes || ''}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl"></div>
+                        <div><label class="block text-xs uppercase text-slate-500 mb-1 font-semibold">Ketercapaian</label><input type="text" id="j-ach" value="${qbEscapeAttr(journal.achievement || '95%')}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl"></div>
+                        <div><label class="block text-xs uppercase text-slate-500 mb-1 font-semibold">Catatan Guru</label><input type="text" id="j-not" value="${qbEscapeAttr(journal.notes || '')}" required class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl"></div>
                     </div>
                     <div class="flex justify-end space-x-2 pt-2"><button type="button" onclick="closeModal()" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer transition">Batal</button><button type="submit" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold cursor-pointer shadow transition">Perbarui Jurnal</button></div>
                 </form>
@@ -3946,7 +3946,7 @@ function openImportConvertedToBankModal() {
                                 ${existingGroups.map(bg => {
                                     const subj = subjects.find(s => String(s.id) === String(bg.subjectId));
                                     const cls = classes.find(c => String(c.id) === String(bg.classId));
-                                    return `<option value="${bg.code}">${bg.code} - ${subj?.name || 'Umum'} (Kelas ${cls?.name || 'Semua'})</option>`;
+                                    return `<option value="${qbEscapeAttr(bg.code)}">${qbEscapeHtml(bg.code)} - ${qbEscapeHtml(subj?.name || 'Umum')} (Kelas ${qbEscapeHtml(cls?.name || 'Semua')})</option>`;
                                 }).join('')}
                             </select>
                         `}
@@ -3961,13 +3961,13 @@ function openImportConvertedToBankModal() {
                         <div>
                             <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Mata Pelajaran <span class="text-rose-500">*</span></label>
                             <select id="import-bank-mapel" class="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
-                                ${allowedSubjects.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}
+                                ${allowedSubjects.map(s => `<option value="${qbEscapeAttr(s.id)}">${qbEscapeHtml(s.name)}</option>`).join('')}
                             </select>
                         </div>
                         <div>
                             <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Kelas <span class="text-rose-500">*</span></label>
                             <select id="import-bank-kelas" class="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
-                                ${(appState.classes || []).map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+                                ${(appState.classes || []).map(c => `<option value="${qbEscapeAttr(c.id)}">${qbEscapeHtml(c.name)}</option>`).join('')}
                             </select>
                         </div>
                     </div>

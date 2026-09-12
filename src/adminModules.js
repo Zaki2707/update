@@ -3,6 +3,19 @@ import JSZip from 'jszip';
 var appState = window.appState || {};
 // Admin Modules: Kelas, Guru, Siswa, Jadwal & Mapel
 
+function adminEscapeHtml(value) {
+    const raw = String(value ?? '');
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(raw);
+    return raw.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+function adminEscapeAttr(value) {
+    if (typeof window.escapeHtmlAttr === 'function') return window.escapeHtmlAttr(value);
+    return adminEscapeHtml(value);
+}
+function adminInlineArg(value) {
+    return adminEscapeAttr(JSON.stringify(String(value ?? '')));
+}
+
 window.getClassGrades = function() {
     if (!appState.classGrades || !Array.isArray(appState.classGrades) || appState.classGrades.length === 0) {
         const fromClasses = (appState.classes || []).map(c => c.grade).filter(Boolean);
@@ -1313,9 +1326,7 @@ function getCachedStudentTemporaryPassword(student) {
 }
 
 function escapeStudentCredentialHtml(value) {
-    return String(value ?? '').replace(/[&<>"']/g, ch => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[ch]));
+    return adminEscapeHtml(value);
 }
 
 function renderStudentPasswordForAdmin(student) {
@@ -1455,7 +1466,7 @@ function showStudentProfileModal(studentId) {
     const modal = document.getElementById('modal-container');
     modal.innerHTML = `
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in zoom-in duration-200">
-            <div data-active-student-id="${student.id}" class="bg-white w-full max-w-md sm:max-w-lg rounded-3xl shadow-2xl overflow-hidden relative max-h-[92vh] overflow-y-auto">
+            <div data-active-student-id="${adminEscapeAttr(student.id)}" class="bg-white w-full max-w-md sm:max-w-lg rounded-3xl shadow-2xl overflow-hidden relative max-h-[92vh] overflow-y-auto">
                 <div class="h-32 bg-gradient-to-br from-emerald-500 to-teal-600 relative">
                     <button type="button" onclick="closeModal()" class="absolute top-4 right-4 w-8 h-8 flex items-center justify-center bg-white/20 hover:bg-white/40 text-white rounded-full transition"><i class="fa-solid fa-xmark"></i></button>
                 </div>
@@ -1466,16 +1477,16 @@ function showStudentProfileModal(studentId) {
                                 ${student.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(student.photo) : ''}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-user"></i>`}
                             </div>
                             <div class="absolute bottom-1 right-1 w-6 h-6 border-4 border-white rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'} pointer-events-none"></div>
-                            <button type="button" onclick="document.getElementById('admin-std-photo-input-${student.id}').click()" class="absolute bottom-0 left-0 w-8 h-8 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full flex items-center justify-center shadow-md transition cursor-pointer" title="Ganti/Upload Foto Profil">
+                            <button type="button" onclick="document.getElementById(${adminInlineArg('admin-std-photo-input-' + student.id)}).click()" class="absolute bottom-0 left-0 w-8 h-8 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full flex items-center justify-center shadow-md transition cursor-pointer" title="Ganti/Upload Foto Profil">
                                 <i class="fa-solid fa-camera text-xs"></i>
                             </button>
-                            <input type="file" id="admin-std-photo-input-${student.id}" accept="image/*" class="hidden" onchange="window.uploadStudentPhotoByAdmin(event, '${student.id}')">
+                            <input type="file" id="admin-std-photo-input-${adminEscapeAttr(student.id)}" accept="image/*" class="hidden" onchange="window.uploadStudentPhotoByAdmin(event, ${adminInlineArg(student.id)})">
                         </div>
                     </div>
                     <div class="text-center space-y-1 mb-5">
-                        <h3 class="text-xl font-bold text-slate-800">${student.name}</h3>
-                        <p class="text-emerald-600 font-mono font-semibold">${student.nis || 'NIS Belum Diisi'}</p>
-                        <p class="text-xs text-slate-500 bg-slate-100 inline-block px-3 py-1 rounded-full mt-1 font-medium">${cls ? cls.name : 'Kelas Tidak Diketahui'}</p>
+                        <h3 class="text-xl font-bold text-slate-800">${adminEscapeHtml(student.name)}</h3>
+                        <p class="text-emerald-600 font-mono font-semibold">${adminEscapeHtml(student.nis || 'NIS Belum Diisi')}</p>
+                        <p class="text-xs text-slate-500 bg-slate-100 inline-block px-3 py-1 rounded-full mt-1 font-medium">${adminEscapeHtml(cls ? cls.name : 'Kelas Tidak Diketahui')}</p>
                     </div>
                     
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
@@ -1485,7 +1496,7 @@ function showStudentProfileModal(studentId) {
                             </div>
                             <div class="overflow-hidden">
                                 <p class="text-[10px] text-slate-500 font-medium uppercase">Username</p>
-                                <p class="text-xs font-semibold text-slate-800 truncate">${student.username}</p>
+                                <p class="text-xs font-semibold text-slate-800 truncate">${adminEscapeHtml(student.username)}</p>
                             </div>
                         </div>
                         <div class="bg-slate-50 rounded-2xl p-3.5 flex items-center gap-3">
@@ -1494,7 +1505,7 @@ function showStudentProfileModal(studentId) {
                             </div>
                             <div class="overflow-hidden">
                                 <p class="text-[10px] text-slate-500 font-medium uppercase">No. HP</p>
-                                <p class="text-xs font-semibold text-slate-800 truncate">${student.no_hp || '-'}</p>
+                                <p class="text-xs font-semibold text-slate-800 truncate">${adminEscapeHtml(student.no_hp || '-')}</p>
                             </div>
                         </div>
                     </div>
@@ -1509,7 +1520,7 @@ function showStudentProfileModal(studentId) {
                             Tutup
                         </button>
                         ${(appState.settings?.chatEnabled === true || appState.settings?.chatEnabled === 'true') ? `
-                        <button type="button" onclick="openChatWithStudent('${student.id}')" data-studentid="${student.id}" class="student-chat-btn relative flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-semibold transition text-sm flex items-center justify-center gap-2">
+                        <button type="button" onclick="openChatWithStudent(${adminInlineArg(student.id)})" data-studentid="${adminEscapeAttr(student.id)}" class="student-chat-btn relative flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-2xl font-semibold transition text-sm flex items-center justify-center gap-2">
                             <i class="fa-regular fa-comment-dots"></i> Chat Siswa
                         </button>
                         ` : ''}
