@@ -9,6 +9,7 @@ const adminModules = fs.readFileSync('src/adminModules.js', 'utf8');
 const settingsModule = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
 const chatModule = fs.readFileSync('src/chatModule.js', 'utf8');
 const gameModule = fs.readFileSync('src/gameModule.js', 'utf8');
+const cbtModule = fs.readFileSync('src/cbtModules.js', 'utf8');
 const lkpdModule = fs.readFileSync('src/lkpdModule.js', 'utf8');
 const gitignore = fs.readFileSync('.gitignore', 'utf8');
 const firestoreRules = fs.readFileSync('firestore.rules', 'utf8');
@@ -68,6 +69,9 @@ const checks = [
   ['Student game payload strips direct solution fields', server.includes('function sanitizeGameForStudent') && server.includes('delete safe.answerKey') && server.includes('delete safe.correctAnswer') && server.includes('list.map(sanitizeGameForStudent)')],
   ['Crossword answers are removed from student payload and checked server-side', server.includes("game.gameType === 'crossword'") && server.includes('delete clean.answer') && server.includes('app.post("/api/games/:id/check", requireAuth') && gameModule.includes("challenge: 'crossword'") && gameModule.includes('clue.length')],
   ['Client-only game completion cannot mint XP', server.includes('rewardVerified = serverVerified') && server.includes('isCorrect && rewardVerified && !alreadyRewardedToday')],
+  ['Regular game answers require exact normalized equality', server.includes('isCorrect = (normSubmitted === normTarget);') && !server.includes('normSubmitted.includes(normTarget)') && !server.includes('normTarget.includes(normSubmitted)')],
+  ['Question-bank stored HTML sinks are escaped', cbtModule.includes("qbEscapeHtml(q.question || '')") && cbtModule.includes('qbEscapeHtml(opt)') && cbtModule.includes("qbEscapeHtml(q.answer || '')") && cbtModule.includes('qbEscapeHtml(q.explanation)') && cbtModule.includes('qbSafeImageSrc(q.imageUrl || q.image)') && cbtModule.includes('qbInlineArg(q.id)')],
+  ['CBT LaTeX preview escapes text before KaTeX rendering', cbtModule.includes('katex-preview-block leading-relaxed font-semibold">${qbEscapeHtml(previewText)}</span>') && !cbtModule.includes('katex-preview-block leading-relaxed font-semibold">${previewText}</span>')],
   ['LKPD student answers are HTML-escaped before teacher rendering', lkpdModule.includes('lkpdEscapeHtml(answerText)') && lkpdModule.includes('studentAns ? lkpdEscapeHtml(studentAns)')],
   ['CBT question and essay output is HTML-escaped', assessment.includes('assessmentEscapeHtml(q.question)') && assessment.includes("assessmentEscapeHtml(sess.answers[q.id] || '')") && assessment.includes('assessmentEscapeHtml(opt)')],
   ['Chat is admin-student only', server.includes('Chat hanya tersedia untuk administrator dan siswa.') && server.includes('const isChatAdmin = adminRoles.has(role)')],

@@ -15,6 +15,27 @@ function qbInlineArg(value) {
     return qbEscapeAttr(JSON.stringify(String(value ?? '')));
 }
 
+function qbSafeImageSrc(value) {
+    let raw = String(value ?? '').trim();
+    if (!raw) return '';
+    try {
+        if (typeof window.getPhotoHtmlSrc === 'function') {
+            const resolved = window.getPhotoHtmlSrc(raw);
+            if (resolved) raw = String(resolved).trim();
+        }
+    } catch (_) {}
+    if (/^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(raw)) {
+        return qbEscapeAttr(raw);
+    }
+    try {
+        const parsed = new URL(raw, window.location?.origin || 'http://localhost');
+        if (['http:', 'https:', 'blob:'].includes(parsed.protocol)) {
+            return qbEscapeAttr(raw);
+        }
+    } catch (_) {}
+    return '';
+}
+
 async function loadQuestionBankFromServer(force = false) {
     // QUESTION_BANK_LOAD_GUARD: an empty bank is a valid loaded state, not a reason to refetch forever.
     if (appState._questionBankLoadPromise && !force) return appState._questionBankLoadPromise;
@@ -249,16 +270,16 @@ function renderQuestionBankModule(container) {
                 </div>
 
                 <div class="flex flex-wrap gap-2 w-full sm:w-auto">
-                    <button type="button" onclick="openAddSingleQuestionModal('${activeCode}')" class="px-3.5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2 transition">
+                    <button type="button" onclick="openAddSingleQuestionModal(${qbInlineArg(activeCode)})" class="px-3.5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2 transition">
                         <i class="fa-solid fa-plus"></i><span>Tambah Soal</span>
                     </button>
-                    <button type="button" onclick="openAIGeneratorModal('${activeCode}')" class="px-3.5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2 transition">
+                    <button type="button" onclick="openAIGeneratorModal(${qbInlineArg(activeCode)})" class="px-3.5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2 transition">
                         <i class="fa-solid fa-wand-magic-sparkles"></i><span>Generate AI</span>
                     </button>
-                    <button type="button" onclick="openQuestionImportModal('${activeCode}')" class="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2 transition">
+                    <button type="button" onclick="openQuestionImportModal(${qbInlineArg(activeCode)})" class="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow flex items-center space-x-2 transition">
                         <i class="fa-solid fa-file-arrow-up"></i><span>Import Soal</span>
                     </button>
-                    <button type="button" onclick="openPreviewQuestionBankModal('${activeCode}')" class="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-2xl text-xs font-semibold shadow flex items-center space-x-2 transition cursor-pointer">
+                    <button type="button" onclick="openPreviewQuestionBankModal(${qbInlineArg(activeCode)})" class="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-2xl text-xs font-semibold shadow flex items-center space-x-2 transition cursor-pointer">
                         <i class="fa-solid fa-eye"></i><span>Pratinjau & Cetak</span>
                     </button>
                 </div>
@@ -275,24 +296,24 @@ function renderQuestionBankModule(container) {
                                 <span class="px-2.5 py-1 ${q.type === 'essay' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'} text-xs font-semibold rounded-xl uppercase">${q.type === 'essay' ? 'Essay' : 'Pilihan Ganda'}</span>
                             </div>
                             <div class="flex items-center space-x-1.5">
-                                <button type="button" onclick="openEditSingleQuestionModal('${q.id}')" class="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl transition cursor-pointer" title="Edit Soal">
+                                <button type="button" onclick="openEditSingleQuestionModal(${qbInlineArg(q.id)})" class="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl transition cursor-pointer" title="Edit Soal">
                                     <i class="fa-solid fa-pen-to-square text-xs"></i>
                                 </button>
-                                <button type="button" onclick="deleteIndividualQuestion('${q.id}')" class="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl transition cursor-pointer" title="Hapus Soal">
+                                <button type="button" onclick="deleteIndividualQuestion(${qbInlineArg(q.id)})" class="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl transition cursor-pointer" title="Hapus Soal">
                                     <i class="fa-solid fa-trash-can text-xs"></i>
                                 </button>
                             </div>
                         </div>
-                        <p class="font-semibold text-slate-800 text-sm sm:text-base leading-relaxed">${q.question || ''}</p>
+                        <p class="font-semibold text-slate-800 text-sm sm:text-base leading-relaxed">${qbEscapeHtml(q.question || '')}</p>
                         ${((q.imageUrl || q.image) && (!q.question || !q.question.includes(q.imageUrl || q.image))) ? `
                             <div class="my-2">
-                                <img src="${q.imageUrl || q.image}" class="max-h-56 rounded-2xl border border-slate-200 object-contain shadow-sm" alt="Gambar Soal"/>
+                                <img src="${qbSafeImageSrc(q.imageUrl || q.image)}" class="max-h-56 rounded-2xl border border-slate-200 object-contain shadow-sm" alt="Gambar Soal"/>
                             </div>
                         ` : ''}
                         ${q.type === 'essay' ? `
                             <div class="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-900 space-y-1">
                                 <p class="font-bold">Kunci Esay:</p>
-                                <p>${q.answer || ''}</p>
+                                <p>${qbEscapeHtml(q.answer || '')}</p>
                             </div>
                         ` : `
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
@@ -302,7 +323,7 @@ function renderQuestionBankModule(container) {
                                     const isMatch = opt === q.answer || rawAns.toUpperCase() === letter || rawAns.toUpperCase() === opt.toUpperCase() || (q.correctOptionText && q.correctOptionText === opt);
                                     return `
                                         <div class="p-2.5 rounded-xl border ${isMatch ? 'bg-emerald-50 border-emerald-300 font-bold text-emerald-800' : 'bg-slate-50 border-slate-100 text-slate-700'}">
-                                            <span class="font-bold mr-1">${letter}.</span> ${opt}
+                                            <span class="font-bold mr-1">${letter}.</span> ${qbEscapeHtml(opt)}
                                         </div>
                                     `;
                                 }).join('')}
@@ -310,7 +331,7 @@ function renderQuestionBankModule(container) {
                         `}
                         ${q.explanation ? `
                             <div class="p-2.5 bg-slate-50 border rounded-2xl text-xs text-slate-600">
-                                <span class="font-bold text-slate-700">Pembahasan:</span> ${q.explanation}
+                                <span class="font-bold text-slate-700">Pembahasan:</span> ${qbEscapeHtml(q.explanation)}
                             </div>
                         ` : ''}
                     </div>
@@ -699,7 +720,7 @@ function openPreviewQuestionBankModal(code) {
                         </div>
                         <div>
                             <h3 class="font-extrabold text-sm sm:text-base text-white">Pratinjau & Cetak Naskah Soal Ujian</h3>
-                            <p class="text-xs text-slate-400">Kode: <span class="font-mono text-emerald-400 font-bold">${activeCode || 'BANK'}</span> | ${subObj ? subObj.name : 'Mapel'} - ${clsObj ? clsObj.name : 'Kelas'} (${questions.length} Soal)</p>
+                            <p class="text-xs text-slate-400">Kode: <span class="font-mono text-emerald-400 font-bold">${qbEscapeHtml(activeCode || 'BANK')}</span> | ${qbEscapeHtml(subObj ? subObj.name : 'Mapel')} - ${qbEscapeHtml(clsObj ? clsObj.name : 'Kelas')} (${questions.length} Soal)</p>
                         </div>
                     </div>
                     <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white p-2 rounded-xl transition cursor-pointer">
@@ -724,10 +745,10 @@ function openPreviewQuestionBankModal(code) {
                         <button type="button" onclick="printQuestionPaper('question-paper-document')" class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center space-x-1.5 shadow transition cursor-pointer">
                             <i class="fa-solid fa-print"></i><span>Cetak / PDF</span>
                         </button>
-                        <button type="button" onclick="downloadWordFromPreview('${activeCode}')" class="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center space-x-1.5 shadow transition cursor-pointer">
+                        <button type="button" onclick="downloadWordFromPreview(${qbInlineArg(activeCode)})" class="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center space-x-1.5 shadow transition cursor-pointer">
                             <i class="fa-solid fa-file-word"></i><span>Unduh Word (.doc)</span>
                         </button>
-                        <button type="button" onclick="openExportCbtTableFilterModal('${activeCode}')" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold flex items-center space-x-1.5 shadow transition cursor-pointer">
+                        <button type="button" onclick="openExportCbtTableFilterModal(${qbInlineArg(activeCode)})" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold flex items-center space-x-1.5 shadow transition cursor-pointer">
                             <i class="fa-solid fa-table"></i><span>Cetak Tabel CBT Word</span>
                         </button>
                         <button type="button" onclick="closeModal()" class="px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-semibold transition cursor-pointer">
@@ -741,16 +762,16 @@ function openPreviewQuestionBankModal(code) {
                     <div id="question-paper-document" class="max-w-4xl mx-auto bg-white p-8 sm:p-12 shadow-md rounded-2xl border text-slate-900 space-y-6 font-serif">
                         <!-- KOP MADRASAH -->
                         <div class="text-center border-b-4 border-double border-slate-900 pb-4 space-y-1">
-                            <h2 class="text-base sm:text-lg font-bold uppercase tracking-wider font-sans">${madrasahName}</h2>
+                            <h2 class="text-base sm:text-lg font-bold uppercase tracking-wider font-sans">${qbEscapeHtml(madrasahName)}</h2>
                             <h1 class="text-lg sm:text-xl font-black uppercase tracking-widest text-slate-900 font-sans">PENILAIAN AKHIR SEMESTER / ASESMEN MADRASAH</h1>
-                            <p class="text-xs text-slate-600 font-sans italic">${madrasahAddress}</p>
+                            <p class="text-xs text-slate-600 font-sans italic">${qbEscapeHtml(madrasahAddress)}</p>
                         </div>
 
                         <!-- METADATA TABEL -->
                         <div class="grid grid-cols-2 gap-2 text-xs font-sans border p-3 rounded-xl bg-slate-50/50">
-                            <div><b>Mata Pelajaran:</b> ${subObj ? subObj.name : '-'}</div>
-                            <div><b>Kelas / Semester:</b> ${clsObj ? clsObj.name : '-'} / Ganjil</div>
-                            <div><b>Kode Soal:</b> ${activeCode || '-'}</div>
+                            <div><b>Mata Pelajaran:</b> ${qbEscapeHtml(subObj ? subObj.name : '-')}</div>
+                            <div><b>Kelas / Semester:</b> ${qbEscapeHtml(clsObj ? clsObj.name : '-')} / Ganjil</div>
+                            <div><b>Kode Soal:</b> ${qbEscapeHtml(activeCode || '-')}</div>
                             <div><b>Waktu / Bentuk:</b> 90 Menit / PG & Essay</div>
                         </div>
 
@@ -775,11 +796,11 @@ function openPreviewQuestionBankModal(code) {
                                     <div class="flex items-start space-x-2">
                                         <span class="font-bold min-w-[24px] text-slate-900">${idx + 1}.</span>
                                         <div class="flex-1 space-y-2">
-                                            <p class="font-medium text-slate-900 leading-relaxed">${q.question || ''}</p>
+                                            <p class="font-medium text-slate-900 leading-relaxed">${qbEscapeHtml(q.question || '')}</p>
                                             
                                             ${(q.imageUrl || q.image) ? `
                                                 <div class="my-2">
-                                                    <img src="${q.imageUrl || q.image}" class="max-h-56 rounded-lg border object-contain" alt="Gambar Soal"/>
+                                                    <img src="${qbSafeImageSrc(q.imageUrl || q.image)}" class="max-h-56 rounded-lg border object-contain" alt="Gambar Soal"/>
                                                 </div>
                                             ` : ''}
 
@@ -787,7 +808,7 @@ function openPreviewQuestionBankModal(code) {
                                                 <div class="text-xs text-slate-500 italic py-1">[ Soal Uraian / Essay ]</div>
                                                 <div class="preview-key-box hidden p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1 mt-2">
                                                     <span class="font-bold block uppercase text-[10px] text-amber-700">Kunci Jawaban Essay:</span>
-                                                    <p>${q.answer || '-'}</p>
+                                                    <p>${qbEscapeHtml(q.answer || '-')}</p>
                                                 </div>
                                             ` : `
                                                 <div class="flex flex-col space-y-1.5 text-xs text-slate-800 pt-1">
@@ -807,20 +828,20 @@ function openPreviewQuestionBankModal(code) {
                                                             return `
                                                                 <div class="flex items-start space-x-2">
                                                                     <span class="font-bold min-w-[20px] text-slate-900">${charLabel}.</span>
-                                                                    <div class="flex-1 leading-relaxed">${opt}</div>
+                                                                    <div class="flex-1 leading-relaxed">${qbEscapeHtml(opt)}</div>
                                                                 </div>
                                                             `;
                                                         }).join('');
                                                     })()}
                                                 </div>
                                                 <div class="preview-key-box hidden text-xs font-bold text-emerald-800 mt-2 p-2.5 bg-emerald-50 border border-emerald-200/80 rounded-xl">
-                                                    Kunci Jawaban: <span class="font-black text-emerald-950">${q.answer || 'A'}</span>
+                                                    Kunci Jawaban: <span class="font-black text-emerald-950">${qbEscapeHtml(q.answer || 'A')}</span>
                                                 </div>
                                             `}
 
                                             ${q.explanation ? `
                                                 <div class="preview-exp-box hidden p-2.5 bg-slate-100 border rounded-xl text-xs text-slate-600 mt-2">
-                                                    <span class="font-bold text-slate-800">Pembahasan:</span> ${q.explanation}
+                                                    <span class="font-bold text-slate-800">Pembahasan:</span> ${qbEscapeHtml(q.explanation)}
                                                 </div>
                                             ` : ''}
                                         </div>
@@ -1195,45 +1216,45 @@ function executeExportCbtTableWord(e, code) {
                 <tbody>
                     <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">TS</td>
-                        <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${tsVal}</td>
+                        <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(tsVal)}</td>
                     </tr>
                     <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">KD</td>
-                        <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${kdVal}</td>
+                        <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(kdVal)}</td>
                     </tr>
                     <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">KJ</td>
-                        <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${kjVal}</td>
+                        <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(kjVal)}</td>
                     </tr>
                     <tr style="background-color: #d1fae5; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #a7f3d0; color: #064e3b; font-weight: bold; mso-para-margin: 0cm;">ABS</td>
-                        <td style="padding: 4pt 6pt; color: #064e3b; mso-para-margin: 0cm;">${q.explanation || ''}</td>
+                        <td style="padding: 4pt 6pt; color: #064e3b; mso-para-margin: 0cm;">${qbEscapeHtml(q.explanation || '')}</td>
                     </tr>
                     <tr style="background-color: #ffffff; border-bottom: 1pt solid #cbd5e1;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; vertical-align: top; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">${qNum}.</td>
-                        <td style="padding: 4pt 6pt; font-weight: 600; color: #0f172a; line-height: 1.4; mso-para-margin: 0cm;">${q.question || ''}</td>
+                        <td style="padding: 4pt 6pt; font-weight: 600; color: #0f172a; line-height: 1.4; mso-para-margin: 0cm;">${qbEscapeHtml(q.question || '')}</td>
                     </tr>
                     ${!isEssay ? `
                     <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">A</td>
-                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${optA}</td>
+                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(optA)}</td>
                     </tr>
                     <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">B</td>
-                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${optB}</td>
+                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(optB)}</td>
                     </tr>
                     <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">C</td>
-                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${optC}</td>
+                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(optC)}</td>
                     </tr>
                     <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">D</td>
-                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${optD}</td>
+                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(optD)}</td>
                     </tr>
                     ${optE ? `
                     <tr style="background-color: #ffffff; border-bottom: 1pt solid #cbd5e1;">
                         <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">E</td>
-                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${optE}</td>
+                        <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(optE)}</td>
                     </tr>
                     ` : ''}
                     ` : ''}
@@ -3135,7 +3156,7 @@ function openConvertQuestionModal(activeCode = '') {
                                 <input type="file" id="cvt-word-input" accept=".docx, .doc, .txt, .html, .htm" onchange="handleConvertWordFileUpload(event)" class="hidden" />
                             </label>
                             ${activeCode ? `
-                                <button type="button" onclick="loadActiveBankQuestionsToConvert('${activeCode}')" class="px-3 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold rounded-xl text-xs transition flex items-center space-x-1.5 cursor-pointer shadow-sm">
+                                <button type="button" onclick="loadActiveBankQuestionsToConvert(${qbInlineArg(activeCode)})" class="px-3 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold rounded-xl text-xs transition flex items-center space-x-1.5 cursor-pointer shadow-sm">
                                     <i class="fa-solid fa-file-import"></i><span>Muat Soal dari Bank Soal (${activeCode})</span>
                                 </button>
                             ` : ''}
@@ -3146,7 +3167,7 @@ function openConvertQuestionModal(activeCode = '') {
                         <textarea id="cvt-raw-text" rows="8" class="w-full p-3 bg-slate-50 border border-slate-300 rounded-2xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500 transition leading-relaxed" placeholder="Tempel/Copas seluruh soal atau upload file Word di sini...&#10;&#10;Contoh format soal matematika:&#10;1. Jika f(x) = x^2 + 3x dan g(x) = 2x - 5, maka nilai (f+g)(x) adalah ....&#10;A. x^2 + 5x - 5&#10;B. x^2 + 3x + 5&#10;C. x^2 - 3x + 5&#10;D. x^2 - 3x - 5&#10;E. x^2 - 5x + 5&#10;Kunci: A&#10;&#10;2. Jika f(x) = 2x + 3, maka f^-1(x) adalah ....&#10;A. 1/2(x+3)&#10;B. 1/2(2x-3)&#10;C. 1/2(x-3)&#10;D. 1/2(x-2)&#10;E. 1/2(x+2)&#10;Kunci: C&#10;&#10;3. Besar ∠ ACB adalah ....&#10;A. 24,5°&#10;B. 27,5°&#10;C. 32,5°&#10;Kunci: A"></textarea>
                     </div>
 
-                    <button type="button" onclick="runQuestionConversion('${activeCode}')" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl text-xs shadow-md transition flex items-center justify-center space-x-2 cursor-pointer">
+                    <button type="button" onclick="runQuestionConversion(${qbInlineArg(activeCode)})" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl text-xs shadow-md transition flex items-center justify-center space-x-2 cursor-pointer">
                         <i class="fa-solid fa-wand-magic-sparkles"></i><span>Convert Soal Sekarang</span>
                     </button>
 
@@ -3227,11 +3248,11 @@ function loadActiveBankQuestionsToConvert(activeCode) {
         }
 
         formattedLines.push(`${num}. ${qText}`);
-        if (optA) formattedLines.push(`A. ${optA}`);
-        if (optB) formattedLines.push(`B. ${optB}`);
-        if (optC) formattedLines.push(`C. ${optC}`);
-        if (optD) formattedLines.push(`D. ${optD}`);
-        if (optE) formattedLines.push(`E. ${optE}`);
+        if (optA) formattedLines.push(`A. ${qbEscapeHtml(optA)}`);
+        if (optB) formattedLines.push(`B. ${qbEscapeHtml(optB)}`);
+        if (optC) formattedLines.push(`C. ${qbEscapeHtml(optC)}`);
+        if (optD) formattedLines.push(`D. ${qbEscapeHtml(optD)}`);
+        if (optE) formattedLines.push(`E. ${qbEscapeHtml(optE)}`);
         formattedLines.push(`Kunci: ${kj}`);
         formattedLines.push('');
     });
@@ -3269,7 +3290,7 @@ function renderCbtTableCell(text) {
             </div>
             <div class="text-xs text-indigo-950 bg-indigo-50/80 px-2.5 py-1.5 rounded-lg border border-indigo-200/80 flex items-center flex-wrap gap-2">
                 <span class="text-[10px] font-extrabold text-indigo-700 uppercase tracking-wider shrink-0 bg-indigo-200/80 px-1.5 py-0.5 rounded shadow-2xs">Pratinjau Render:</span>
-                <span class="katex-preview-block leading-relaxed font-semibold">${previewText}</span>
+                <span class="katex-preview-block leading-relaxed font-semibold">${qbEscapeHtml(previewText)}</span>
             </div>
         </div>
     `;
@@ -3314,19 +3335,19 @@ function runQuestionConversion(activeCode = '') {
                     <tbody>
                         <tr class="bg-amber-200/80 font-bold border-b border-slate-300">
                             <td class="w-16 p-2 border-r border-slate-300 text-center bg-amber-300/80 text-slate-800">TS</td>
-                            <td class="p-2 font-semibold text-slate-800">${q.ts}</td>
+                            <td class="p-2 font-semibold text-slate-800">${qbEscapeHtml(q.ts)}</td>
                         </tr>
                         <tr class="bg-amber-200/80 font-bold border-b border-slate-300">
                             <td class="p-2 border-r border-slate-300 text-center bg-amber-300/80 text-slate-800">KD</td>
-                            <td class="p-2 font-semibold text-slate-800">${q.kd}</td>
+                            <td class="p-2 font-semibold text-slate-800">${qbEscapeHtml(q.kd)}</td>
                         </tr>
                         <tr class="bg-amber-200/80 font-bold border-b border-slate-300">
                             <td class="p-2 border-r border-slate-300 text-center bg-amber-300/80 text-slate-800">KJ</td>
-                            <td class="p-2 font-semibold text-slate-800">${q.kj}</td>
+                            <td class="p-2 font-semibold text-slate-800">${qbEscapeHtml(q.kj)}</td>
                         </tr>
                         <tr class="bg-emerald-100/90 font-bold border-b border-slate-300">
                             <td class="p-2 border-r border-slate-300 text-center bg-emerald-200/90 text-emerald-900">ABS</td>
-                            <td class="p-2">${q.abs || ''}</td>
+                            <td class="p-2">${qbEscapeHtml(q.abs || '')}</td>
                         </tr>
                         <tr class="bg-white border-b border-slate-300">
                             <td class="p-2 border-r border-slate-300 font-bold text-center align-top bg-slate-50 text-slate-700">${q.num}.</td>
@@ -3621,17 +3642,17 @@ function parseRawTextToCBTFormat(rawText, defaultTS = 'PG', defaultKD = '1.0.1',
     const outputLines = [];
     for (let i = 0; i < parsedQuestions.length; i++) {
         const q = parsedQuestions[i];
-        outputLines.push(`TS\t${q.ts}`);
-        outputLines.push(`KD\t${q.kd}`);
-        outputLines.push(`KJ\t${q.kj}`);
+        outputLines.push(`TS\t${qbEscapeHtml(q.ts)}`);
+        outputLines.push(`KD\t${qbEscapeHtml(q.kd)}`);
+        outputLines.push(`KJ\t${qbEscapeHtml(q.kj)}`);
         outputLines.push(`ABS\t`);
-        outputLines.push(`${q.num}.\t${q.questionText}`);
-        outputLines.push(`A\t${q.options.A || ''}`);
-        outputLines.push(`B\t${q.options.B || ''}`);
-        outputLines.push(`C\t${q.options.C || ''}`);
-        outputLines.push(`D\t${q.options.D || ''}`);
+        outputLines.push(`${q.num}.\t${qbEscapeHtml(q.questionText)}`);
+        outputLines.push(`A\t${qbEscapeHtml(q.options.A || '')}`);
+        outputLines.push(`B\t${qbEscapeHtml(q.options.B || '')}`);
+        outputLines.push(`C\t${qbEscapeHtml(q.options.C || '')}`);
+        outputLines.push(`D\t${qbEscapeHtml(q.options.D || '')}`);
         if (optionCount >= 5) {
-            outputLines.push(`E\t${q.options.E || ''}`);
+            outputLines.push(`E\t${qbEscapeHtml(q.options.E || '')}`);
         }
 
         if (i < parsedQuestions.length - 1) {
@@ -3717,44 +3738,44 @@ function downloadConvertedWordDoc() {
             <tbody>
                 <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">TS</td>
-                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${q.ts}</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.ts)}</td>
                 </tr>
                 <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">KD</td>
-                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${q.kd}</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.kd)}</td>
                 </tr>
                 <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">KJ</td>
-                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${q.kj}</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.kj)}</td>
                 </tr>
                 <tr style="background-color: #d1fae5; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #a7f3d0; color: #064e3b; font-weight: bold; mso-para-margin: 0cm;">ABS</td>
-                    <td style="padding: 4pt 6pt; color: #064e3b; mso-para-margin: 0cm;">${q.abs || ''}</td>
+                    <td style="padding: 4pt 6pt; color: #064e3b; mso-para-margin: 0cm;">${qbEscapeHtml(q.abs || '')}</td>
                 </tr>
                 <tr style="background-color: #ffffff; border-bottom: 1pt solid #cbd5e1;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; vertical-align: top; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">${q.num}.</td>
-                    <td style="padding: 4pt 6pt; font-weight: 600; color: #0f172a; line-height: 1.4; mso-para-margin: 0cm;">${q.questionText}</td>
+                    <td style="padding: 4pt 6pt; font-weight: 600; color: #0f172a; line-height: 1.4; mso-para-margin: 0cm;">${qbEscapeHtml(q.questionText)}</td>
                 </tr>
                 <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">A</td>
-                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${q.options.A || ''}</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.A || '')}</td>
                 </tr>
                 <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">B</td>
-                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${q.options.B || ''}</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.B || '')}</td>
                 </tr>
                 <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">C</td>
-                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${q.options.C || ''}</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.C || '')}</td>
                 </tr>
                 <tr style="background-color: #ffffff; border-bottom: ${optionCount >= 5 ? '1pt solid #e2e8f0' : '1pt solid #cbd5e1'};">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">D</td>
-                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${q.options.D || ''}</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.D || '')}</td>
                 </tr>
                 ${optionCount >= 5 ? `
                 <tr style="background-color: #ffffff; border-bottom: 1pt solid #cbd5e1;">
                     <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">E</td>
-                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${q.options.E || ''}</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.E || '')}</td>
                 </tr>
                 ` : ''}
             </tbody>
@@ -4169,11 +4190,11 @@ function parseWordHtmlToText(html) {
 
             if (isCbtTable && qText) {
                 let block = `${qNum || '1'}. ${qText}`;
-                if (optA) block += `\nA. ${optA}`;
-                if (optB) block += `\nB. ${optB}`;
-                if (optC) block += `\nC. ${optC}`;
-                if (optD) block += `\nD. ${optD}`;
-                if (optE) block += `\nE. ${optE}`;
+                if (optA) block += `\nA. ${qbEscapeHtml(optA)}`;
+                if (optB) block += `\nB. ${qbEscapeHtml(optB)}`;
+                if (optC) block += `\nC. ${qbEscapeHtml(optC)}`;
+                if (optD) block += `\nD. ${qbEscapeHtml(optD)}`;
+                if (optE) block += `\nE. ${qbEscapeHtml(optE)}`;
                 if (kj) block += `\nKunci: ${kj}`;
                 textParts.push(block);
             } else {
