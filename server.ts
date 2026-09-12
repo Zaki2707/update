@@ -3275,7 +3275,8 @@ let appSettings = bootStore['settings'] || {
   schoolName: 'Madrasah Bisa',
   adminName: 'Administrator',
   adminUser: 'admin',
-  adminPass: 'admin123',
+  // No built-in admin password. Existing persisted installations keep their configured credential.
+  adminPass: '',
   radius: 100,
   accuracy: 10,
   theme: 'emerald',

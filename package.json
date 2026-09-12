@@ -12,6 +12,8 @@
     "lint": "tsc --noEmit",
     "security:audit": "node scripts/security-audit.cjs",
     "hardening:regression": "node --import tsx scripts/hardening-regression.ts",
+    "runtime:regression": "node --import tsx scripts/runtime-regression.ts",
+    "runtime:smoke": "node scripts/runtime-smoke.cjs",
     "frontend:handler-audit": "node scripts/check-inline-handler-globals.mjs",
     "font:asset-audit": "node scripts/font-asset-audit.mjs"
   },
