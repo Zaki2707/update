@@ -2861,6 +2861,12 @@ async function saveExam(e) {
                         sess.timeLeft = Math.max(10, (sess.timeLeft || 0) + durationDiffSec);
                         sess.duration = newDuration;
                         sess.extraTimeAdded = (sess.extraTimeAdded || 0) + durationDiffSec;
+                        // CBT_LOCAL_TIME_EXTENSION_V2: keep the browser countdown aligned
+                        // immediately; the server independently derives the authoritative endsAt.
+                        const currentEndsAt = Number(sess.endsAt);
+                        if (Number.isFinite(currentEndsAt) && currentEndsAt > 0) {
+                            sess.endsAt = currentEndsAt + (durationDiffSec * 1000);
+                        }
                         if (sess.exam) sess.exam.duration = newDuration;
                         batchToSync[sessKey] = sess;
                         extendedCount++;
@@ -3302,7 +3308,18 @@ function reconcileStudentCbtServerSummary(studentId, examList, summary) {
                     queuedAnswers[String(item.questionId)] = item.answer;
                 }
             });
-            const mergedAnswers = { ...(serverSession.answers || {}), ...queuedAnswers };
+            // CBT_RESUME_LOCAL_ANSWER_PRECEDENCE_V2: server answers are the baseline,
+            // but locally persisted/write-ahead answers may be newer after logout/reconnect.
+            const localStoredAnswers = appState.studentExamAnswers[key] && typeof appState.studentExamAnswers[key] === 'object'
+                ? appState.studentExamAnswers[key] : {};
+            const localSessionAnswers = appState.activeExamSessions[key]?.answers && typeof appState.activeExamSessions[key].answers === 'object'
+                ? appState.activeExamSessions[key].answers : {};
+            const mergedAnswers = {
+                ...(serverSession.answers || {}),
+                ...localStoredAnswers,
+                ...localSessionAnswers,
+                ...queuedAnswers
+            };
             appState.activeExamSessions[key] = {
                 ...serverSession,
                 answers: mergedAnswers,
@@ -3395,6 +3412,11 @@ async function renderStudentCBTList(container, isRefresh = false) {
             if (mySumRes.success) {
                 const authoritativeExamList = exRes.success ? (exRes.exams || []) : (appState.exams || []);
                 reconcileStudentCbtServerSummary(stId, authoritativeExamList, mySumRes);
+                // After authenticated login/reload, retry any write-ahead answers for
+                // sessions that still exist on the server.
+                if (window.flushPendingOfflineAnswers) {
+                    window.flushPendingOfflineAnswers().catch(() => {});
+                }
                 changed = true;
             }
             if (changed) {
@@ -4026,7 +4048,8 @@ async function startStudentExam(examId) {
                 if (res.session.endsAt) sessionData.endsAt = res.session.endsAt;
                 if (typeof res.session.remainingTime === 'number') sessionData.timeLeft = res.session.remainingTime;
                 if (res.session.answers && Object.keys(res.session.answers).length > 0) {
-                    sessionData.answers = { ...sessionData.answers, ...res.session.answers };
+                    // Preserve newer local/write-ahead answers until the server confirms them.
+                    sessionData.answers = { ...res.session.answers, ...sessionData.answers };
                     sessionData.answeredCount = Object.keys(sessionData.answers).length;
                 }
                 if (typeof res.session.currentIndex === 'number') {
@@ -4082,7 +4105,8 @@ async function startStudentExam(examId) {
                 if (res.session.endsAt) sessionData.endsAt = res.session.endsAt;
                 if (typeof res.session.remainingTime === 'number') sessionData.timeLeft = res.session.remainingTime;
                 if (res.session.answers && Object.keys(res.session.answers).length > 0) {
-                    sessionData.answers = { ...sessionData.answers, ...res.session.answers };
+                    // Preserve newer local/write-ahead answers until the server confirms them.
+                    sessionData.answers = { ...res.session.answers, ...sessionData.answers };
                     sessionData.answeredCount = Object.keys(sessionData.answers).length;
                 }
                 if (typeof res.session.currentIndex === 'number') {
@@ -4753,6 +4777,33 @@ function setPendingOfflineQueue(q) {
     } catch(e) {}
 }
 
+function upsertPendingOfflineAnswer(payload) {
+    // CBT_ANSWER_WRITE_AHEAD_V2: queue before network I/O so logout, refresh,
+    // auth rotation, or a dropped request cannot erase the student's latest answer.
+    const queue = getPendingOfflineQueue();
+    const existingIdx = queue.findIndex(item =>
+        String(item?.studentId) === String(payload?.studentId) &&
+        String(item?.examId) === String(payload?.examId) &&
+        String(item?.questionId) === String(payload?.questionId)
+    );
+    if (existingIdx >= 0) queue[existingIdx] = payload;
+    else queue.push(payload);
+    setPendingOfflineQueue(queue);
+    window._pendingOfflineAnswers = queue;
+    return queue;
+}
+
+function removePendingOfflineAnswer(payload) {
+    const queue = getPendingOfflineQueue().filter(item =>
+        !(String(item?.studentId) === String(payload?.studentId) &&
+          String(item?.examId) === String(payload?.examId) &&
+          String(item?.questionId) === String(payload?.questionId))
+    );
+    setPendingOfflineQueue(queue);
+    window._pendingOfflineAnswers = queue;
+    return queue;
+}
+
 window._pendingOfflineAnswers = getPendingOfflineQueue();
 
 window.updateCbtSyncBadge = function(status) {
@@ -4789,7 +4840,19 @@ window.flushPendingOfflineAnswers = async function() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(item)
             });
-            if (!res.ok) throw new Error('Sync failed');
+            const data = await res.json().catch(() => ({ success: false }));
+            if (!res.ok || !data.success) throw new Error(data.message || 'Sync failed');
+
+            const key = String(item.studentId) + '_' + String(item.examId);
+            if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
+            if (!appState.studentExamAnswers[key]) appState.studentExamAnswers[key] = {};
+            appState.studentExamAnswers[key][item.questionId] = item.answer;
+            safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+
+            if (activeExamSession &&
+                String(activeExamSession.exam?.id) === String(item.examId)) {
+                activeExamSession.answers[item.questionId] = item.answer;
+            }
         } catch(e) {
             remaining.push(item);
         }
@@ -4834,6 +4897,11 @@ function saveExamAnswer(qId, val) {
              safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
         }
 
+        if (!appState.studentExamAnswers) appState.studentExamAnswers = JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
+        if (!appState.studentExamAnswers[key]) appState.studentExamAnswers[key] = {};
+        appState.studentExamAnswers[key][qId] = val;
+        safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+
         const payload = {
             studentId: st.id,
             examId: activeExamSession.exam.id,
@@ -4842,36 +4910,30 @@ function saveExamAnswer(qId, val) {
             currentIndex: activeExamSession.currentIndex
         };
 
-        // Instant Micro-Payload Answer Sync (<150 bytes payload) with Persistent Offline Queue Fallback
+        // Instant Micro-Payload Answer Sync with persistent write-ahead queue.
+        upsertPendingOfflineAnswer(payload);
         window.updateCbtSyncBadge('syncing');
         fetch('/api/exam/attempt/answer', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
-        }).then(r => r.json()).then(res => {
-            if (res.success && res.remainingTime !== undefined && res.remainingTime !== null) {
+        }).then(async r => {
+            const res = await r.json().catch(() => ({ success: false }));
+            if (!r.ok || !res.success) throw new Error(res.message || 'Answer sync failed');
+            return res;
+        }).then(res => {
+            if (res.remainingTime !== undefined && res.remainingTime !== null) {
                 activeExamSession.timeLeft = res.remainingTime;
             }
-            // If answer was in persistent queue, remove it
-            const curQ = getPendingOfflineQueue().filter(i => !(i.studentId === payload.studentId && i.examId === payload.examId && i.questionId === payload.questionId));
-            setPendingOfflineQueue(curQ);
-            window._pendingOfflineAnswers = curQ;
+            const curQ = removePendingOfflineAnswer(payload);
             if (curQ.length === 0) {
                 window.updateCbtSyncBadge('synced');
             } else {
                 window.updateCbtSyncBadge('offline');
             }
         }).catch(() => {
-            // Deduplicate & save in persistent offline queue
-            const curQ = getPendingOfflineQueue();
-            const existingIdx = curQ.findIndex(i => i.studentId === payload.studentId && i.examId === payload.examId && i.questionId === payload.questionId);
-            if (existingIdx >= 0) {
-                curQ[existingIdx] = payload;
-            } else {
-                curQ.push(payload);
-            }
-            setPendingOfflineQueue(curQ);
-            window._pendingOfflineAnswers = curQ;
+            // The item was queued before fetch and remains there until the server confirms it.
+            window._pendingOfflineAnswers = getPendingOfflineQueue();
             window.updateCbtSyncBadge('offline');
         });
         
