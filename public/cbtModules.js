@@ -15,6 +15,25 @@ function qbInlineArg(value) {
     return qbEscapeAttr(JSON.stringify(String(value ?? '')));
 }
 
+function qbDecodeLegacyEntities(value) {
+    let text = String(value ?? '');
+    if (!text || !/&(?:amp|lt|gt|quot|apos|#0*39|#x0*27);/i.test(text)) return text;
+
+    // Normalize legacy/pre-escaped question text back to literal characters.
+    // HTML sinks must still call qbEscapeHtml/renderCbtTableCell afterwards.
+    for (let pass = 0; pass < 2; pass++) {
+        const next = text
+            .replace(/&amp;/gi, '&')
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>')
+            .replace(/&quot;/gi, '"')
+            .replace(/&apos;|&#0*39;|&#x0*27;/gi, "'");
+        if (next === text) break;
+        text = next;
+    }
+    return text;
+}
+
 function qbSafeImageSrc(value) {
     let raw = String(value ?? '').trim();
     if (!raw) return '';
@@ -3267,7 +3286,7 @@ function loadActiveBankQuestionsToConvert(activeCode) {
 function renderCbtTableCell(text) {
     if (!text) return '';
 
-    const sourceText = String(text);
+    const sourceText = qbDecodeLegacyEntities(text);
     const previewText = RAW_LATEX_COMMAND_PATTERN.test(sourceText)
         ? autoConvertMathToLatex(sourceText)
         : sourceText;
