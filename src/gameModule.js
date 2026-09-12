@@ -4826,23 +4826,30 @@ export function buildCrosswordGrid(cluesInput) {
         { number: 4, direction: 'across', row: 4, col: 1, clue: 'Perangkat pencetak dokumen kertas (7 Huruf)', answer: 'PRINTER', points: 40, initialHint: true }
     ];
 
-    const processedClues = clues.map((c, idx) => ({
-        id: `clue_${idx}`,
-        number: parseInt(c.number, 10) || (idx + 1),
-        direction: c.direction === 'down' ? 'down' : 'across',
-        row: parseInt(c.row, 10) || 1,
-        col: parseInt(c.col, 10) || 1,
-        clue: c.clue || 'Petunjuk teka-teki silang',
-        answer: String(c.answer || 'JAWABAN').trim().toUpperCase().replace(/[^A-Z]/g, ''),
-        points: parseInt(c.points, 10) || Math.max(10, (String(c.answer || '').length * 10)),
-        initialHint: c.initialHint !== false
-    }));
+    const processedClues = clues.map((c, idx) => {
+        const answer = String(c.answer || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
+        const length = Math.max(1, parseInt(c.length, 10) || answer.length || 1);
+        return {
+            id: `clue_${idx}`,
+            clueIndex: idx,
+            number: parseInt(c.number, 10) || (idx + 1),
+            direction: c.direction === 'down' ? 'down' : 'across',
+            row: parseInt(c.row, 10) || 1,
+            col: parseInt(c.col, 10) || 1,
+            clue: c.clue || 'Petunjuk teka-teki silang',
+            answer,
+            length,
+            initialLetter: String(c.initialLetter || answer[0] || '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 1),
+            points: parseInt(c.points, 10) || Math.max(10, length * 10),
+            initialHint: c.initialHint !== false
+        };
+    });
 
     let maxRow = 8;
     let maxCol = 8;
 
     processedClues.forEach(c => {
-        const len = c.answer.length;
+        const len = c.length;
         if (c.direction === 'across') {
             maxRow = Math.max(maxRow, c.row);
             maxCol = Math.max(maxCol, c.col + len - 1);
@@ -4868,7 +4875,7 @@ export function buildCrosswordGrid(cluesInput) {
     }
 
     processedClues.forEach(clue => {
-        const len = clue.answer.length;
+        const len = clue.length;
         for (let i = 0; i < len; i++) {
             const r = clue.direction === 'across' ? clue.row : clue.row + i;
             const c = clue.direction === 'across' ? clue.col + i : clue.col;
@@ -4876,7 +4883,7 @@ export function buildCrosswordGrid(cluesInput) {
 
             if (grid[key]) {
                 grid[key].isCell = true;
-                grid[key].expected = clue.answer[i];
+                grid[key].expected = clue.answer[i] || (i === 0 ? clue.initialLetter : '');
                 if (i === 0) {
                     if (!grid[key].number) grid[key].number = clue.number;
                     if (clue.initialHint) grid[key].isInitialHint = true;
@@ -4950,8 +4957,8 @@ function renderCrosswordSessionLayout() {
 
                 <div class="flex items-center space-x-3 bg-slate-900/80 px-4 py-2 rounded-xl border border-indigo-700/50">
                     <div class="text-right">
-                        <span class="text-[10px] font-bold text-slate-400 block uppercase">Total Nilai XP</span>
-                        <span class="font-black text-amber-400 text-sm" id="cw-live-score">+${totalScore} / ${maxPossibleScore} XP</span>
+                        <span class="text-[10px] font-bold text-slate-400 block uppercase">Total Poin TTS</span>
+                        <span class="font-black text-amber-400 text-sm" id="cw-live-score">+${totalScore} / ${maxPossibleScore} poin</span>
                     </div>
                 </div>
             </div>
@@ -5016,7 +5023,7 @@ function renderCrosswordSessionLayout() {
                                 <span class="font-extrabold text-amber-400 uppercase">
                                     ${activeClue.direction === 'across' ? '↔️ Mendatar' : '↕️ Menurun'} No. ${activeClue.number}
                                 </span>
-                                <span class="font-bold text-slate-400 text-[11px]">+${activeClue.points || 20} XP &middot; ${activeClue.answer.length} Kolom Huruf</span>
+                                <span class="font-bold text-slate-400 text-[11px]">+${activeClue.points || 20} XP &middot; ${activeClue.length} Kolom Huruf</span>
                             </div>
                             <p class="text-xs font-bold text-slate-200">${gameEscapeHtml(activeClue.clue)}</p>
                             
@@ -5096,7 +5103,7 @@ function renderClueCard(c, activeClueId, completedClues) {
                          : 'bg-white border-slate-200 text-slate-800 hover:border-indigo-400'
              }">
             <div class="flex items-center justify-between gap-2">
-                <span class="font-black text-xs">No. ${c.number} (${c.answer.length} Kolom)</span>
+                <span class="font-black text-xs">No. ${c.number} (${c.length} Kolom)</span>
                 <span class="text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
                     isCompleted
                         ? 'bg-emerald-200 text-emerald-800'
@@ -5104,7 +5111,7 @@ function renderClueCard(c, activeClueId, completedClues) {
                             ? 'bg-indigo-800 text-amber-300'
                             : 'bg-slate-100 text-amber-700'
                 }">
-                    ${isCompleted ? '✓ Selesai (+ ' + c.points + ' XP)' : '+' + c.points + ' XP'}
+                    ${isCompleted ? '✓ Selesai (+ ' + c.points + ' poin)' : '+' + c.points + ' poin'}
                 </span>
             </div>
             <p class="text-xs font-semibold mt-1 leading-snug ${isActive ? 'text-indigo-100' : 'text-slate-700'}">${gameEscapeHtml(c.clue)}</p>
@@ -5116,7 +5123,7 @@ function getTypedWordForClue(clue) {
     if (!activeGameSession || !activeGameSession.crosswordState) return '';
     const { userCells } = activeGameSession.crosswordState;
     let word = '';
-    for (let i = 0; i < clue.answer.length; i++) {
+    for (let i = 0; i < clue.length; i++) {
         const r = clue.direction === 'across' ? clue.row : clue.row + i;
         const c = clue.direction === 'across' ? clue.col + i : clue.col;
         word += (userCells[`${r}_${c}`] || '');
@@ -5154,7 +5161,7 @@ window.onCrosswordCellInputChange = function(inputEl, r, c) {
     const activeClue = state.clues.find(clue => clue.id === state.activeClueId);
     if (activeClue) {
         const typed = getTypedWordForClue(activeClue);
-        if (typed.length === activeClue.answer.length) {
+        if (typed.length === activeClue.length) {
             checkCrosswordWord(activeClue.id);
         } else if (val) {
             const nextR = activeClue.direction === 'across' ? r : r + 1;
@@ -5193,7 +5200,7 @@ window.syncCrosswordWordInput = function(val) {
 
     const clean = String(val || '').toUpperCase().replace(/[^A-Z]/g, '');
 
-    for (let i = 0; i < activeClue.answer.length; i++) {
+    for (let i = 0; i < activeClue.length; i++) {
         const r = activeClue.direction === 'across' ? activeClue.row : activeClue.row + i;
         const c = activeClue.direction === 'across' ? activeClue.col + i : activeClue.col;
         const char = clean[i] || '';
@@ -5204,22 +5211,53 @@ window.syncCrosswordWordInput = function(val) {
     }
 };
 
-window.checkCrosswordWord = function(clueId) {
+window.checkCrosswordWord = async function(clueId) {
     if (!activeGameSession || !activeGameSession.crosswordState) return;
     const state = activeGameSession.crosswordState;
     const clue = state.clues.find(c => c.id === clueId);
     if (!clue) return;
 
     const typed = getTypedWordForClue(clue);
+    if (typed.length !== clue.length) {
+        showToast(`Lengkapi ${clue.length} huruf untuk nomor ${clue.number}.`, "info");
+        return;
+    }
 
-    if (typed === clue.answer) {
+    let isCorrect = false;
+    if (clue.answer) {
+        // Staff preview may retain the full answer locally.
+        isCorrect = typed === clue.answer;
+    } else {
+        try {
+            const response = await fetch(`/api/games/${encodeURIComponent(activeGameSession.game.id)}/check`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    challenge: 'crossword',
+                    clueIndex: clue.clueIndex,
+                    submittedAnswer: typed
+                })
+            });
+            const data = await response.json().catch(() => ({ success: false }));
+            if (!response.ok || !data.success) {
+                showToast(data.message || 'Gagal memeriksa jawaban TTS.', 'error');
+                return;
+            }
+            isCorrect = data.isCorrect === true;
+        } catch (_) {
+            showToast('Koneksi validasi TTS terputus. Coba lagi.', 'error');
+            return;
+        }
+    }
+
+    if (isCorrect) {
         if (!state.completedClues[clue.id]) {
             state.completedClues[clue.id] = true;
             state.totalScore += (clue.points || 20);
-            showToast(`🎉 Jawaban TTS ${clue.direction === 'across' ? 'Mendatar' : 'Menurun'} No. ${clue.number} BENAR! (+${clue.points || 20} XP)`, "success");
+            showToast(`🎉 Jawaban TTS ${clue.direction === 'across' ? 'Mendatar' : 'Menurun'} No. ${clue.number} BENAR! (+${clue.points || 20} poin)`, "success");
 
             const liveScoreEl = document.getElementById('cw-live-score');
-            if (liveScoreEl) liveScoreEl.innerText = `+${state.totalScore} / ${state.maxPossibleScore} XP`;
+            if (liveScoreEl) liveScoreEl.innerText = `+${state.totalScore} / ${state.maxPossibleScore} poin`;
 
             if (Object.keys(state.completedClues).length >= state.clues.length) {
                 setTimeout(() => {
