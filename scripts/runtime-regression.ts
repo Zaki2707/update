@@ -357,6 +357,21 @@ await test('CBT: student load activates attempt before requesting questions', ()
   assert.match(assessmentSource, /currentActiveExamKey\.slice\(matchedPrefix\.length\)/);
 });
 
+await test('CBT: expired attempt resumes at zero only for safe finalization', () => {
+  const startRouteStart = serverSource.indexOf('app.post("/api/exam/attempt/start"');
+  const startRouteEnd = serverSource.indexOf('\napp.', startRouteStart + 20);
+  const startRoute = serverSource.slice(startRouteStart, startRouteEnd > startRouteStart ? startRouteEnd : undefined);
+  assert.match(startRoute, /CBT_EXPIRED_RESUME_FINALIZE_V2/);
+  assert.doesNotMatch(startRoute, /Number\(session\.endsAt\) <= now[\s\S]{0,120}Waktu ujian sudah habis/);
+  assert.match(startRoute, /session\.timeLeft = Math\.max\(0, Math\.floor\(\(session\.endsAt - now\) \/ 1000\)\)/);
+
+  const answerRouteStart = serverSource.indexOf('app.post("/api/exam/attempt/answer"');
+  const answerRouteEnd = serverSource.indexOf('\napp.', answerRouteStart + 20);
+  const answerRoute = serverSource.slice(answerRouteStart, answerRouteEnd > answerRouteStart ? answerRouteEnd : undefined);
+  assert.match(answerRoute, /session\.endsAt && Number\(session\.endsAt\) <= now/);
+  assert.match(answerRoute, /Waktu ujian sudah habis/);
+});
+
 await test('Student master writes are admin-owned and self password may remain unchanged', () => {
   assert.match(serverSource, /app\.post\("\/api\/students", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
   assert.match(serverSource, /app\.put\("\/api\/students\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
