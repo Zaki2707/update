@@ -441,9 +441,11 @@ await test('CBT: answer sync is write-ahead and survives logout/reconnect restor
   assert.match(saveFn, /madrasah_student_exam_answers/);
 
   assert.match(assessmentSource, /CBT_ANSWER_WRITE_AHEAD_V2/);
-  assert.match(assessmentSource, /CBT_RESUME_LOCAL_ANSWER_PRECEDENCE_V2/);
-  assert.match(assessmentSource, /\.\.\.localStoredAnswers,[\s\S]{0,120}\.\.\.localSessionAnswers,[\s\S]{0,120}\.\.\.queuedAnswers/);
-  assert.match(assessmentSource, /sessionData\.answers = \{ \.\.\.res\.session\.answers, \.\.\.sessionData\.answers \}/);
+  assert.match(assessmentSource, /CBT_RESUME_PENDING_ANSWER_PRECEDENCE_V2/);
+  assert.match(assessmentSource, /const mergedAnswers = \{ \.\.\.\(serverSession\.answers \|\| \{\}\), \.\.\.queuedAnswers \}/);
+  assert.match(assessmentSource, /const pendingResumeAnswers = getPendingAnswersForExam\(st\.id, ex\.id\)/);
+  assert.match(assessmentSource, /sessionData\.answers = \{ \.\.\.sessionData\.answers, \.\.\.res\.session\.answers, \.\.\.pendingResumeAnswers \}/);
+  assert.doesNotMatch(assessmentSource, /sessionData\.answers = \{ \.\.\.res\.session\.answers, \.\.\.sessionData\.answers \}/);
   assert.match(assessmentSource, /if \(!res\.ok \|\| !data\.success\) throw new Error/);
 });
 
