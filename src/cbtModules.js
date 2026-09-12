@@ -2818,6 +2818,35 @@ function saveSingleQuestion(e, code, editQId = null) {
 // ==========================================
 let currentConvertedData = null;
 
+const RAW_LATEX_COMMAND_PATTERN = /\\(?:frac|dfrac|tfrac|sqrt|int|iint|iiint|oint|sum|prod|lim|log|ln|sin|cos|tan|cot|sec|csc|alpha|beta|gamma|delta|theta|lambda|mu|pi|rho|sigma|phi|omega|infty|pm|mp|times|div|cdot|le|ge|neq|ne|approx|equiv|angle|vec|overline|underline|bar|hat|binom|left|right)\b/i;
+
+function isPredominantlyLatexMath(value) {
+    if (!value || !RAW_LATEX_COMMAND_PATTERN.test(String(value))) return false;
+
+    let probe = String(value)
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\\\(|\\\)|\\\[|\\\]|\$\$/g, ' ')
+        .replace(/\$/g, ' ')
+        .replace(/\\[a-zA-Z]+\*?/g, ' ')
+        .replace(/[{}\[\]()0-9_^=+\-*\/<>.,:;!?|&%~'"`\\]/g, ' ')
+        .replace(/\b(?:dx|dy|dz|dt|du|dv|dw)\b/gi, ' ')
+        .replace(/\b(?:sin|cos|tan|cot|sec|csc|log|ln|max|min|mod|gcd|lcm)\b/gi, ' ');
+
+    const proseWords = probe.match(/\p{L}{3,}/gu) || [];
+    return proseWords.length === 0;
+}
+
+function stripMathDelimitersForSingleExpression(value) {
+    return String(value)
+        .replace(/\$\$/g, '')
+        .replace(/\$/g, '')
+        .replace(/\\\(/g, '')
+        .replace(/\\\)/g, '')
+        .replace(/\\\[/g, '')
+        .replace(/\\\]/g, '')
+        .trim();
+}
+
 function autoConvertMathToLatex(str) {
     if (!str || typeof str !== 'string') return str;
 
@@ -2886,7 +2915,14 @@ function autoConvertMathToLatex(str) {
         return `___LATEX_BLOCK_${protectedLatex.length - 1}___${trailingPunct}`;
     }
 
-    // Step 1: Protect ALREADY EXISTING LaTeX blocks \( ... \), \[ ... \], $$ ... $$, $ ... $
+    // Step 0.5: Treat a math-only raw LaTeX line as one expression.
+    // This fixes mixed input such as: \(x^2\) \frac{3}{4} + \sqrt{\(x^2+y^2\)}.
+    // Existing delimiters inside the same math-only line are removed before one clean wrapper is added.
+    if (isPredominantlyLatexMath(text)) {
+        text = wrapAndProtect(stripMathDelimitersForSingleExpression(text));
+    }
+
+    // Step 1: Protect ALREADY EXISTING LaTeX blocks \( ... \), \[ ... \], $ ... $, $ ... $
     text = text.replace(/\$\$(.*?)\$\$/g, (m, inner) => wrapAndProtect(inner));
     text = text.replace(/\$([^\$\n]+)\$/g, (m, inner) => wrapAndProtect(inner));
     text = text.replace(/\\\(([\s\S]*?)\\\)/g, (m, inner) => wrapAndProtect(inner));
@@ -3210,12 +3246,17 @@ function loadActiveBankQuestionsToConvert(activeCode) {
 function renderCbtTableCell(text) {
     if (!text) return '';
 
-    const escaped = String(text)
+    const sourceText = String(text);
+    const previewText = RAW_LATEX_COMMAND_PATTERN.test(sourceText)
+        ? autoConvertMathToLatex(sourceText)
+        : sourceText;
+
+    const escaped = sourceText
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
 
-    const hasLatex = /\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\$[^\$\n]+\$/.test(text);
+    const hasLatex = /\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\$[^\$\n]+\$/.test(previewText);
 
     if (!hasLatex) {
         return `<span class="leading-relaxed">${escaped}</span>`;
@@ -3228,7 +3269,7 @@ function renderCbtTableCell(text) {
             </div>
             <div class="text-xs text-indigo-950 bg-indigo-50/80 px-2.5 py-1.5 rounded-lg border border-indigo-200/80 flex items-center flex-wrap gap-2">
                 <span class="text-[10px] font-extrabold text-indigo-700 uppercase tracking-wider shrink-0 bg-indigo-200/80 px-1.5 py-0.5 rounded shadow-2xs">Pratinjau Render:</span>
-                <span class="katex-preview-block leading-relaxed font-semibold">${text}</span>
+                <span class="katex-preview-block leading-relaxed font-semibold">${previewText}</span>
             </div>
         </div>
     `;
