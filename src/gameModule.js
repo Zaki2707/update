@@ -635,7 +635,7 @@ export function renderGameAdminModule(container) {
                         <span class="text-xs font-bold text-slate-500">Mapel:</span>
                         <select onchange="window.__gameFilterSubject = this.value; renderGameAdminModule(document.getElementById('view-container'));" class="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700">
                             <option value="all" ${activeFilterSubject === 'all' ? 'selected' : ''}>Semua Mata Pelajaran</option>
-                            ${subjects.map(s => `<option value="${s.name || s.id}" ${activeFilterSubject === (s.name || s.id) ? 'selected' : ''}>${s.name || s.id}</option>`).join('')}
+                            ${subjects.map(s => `<option value="${gameEscapeAttr(s.name || s.id)}" ${activeFilterSubject === (s.name || s.id) ? 'selected' : ''}>${gameEscapeHtml(s.name || s.id)}</option>`).join('')}
                         </select>
                     </div>
                 </div>
@@ -671,7 +671,7 @@ export function renderGameAdminModule(container) {
                                         g.difficulty === 'Mudah' ? 'bg-emerald-100 text-emerald-800' :
                                         g.difficulty === 'Sedang' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
                                     }">
-                                        ${g.difficulty || 'Mudah'}
+                                        ${gameEscapeHtml(g.difficulty || 'Mudah')}
                                     </span>
                                 </div>
                                 <h3 class="font-extrabold text-base text-slate-800 group-hover:text-emerald-700 transition line-clamp-1">${gameEscapeHtml(g.title)}</h3>
@@ -680,7 +680,7 @@ export function renderGameAdminModule(container) {
 
                             <div class="space-y-3 pt-3 border-t border-slate-100 text-xs">
                                 <div class="grid grid-cols-2 gap-2 text-[11px] font-semibold text-slate-500">
-                                    <div><i class="fa-solid fa-book text-emerald-500 mr-1"></i> ${g.subjectId || 'Umum'}</div>
+                                    <div><i class="fa-solid fa-book text-emerald-500 mr-1"></i> ${gameEscapeHtml(g.subjectId || 'Umum')}</div>
                                     <div><i class="fa-solid fa-graduation-cap text-indigo-500 mr-1"></i> ${g.classId || 'Semua Kelas'}</div>
                                     <div><i class="fa-solid fa-stopwatch text-amber-500 mr-1"></i> ${g.timeLimit ? g.timeLimit + ' Detik' : 'Tanpa Waktu'}</div>
                                     <div><i class="fa-solid fa-star text-yellow-500 mr-1"></i> +${g.rewardXp || 100} XP</div>
@@ -766,7 +766,7 @@ window.openCreateGameModeModal = function(existingMode = null) {
                             <label class="block font-bold text-slate-800 mb-1">Mata Pelajaran</label>
                             <select id="gm-subject" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500">
                                 ${(appState.subjects || [{name:'Informatika'}]).map(s => `
-                                    <option value="${s.name || s.id}" ${mode.subjectId === (s.name || s.id) ? 'selected' : ''}>${s.name || s.id}</option>
+                                    <option value="${gameEscapeAttr(s.name || s.id)}" ${mode.subjectId === (s.name || s.id) ? 'selected' : ''}>${gameEscapeHtml(s.name || s.id)}</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -2856,7 +2856,7 @@ window.openGameMetadataModal = function(existingGame = null) {
                             <label class="block font-bold text-slate-700 uppercase">Mata Pelajaran</label>
                             <select id="edit-game-subject" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium">
                                 <option value="Semua Subject">Semua Mata Pelajaran</option>
-                                ${subjects.map(s => `<option value="${s.name || s.id}" ${g.subjectId === (s.name || s.id) ? 'selected' : ''}>${s.name || s.id}</option>`).join('')}
+                                ${subjects.map(s => `<option value="${gameEscapeAttr(s.name || s.id)}" ${g.subjectId === (s.name || s.id) ? 'selected' : ''}>${gameEscapeHtml(s.name || s.id)}</option>`).join('')}
                             </select>
                         </div>
 
@@ -3059,7 +3059,7 @@ window.openGameContentEditorModal = function(gameId) {
                                 <span class="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 font-extrabold uppercase text-[10px] rounded-full border border-emerald-500/30">
                                     ${typeInfo.name}
                                 </span>
-                                <span class="text-xs text-slate-400 font-semibold">${game.subjectId || 'Umum'} • ${game.classId || 'Semua Kelas'}</span>
+                                <span class="text-xs text-slate-400 font-semibold">${gameEscapeHtml(game.subjectId || 'Umum')} • ${gameEscapeHtml(game.classId || 'Semua Kelas')}</span>
                             </div>
                             <h3 class="font-extrabold text-base text-white mt-0.5">${gameEscapeHtml(game.title)}</h3>
                         </div>
@@ -3850,7 +3850,7 @@ function renderStudentKatalogTab(games) {
                             </div>
 
                             <h3 class="font-extrabold text-lg text-slate-850 group-hover:text-indigo-600 transition leading-snug">${gameEscapeHtml(g.title)}</h3>
-                            <p class="text-xs text-slate-500 line-clamp-2">${g.prompt || 'Selesaikan permainan ini untuk menguji pengetahuanmu.'}</p>
+                            <p class="text-xs text-slate-500 line-clamp-2">${gameEscapeHtml(g.prompt || 'Selesaikan permainan ini untuk menguji pengetahuanmu.')}</p>
                         </div>
 
                         <div class="pt-4 border-t border-slate-100 flex items-center justify-between">
