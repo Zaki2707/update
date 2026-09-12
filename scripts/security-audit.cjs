@@ -63,6 +63,7 @@ const checks = [
   ['No weak built-in admin password', !/adminPass:\s*['\"]admin123['\"]/.test(server)],
   ['CBT teacher attempt scope enforced', server.includes('teacherCanUseExamPayload(req, exam)') && server.includes('Guru hanya dapat mengakses attempt ujian')],
   ['Student master writes are admin-owned', server.includes('app.post("/api/students", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])') && server.includes('app.put("/api/students/:id", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])')],
+  ['Class master writes are admin-owned', server.includes('app.post("/api/classes", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])') && server.includes('app.delete("/api/classes/:id", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])')],
   ['Student self password is optional without placeholder reset', server.includes('if (password) student.password = hashPassword(password)') && modules.includes('Kosongkan jika tidak ingin mengganti')],
   ['Offline restore hashes legacy plaintext credentials', server.includes('for (const restoredStudent of mergedStudents)') && server.includes('for (const restoredTeacher of mergedTeachers)')],
   ['CBT schedule enforced server-side', server.includes('function getExamScheduleAccess') && server.includes("code: 'EXAM_NOT_STARTED'") && server.includes("code: 'EXAM_SCHEDULE_EXPIRED'")],

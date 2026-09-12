@@ -337,6 +337,11 @@ await test('Offline restore re-hashes legacy plaintext user credentials', () => 
   assert.ok(serverSource.includes('for (const restoredTeacher of mergedTeachers)'));
 });
 
+await test('Class master writes stay admin-owned', () => {
+  assert.match(serverSource, /app\.post\("\/api\/classes", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+  assert.match(serverSource, /app\.delete\("\/api\/classes\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+});
+
 await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
   execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
     stdio: 'inherit', timeout: 45000,

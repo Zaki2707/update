@@ -8681,7 +8681,7 @@ app.get("/api/classes", requireAuth, (req, res) => {
   res.json({ success: true, classes: filterByMadrasah(classes, req) });
 });
 
-app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.post("/api/classes", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { name, grade, code, homeroomTeacherId } = req.body;
   let targetId = req.body.id;
   if (targetId) {
@@ -8732,7 +8732,7 @@ app.post("/api/classes", requireAuth, requireRole(['teacher', 'guru', 'admin', '
   res.json({ success: true, class: newClass });
 });
 
-app.delete("/api/classes/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
+app.delete("/api/classes/:id", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const resolvedClass = resolveTenantItemIndexById(classes, id, req);
   if (resolvedClass.ambiguous) return res.status(409).json({ success: false, message: "ID kelas ambigu lintas tenant; pilih tenant target secara eksplisit." });
