@@ -484,7 +484,7 @@ async function renderTeacherModule(container) {
                                         </td>
                                         <td class="p-4 text-center">
                                             <div class="w-11 h-11 rounded-2xl overflow-hidden mx-auto shadow-xs border border-slate-200 bg-slate-100 flex items-center justify-center cursor-pointer hover:scale-105 transition" onclick="${t.photo ? `showPhotoPopup('${t.photo}', 'Foto Profil - ${t.name.replace(/'/g, "\\'")}')` : `openTeacherModal('${t.id}')`}" title="${t.photo ? 'Klik untuk memperbesar foto' : 'Klik untuk tambah foto'}">
-                                                ${t.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(t.photo) : ''}" class="w-full h-full object-cover" referrerPolicy="no-referrer">` : `<i class="fa-solid fa-chalkboard-user text-slate-400 text-base"></i>`}
+                                                ${t.photo ? `<img src="${t.photo}" class="w-full h-full object-cover" referrerPolicy="no-referrer">` : `<i class="fa-solid fa-chalkboard-user text-slate-400 text-base"></i>`}
                                             </div>
                                         </td>
                                         <td class="p-4 font-semibold text-slate-800">
@@ -554,7 +554,7 @@ function openTeacherModal(id = null) {
                 <div class="flex items-center gap-4 bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80">
                     <div class="relative group shrink-0">
                         <div id="admin-tch-photo-preview" class="w-16 h-16 bg-emerald-100 text-emerald-800 rounded-2xl flex items-center justify-center text-2xl font-bold shadow-inner overflow-hidden border-2 border-emerald-500/20">
-                            ${item.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(item.photo) : ''}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-user-tie text-emerald-600 text-xl"></i>`}
+                            ${item.photo ? `<img src="${item.photo}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-user-tie text-emerald-600 text-xl"></i>`}
                         </div>
                     </div>
                     <div class="flex-1 space-y-1.5">
@@ -783,7 +783,7 @@ function renderTeacherProfile(container) {
                 <div class="flex flex-col sm:flex-row items-center sm:items-start gap-6 border-b border-slate-100 pb-6">
                     <div class="relative group shrink-0">
                         <div class="w-28 h-28 bg-emerald-50 text-emerald-800 rounded-3xl flex items-center justify-center text-4xl font-bold shadow-inner overflow-hidden border-2 border-emerald-500/30">
-                            ${tch.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(tch.photo) : ''}" class="w-full h-full object-cover" referrerPolicy="no-referrer">` : `<i class="fa-solid fa-chalkboard-user text-emerald-600"></i>`}
+                            ${tch.photo ? `<img src="${tch.photo}" class="w-full h-full object-cover" referrerPolicy="no-referrer">` : `<i class="fa-solid fa-chalkboard-user text-emerald-600"></i>`}
                         </div>
                         <button type="button" onclick="openTeacherPhotoSourceModal('${tch.id}')" class="absolute -bottom-2 -right-2 p-2.5 bg-emerald-600 text-white rounded-2xl cursor-pointer shadow-md hover:bg-emerald-700 hover:scale-105 active:scale-95 transition" title="Ganti Foto Profil Guru">
                             <i class="fa-solid fa-camera text-xs"></i>
@@ -891,7 +891,7 @@ function renderTeacherProfile(container) {
                         const dateStr = (typeof h === 'object' && h.date) ? h.date : '-';
                         return `
                             <div class="w-20 group relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 p-1 text-center">
-                                <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(photoSrc) : ''}" class="w-full h-16 object-cover rounded-xl cursor-pointer hover:scale-105 transition" onclick="showPhotoPopup('${photoSrc}', 'Riwayat Foto Guru (${dateStr})')">
+                                <img src="${photoSrc}" class="w-full h-16 object-cover rounded-xl cursor-pointer hover:scale-105 transition" onclick="showPhotoPopup('${photoSrc}', 'Riwayat Foto Guru (${dateStr})')">
                                 <div class="text-[9px] text-slate-400 mt-1 truncate">${dateStr}</div>
                                 <button type="button" onclick="applyTeacherHistoryPhoto('${tch.id}', ${i})" class="w-full mt-1 py-0.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg text-[9px] transition cursor-pointer">Gunakan</button>
                             </div>
@@ -1360,7 +1360,7 @@ function renderStudentModule(container) {
                                         <td class="p-4 text-center">
                                             <div class="relative inline-block">
                                                 <button type="button" onclick="showStudentProfileModal('${s.id}')" class="w-10 h-10 rounded-full border-2 border-white shadow-sm overflow-hidden flex items-center justify-center bg-slate-100 hover:ring-2 hover:ring-emerald-500 transition mx-auto cursor-pointer focus:outline-none">
-                                                    ${s.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(s.photo) : ''}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-user text-slate-400 text-lg"></i>`}
+                                                    ${s.photo ? `<img src="${s.photo}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-user text-slate-400 text-lg"></i>`}
                                                 </button>
                                                 <div class="absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white ${isOnline ? 'bg-green-500' : 'bg-red-500'}"></div>
                                             </div>
@@ -1405,7 +1405,7 @@ function showStudentProfileModal(studentId) {
                     <div class="-mt-16 flex justify-center mb-4 relative">
                         <div class="relative group">
                             <div class="w-32 h-32 rounded-full border-4 border-white shadow-lg overflow-hidden bg-white flex items-center justify-center text-slate-300 text-6xl relative">
-                                ${student.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(student.photo) : ''}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-user"></i>`}
+                                ${student.photo ? `<img src="${student.photo}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-user"></i>`}
                             </div>
                             <div class="absolute bottom-1 right-1 w-6 h-6 border-4 border-white rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'} pointer-events-none"></div>
                             <button type="button" onclick="document.getElementById('admin-std-photo-input-${student.id}').click()" class="absolute bottom-0 left-0 w-8 h-8 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full flex items-center justify-center shadow-md transition cursor-pointer" title="Ganti/Upload Foto Profil">

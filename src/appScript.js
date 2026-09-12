@@ -120,9 +120,14 @@ function flattenLessonPlanCollection(value, inherited = {}, depth = 0) {
         return [item];
     }
     if (childEntries.length > 0) {
-        const hasNamedGroupChildren = childEntries.some(([key]) => key !== 'groups' && key !== 'lessonPlans' && key !== 'plans');
-        const groupId = value.groupId ?? value.group_id ?? (hasNamedGroupChildren ? value.id : undefined);
-        const groupName = value.groupName ?? value.group_name ?? (hasNamedGroupChildren ? (value.name || value.title) : undefined);
+        const looksLikeNamedGroup = Boolean(
+            value.groupId ?? value.group_id ?? value.groupName ?? value.group_name ??
+            ((value.name || value.title) && !value.subjectId && !value.subjectCode &&
+                !value.subjectName && !value.subject && !value.mapel)
+        );
+        const groupId = value.groupId ?? value.group_id ?? (looksLikeNamedGroup ? value.id : undefined);
+        const groupName = value.groupName ?? value.group_name ??
+            (looksLikeNamedGroup ? (value.name || value.title) : undefined);
         const childContext = {
             ...context,
             ...(groupId !== undefined && groupId !== null && groupId !== '' ? { groupId } : {}),

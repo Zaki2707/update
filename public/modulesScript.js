@@ -343,7 +343,7 @@ function renderStudentProfile(container) {
                     <div class="flex flex-col sm:flex-row items-center sm:items-start space-y-4 sm:space-y-0 sm:space-x-6 border-b pb-6">
                         <div class="relative group">
                             <div class="w-24 h-24 bg-emerald-100 text-emerald-800 rounded-3xl flex items-center justify-center text-4xl font-bold shadow-inner overflow-hidden border-2 border-emerald-500/20">
-                                ${st.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(st.photo) : ''}" class="w-full h-full object-cover" referrerPolicy="no-referrer">` : `<i class="fa-solid fa-user-graduate"></i>`}
+                                ${st.photo ? `<img src="${st.photo}" class="w-full h-full object-cover" referrerPolicy="no-referrer">` : `<i class="fa-solid fa-user-graduate"></i>`}
                             </div>
                             <button type="button" onclick="openStudentPhotoSourceModal('${st.id}')" class="absolute bottom-0 right-0 p-2 bg-emerald-600 text-white rounded-xl cursor-pointer shadow hover:bg-emerald-700 transition" title="Ganti Foto Profil">
                                 <i class="fa-solid fa-camera text-xs"></i>
@@ -740,7 +740,7 @@ function renderStudentPhotoHistorySection(st) {
                             <div class="relative group bg-white p-2 rounded-2xl border transition shadow-2xs ${isActive ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-50/30' : 'border-slate-200 hover:border-slate-300 hover:shadow-xs'}">
                                 <!-- Thumbnail -->
                                 <div class="w-full aspect-square rounded-xl overflow-hidden bg-slate-100 relative cursor-pointer" onclick="selectStudentProfileFromHistory('${st.id}', window._studentPhotoMap['${photoKey}'])" title="${isActive ? 'Foto profil aktif' : 'Klik untuk jadikan foto profil'}">
-                                    <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(item.photo) : ''}" class="w-full h-full object-cover group-hover:scale-105 transition duration-200" referrerPolicy="no-referrer" alt="Foto">
+                                    <img src="${item.photo}" class="w-full h-full object-cover group-hover:scale-105 transition duration-200" referrerPolicy="no-referrer" alt="Foto">
                                     
                                     ${isActive ? `
                                         <div class="absolute inset-0 bg-emerald-900/30 flex items-center justify-center pointer-events-none">
@@ -2121,7 +2121,7 @@ function showPhotoPopup(photoUrl, title) {
                     </button>
                 </div>
                 <div class="p-6 flex items-center justify-center bg-slate-900 h-96">
-                    <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(photoUrl) : ''}" class="max-w-full max-h-full object-contain rounded-2xl shadow-lg animate-scale-up" alt="Foto Besar" referrerPolicy="no-referrer">
+                    <img src="${photoUrl}" class="max-w-full max-h-full object-contain rounded-2xl shadow-lg animate-scale-up" alt="Foto Besar" referrerPolicy="no-referrer">
                 </div>
                 <div class="p-4 bg-slate-50 flex justify-end">
                     <button type="button" onclick="closeModal()" class="px-5 py-2.5 bg-slate-850 hover:bg-slate-900 text-white font-semibold rounded-xl text-xs transition shadow cursor-pointer">Tutup</button>
@@ -2295,7 +2295,7 @@ function filterTeacherAttendance() {
         if (att.photo) {
             photoHtml = `
                 <div class="w-8 h-8 rounded-lg border border-slate-200 overflow-hidden cursor-pointer shadow-xs hover:scale-105 transition" onclick="showPhotoPopup('${att.photo}', 'Foto Selfie ${type === 'MASUK' ? 'Masuk' : 'Pulang'} - ${teacher.name}')">
-                    <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(att.photo) : ''}" class="w-full h-full object-cover" referrerPolicy="no-referrer">
+                    <img src="${att.photo}" class="w-full h-full object-cover" referrerPolicy="no-referrer">
                 </div>
             `;
         }

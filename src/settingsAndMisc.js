@@ -1645,7 +1645,7 @@ function renderStudentAttendanceAdminOnly(container) {
                                     });
                                     const status = att ? att.status : 'BELUM ABSEN';
                                     const profilePhotoHtml = st.photo
-                                        ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(st.photo) : ''}" class="w-10 h-10 rounded-full object-cover border border-emerald-200 shadow-xs mx-auto cursor-pointer hover:scale-110 transition ring-2 ring-emerald-500/20" onclick="showPhotoPopup('${st.photo}', 'Foto Profil - ${st.name}')" referrerPolicy="no-referrer" alt="Foto Profil" title="Klik untuk memperbesar Foto Profil">`
+                                        ? `<img src="${st.photo}" class="w-10 h-10 rounded-full object-cover border border-emerald-200 shadow-xs mx-auto cursor-pointer hover:scale-110 transition ring-2 ring-emerald-500/20" onclick="showPhotoPopup('${st.photo}', 'Foto Profil - ${st.name}')" referrerPolicy="no-referrer" alt="Foto Profil" title="Klik untuk memperbesar Foto Profil">`
                                         : `<div class="w-10 h-10 rounded-full bg-emerald-50 text-emerald-700 flex items-center justify-center border border-emerald-200 mx-auto font-bold text-xs shadow-xs" title="Belum ada foto profil">${(st.name || 'S').charAt(0).toUpperCase()}</div>`;
 
                                     return `
@@ -1663,7 +1663,7 @@ function renderStudentAttendanceAdminOnly(container) {
                                                     <option value="ALPA" ${status === 'ALPA' ? 'selected' : ''}>ALPA</option>
                                                 </select>
                                             </td>
-                                            <td class="p-4 text-center">${att && att.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(att.photo) : ''}" class="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-sm mx-auto cursor-pointer hover:scale-105 transition ring-2 ring-emerald-500/20" onclick="showStudentAttendancePhotoModal('${att.photo.replace(/'/g, "\\'")}', '${st.id}', '${st.name.replace(/'/g, "\\'")}', '${att.date || selectedDate}', '${st.nis || ''}')" referrerPolicy="no-referrer" alt="Foto">` : `<span class="text-xs text-slate-400 italic">No Photo</span>`}</td>
+                                            <td class="p-4 text-center">${att && att.photo ? `<img src="${att.photo}" class="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-sm mx-auto cursor-pointer hover:scale-105 transition ring-2 ring-emerald-500/20" onclick="showStudentAttendancePhotoModal('${att.photo.replace(/'/g, "\\'")}', '${st.id}', '${st.name.replace(/'/g, "\\'")}', '${att.date || selectedDate}', '${st.nis || ''}')" referrerPolicy="no-referrer" alt="Foto">` : `<span class="text-xs text-slate-400 italic">No Photo</span>`}</td>
                                             <td class="p-4 font-mono text-xs text-slate-600">${att ? att.location || '-6.2000, 106.8166' : '-'}</td>
                                         </tr>
                                     `;
@@ -1707,7 +1707,7 @@ function showStudentAttendancePhotoModal(photoUrl, studentId, studentName, date,
                 <div class="p-6 space-y-4 overflow-y-auto">
                     <!-- Photo Display -->
                     <div class="relative rounded-2xl overflow-hidden bg-slate-900 border border-slate-200 shadow-inner flex items-center justify-center group min-h-[260px] max-h-[360px]">
-                        <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(photoUrl) : ''}" class="w-full h-full max-h-[360px] object-contain" referrerPolicy="no-referrer" alt="Selfie Absensi">
+                        <img src="${photoUrl}" class="w-full h-full max-h-[360px] object-contain" referrerPolicy="no-referrer" alt="Selfie Absensi">
                         <div class="absolute bottom-2 left-2 right-2 px-3 py-1.5 bg-slate-950/70 backdrop-blur-md rounded-xl text-white text-[11px] flex items-center justify-between">
                             <span class="flex items-center gap-1.5 font-medium"><i class="fa-solid fa-clock text-emerald-400"></i> ${date || '-'}</span>
                             <span class="text-slate-300 text-[10px]">Foto Selfie Absensi</span>
@@ -2854,7 +2854,7 @@ function executePrintAttendance(includePhoto) {
             if (r.lastPhotoAtt && r.lastPhotoAtt.photo) {
                 photoCards += `
                     <div style="display: inline-block; width: 130px; text-align: center; margin: 8px; vertical-align: top; border: 1px solid #cbd5e1; padding: 6px; border-radius: 6px; background: #ffffff;">
-                        <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(r.lastPhotoAtt.photo) : ''}" width="110" height="130" style="object-fit: cover; border-radius: 4px; margin-bottom: 4px;" />
+                        <img src="${r.lastPhotoAtt.photo}" width="110" height="130" style="object-fit: cover; border-radius: 4px; margin-bottom: 4px;" />
                         <div style="font-size: 9pt; font-weight: bold; color: #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${r.student.name}</div>
                         <div style="font-size: 8pt; color: #64748b;">${r.student.nis || '-'}</div>
                         <div style="font-size: 7.5pt; color: #94a3b8; margin-top: 2px;">Absen: ${String(r.lastPhotoAtt.date).substring(0, 10)}</div>
@@ -3432,7 +3432,7 @@ async function loadDataFromServer() {
                     window.applyThemePackage(appState.settings.themePackage);
                 }
             }
-            if (res.lessonPlans !== undefined) appState.lessonPlans = window.normalizeLessonPlanCollection ? window.normalizeLessonPlanCollection(res.lessonPlans) : (Array.isArray(res.lessonPlans) ? res.lessonPlans : []);
+            if (res.lessonPlans) appState.lessonPlans = res.lessonPlans;
             if (Array.isArray(res.importGroups)) {
                 appState.importGroups = res.importGroups;
                 appState._importGroupsLoaded = true;
@@ -3537,7 +3537,7 @@ async function loadDataFromServer() {
                 appState.settings = setRes.settings;
                 if (window.applyLoginCustomization) window.applyLoginCustomization();
             }
-            if (lpRes.success) appState.lessonPlans = window.normalizeLessonPlanCollection ? window.normalizeLessonPlanCollection(lpRes) : (Array.isArray(lpRes.data) ? lpRes.data : (lpRes.lessonPlans || []));
+            if (lpRes.success) appState.lessonPlans = Array.isArray(lpRes.data) ? lpRes.data : (lpRes.lessonPlans || []);
             if (grdRes.success) appState.grades = grdRes.grades;
             if (tAttRes.success) appState.teacherAttendance = tAttRes.teacherAttendance;
 

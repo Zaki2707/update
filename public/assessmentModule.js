@@ -1651,7 +1651,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                             <video id="webrtc-video-${st.id}" autoplay playsinline muted class="w-full h-full object-cover"></video>
                                                             <div id="webrtc-fallback-${st.id}" class="absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity duration-500 bg-slate-950 overflow-hidden">
                                                                 ${(livecamFrames[st.id + '_' + activeExam.id] || studentPhoto) ? `
-                                                                    <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(livecamFrames[st.id + '_' + activeExam.id] || studentPhoto) : ''}" alt="Snapshot" class="w-full h-full object-cover opacity-80">
+                                                                    <img src="${livecamFrames[st.id + '_' + activeExam.id] || studentPhoto}" alt="Snapshot" class="w-full h-full object-cover opacity-80">
                                                                     <div class="absolute inset-0 bg-slate-950/40"></div>
                                                                 ` : `
                                                                     <div class="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-900">
@@ -1670,7 +1670,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                             </div>
                                                         `) : `
                                                             ${studentPhoto ? `
-                                                                <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" alt="Foto Absen" class="w-full h-full object-cover">
+                                                                <img src="${studentPhoto}" alt="Foto Absen" class="w-full h-full object-cover">
                                                             ` : `
                                                                 <div class="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-900">
                                                                     <div class="w-14 h-14 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center text-slate-300 text-xl font-bold uppercase mb-2 shadow">
@@ -2313,7 +2313,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                         <td class="px-4 py-4">
                                                             <div class="flex items-center space-x-2.5">
                                                                 <div class="w-8 h-8 rounded-xl bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-xs shrink-0 overflow-hidden">
-                                                                    ${st.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(st.photo) : ''}" class="w-full h-full rounded-xl object-cover" referrerPolicy="no-referrer">` : st.name.charAt(0)}
+                                                                    ${st.photo ? `<img src="${st.photo}" class="w-full h-full rounded-xl object-cover" referrerPolicy="no-referrer">` : st.name.charAt(0)}
                                                                 </div>
                                                                 <div>
                                                                     <p class="font-bold text-slate-800 leading-none">${st.name}</p>
@@ -5843,7 +5843,7 @@ function getKartuPesertaHtml(st, className, roomName, isPrintMode) {
     const studentPhoto = lastAttPhoto || st.photo || '';
     
     const studentPhotoHtml = studentPhoto 
-        ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" style="width: 100%; height: 100%; object-fit: cover;" referrerPolicy="no-referrer" />`
+        ? `<img src="${studentPhoto}" style="width: 100%; height: 100%; object-fit: cover;" referrerPolicy="no-referrer" />`
         : `<div style="width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #fafafa; border: 1px solid #ddd; text-align: center; font-size: 7px; line-height: 1.1; font-weight: bold; color: #94a3b8; box-sizing: border-box; padding: 2px;"><div style="font-size: 11px; margin-bottom: 2px; color: #cbd5e1;">👤</div>No Foto<br>Absensi</div>`;
 
     const widthVal = window.kartuPesertaConfig.cardWidth || 380;
@@ -9666,7 +9666,7 @@ setInterval(() => {
                         fallbackEl.style.opacity = '1';
                         if (fallbackPhoto) {
                             fallbackEl.innerHTML = `
-                                <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(fallbackPhoto) : ''}" alt="Snapshot" class="w-full h-full object-cover opacity-80">
+                                <img src="${fallbackPhoto}" alt="Snapshot" class="w-full h-full object-cover opacity-80">
                                 <div class="absolute inset-0 bg-slate-950/40"></div>
                                 <div class="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/85 backdrop-blur-md text-emerald-300 border border-emerald-500/30 text-[10px] font-bold rounded-full flex items-center space-x-1.5 shadow-lg">
                                     <i class="fa-solid fa-circle-notch fa-spin text-emerald-400"></i>

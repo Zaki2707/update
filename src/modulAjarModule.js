@@ -55,22 +55,6 @@ window.isSameSubject = function(subA, subB, subjects) {
     return false;
 };
 
-function getLessonPlanSubjectForView(plan) {
-    if (window.getLessonPlanSubjectReference) return window.getLessonPlanSubjectReference(plan);
-    if (!plan || typeof plan !== 'object') return '';
-    return plan.subjectId ?? plan.subjectCode ?? plan.subjectName ?? plan.subject ?? plan.mapel ?? '';
-}
-
-function getLessonPlanGroupId(plan) {
-    if (!plan || typeof plan !== 'object') return '';
-    return plan.groupId ?? plan.group_id ?? (plan.group && (plan.group.id ?? plan.group.groupId)) ?? '';
-}
-
-function getLessonPlanGroupName(plan) {
-    if (!plan || typeof plan !== 'object') return '';
-    return plan.groupName ?? plan.group_name ?? (plan.group && (plan.group.name ?? plan.group.title)) ?? '';
-}
-
 async function loadImportGroupsFromServer(force = false) {
     // IMPORT_GROUP_SERVER_AUTHORITATIVE: never reuse a generic localStorage cache across tenants.
     if (appState._importGroupsLoadPromise && !force) return appState._importGroupsLoadPromise;
@@ -461,7 +445,7 @@ function getFilteredLessonPlansForActiveView(subjectId) {
     const selectedSemester = appState.selectedModulAjarSemester || 'ALL';
     const appClasses = appState.classes || [];
 
-    const allPlans = (appState.lessonPlans || []).filter(lp => isSameSubject(getLessonPlanSubjectForView(lp), subjectId, appState.subjects));
+    const allPlans = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, subjectId, appState.subjects));
 
     return allPlans.filter(lp => {
         // 1. Filter Semester
@@ -594,44 +578,21 @@ function renderModulAjarSimpanView(selectedSubjectId) {
         });
     }
 
-    const subjectPlansSimpan = (appState.lessonPlans || []).filter(lp => isSameSubject(getLessonPlanSubjectForView(lp), selectedSubjectId, appState.subjects));
-    const storedGroups = (appState.importGroups || []).filter(g => {
+    const subjectPlansSimpan = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, selectedSubjectId, appState.subjects));
+    const subjectGroups = (appState.importGroups || []).filter(g => {
         if (!g) return false;
-        const groupSubject = g.subjectId ?? g.subject_id ?? g.subjectCode ?? g.subjectName ?? g.subject ?? g.mapel;
-        return isSameSubject(groupSubject, selectedSubjectId, appState.subjects);
+        return isSameSubject(g.subjectId, selectedSubjectId, appState.subjects);
     });
-
-    // Legacy/restore payloads may carry group IDs on the module itself while
-    // /api/import-groups has no corresponding row. Derive those groups without
-    // moving untagged modules across tenants or subjects.
-    const knownGroupIds = new Set(storedGroups.map(g => String(g.id ?? g.groupId ?? '').trim()).filter(Boolean));
-    const derivedGroups = [];
-    subjectPlansSimpan.forEach(lp => {
-        const groupId = String(getLessonPlanGroupId(lp) || '').trim();
-        if (!groupId || knownGroupIds.has(groupId)) return;
-        knownGroupIds.add(groupId);
-        derivedGroups.push({
-            id: groupId,
-            name: getLessonPlanGroupName(lp) || `Kelompok ${derivedGroups.length + 1}`,
-            subjectId: selectedSubjectId,
-            derived: true
-        });
-    });
-    const subjectGroups = storedGroups.concat(derivedGroups);
 
     // Separate into grouped vs ungrouped
     const groupedPlans = {};
     subjectGroups.forEach(g => {
-        const groupId = String(g.id ?? g.groupId ?? '').trim();
-        groupedPlans[groupId] = subjectPlansSimpan.filter(lp =>
-            String(getLessonPlanGroupId(lp) || '').trim() === groupId
-        );
+        groupedPlans[g.id] = subjectPlansSimpan.filter(lp => String(lp.groupId) === String(g.id));
     });
 
     const ungroupedPlans = subjectPlansSimpan.filter(lp => {
-        const groupId = String(getLessonPlanGroupId(lp) || '').trim();
-        if (!groupId) return true;
-        return !subjectGroups.some(g => String(g.id ?? g.groupId ?? '').trim() === groupId);
+        if (!lp.groupId) return true;
+        return !subjectGroups.some(g => String(g.id) === String(lp.groupId));
     });
 
     return `
@@ -809,23 +770,18 @@ function renderModulAjarModule(container) {
             .catch(err => console.error('Gagal mengambil mata pelajaran:', err));
     }
 
-    // Load lesson plans once per view. Keep an explicit loading flag so an
-    // empty response is a valid result but a failed request can be retried.
-    if (appState.lessonPlans == null && !appState._lessonPlansLoading) {
+    // Load lesson plans if not already loaded
+    if (!appState.lessonPlans) {
         appState.lessonPlans = [];
-        appState._lessonPlansLoading = true;
         fetch('/api/lesson-plans')
             .then(r => r.json())
             .then(res => {
-                if (res && res.success) {
-                    appState.lessonPlans = window.normalizeLessonPlanCollection
-                        ? window.normalizeLessonPlanCollection(res)
-                        : (Array.isArray(res.data) ? res.data : (res.lessonPlans || []));
+                if (res.success) {
+                    appState.lessonPlans = res.data;
+                    renderModulAjarModule(container);
                 }
-                renderModulAjarModule(container);
             })
-            .catch(err => console.error('Gagal mengambil modul ajar:', err))
-            .finally(() => { appState._lessonPlansLoading = false; });
+            .catch(err => console.error('Gagal mengambil modul ajar:', err));
     }
 
     // Load tenant-scoped import groups once, including the valid empty state.
@@ -844,8 +800,7 @@ function renderModulAjarModule(container) {
     let contentHtml = '';
 
     if (selectedSubject) {
-        const activeSubTab = appState.activeModulAjarSubTab || 'buat';
-        appState.activeModulAjarSubTab = activeSubTab;
+        const activeSubTab = appState.activeModulAjarSubTab;
         const appClasses = appState.classes || [];
         if (!appState.selectedModulAjarLevel) appState.selectedModulAjarLevel = 'ALL';
         if (!appState.selectedModulAjarClass) appState.selectedModulAjarClass = appState.selectedModulAjarGrade || 'ALL';
@@ -860,7 +815,7 @@ function renderModulAjarModule(container) {
 
         // Kelola Modul Area - Filtered by Level, Class, and Semester
         const plans = getFilteredLessonPlansForActiveView(selectedSubjectId);
-        const subjectPlans = (appState.lessonPlans || []).filter(lp => isSameSubject(getLessonPlanSubjectForView(lp), selectedSubjectId, appState.subjects));
+        const subjectPlans = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, selectedSubjectId, appState.subjects));
         
         // Fetch saved exams from state or localStorage
         if (!appState.generatedExams) {
@@ -1396,7 +1351,7 @@ function renderModulAjarModule(container) {
     } else {
         // Check subjects that ALREADY have created lesson plans
         const managedSubjects = (appState.subjects || []).map(s => {
-            const plans = (appState.lessonPlans || []).filter(lp => isSameSubject(getLessonPlanSubjectForView(lp), s.id, appState.subjects));
+            const plans = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, s.id, appState.subjects));
             return {
                 ...s,
                 plans,
@@ -1523,14 +1478,14 @@ function searchMapelModulAjar(query) {
 
     if (!kw) {
         filtered.sort((a, b) => {
-            const countA = (appState.lessonPlans || []).filter(lp => isSameSubject(getLessonPlanSubjectForView(lp), a.id, appState.subjects)).length;
-            const countB = (appState.lessonPlans || []).filter(lp => isSameSubject(getLessonPlanSubjectForView(lp), b.id, appState.subjects)).length;
+            const countA = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, a.id, appState.subjects)).length;
+            const countB = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, b.id, appState.subjects)).length;
             return countB - countA;
         });
     }
 
     container.innerHTML = filtered.map(s => {
-        const planCount = (appState.lessonPlans || []).filter(lp => isSameSubject(getLessonPlanSubjectForView(lp), s.id, appState.subjects)).length;
+        const planCount = (appState.lessonPlans || []).filter(lp => isSameSubject(lp.subjectId, s.id, appState.subjects)).length;
         const isManaged = planCount > 0;
         return `
             <div onclick="selectSubjectForModulAjar('${s.id}')" class="flex flex-col justify-between p-4 bg-white hover:bg-emerald-50/50 border ${isManaged ? 'border-emerald-300' : 'border-slate-200'} hover:border-emerald-400 rounded-2xl shadow-sm transition cursor-pointer group space-y-3">
