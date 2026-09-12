@@ -3399,13 +3399,3698 @@ function runQuestionConversion(activeCode = '') {
             </div>
         `).join('');
 
-        // Trigger KaTeX math rendering ONLY inside .katex-preview-block elements
+        // Trigger KaTeX math rendering ONLY inside .katex-preview-block elements.
+        // Normalize any legacy HTML entities as plain text before KaTeX sees them.
         if (typeof renderMathInElement === 'function') {
             previewArea.querySelectorAll('.katex-preview-block').forEach(el => {
+                const mathSource = qbDecodeLegacyEntities(el.textContent || '');
+                el.textContent = mathSource;
                 renderMathInElement(el, {
                     delimiters: [
-                        {left: '$$', right: '$$', display: true},
-                        {left: '$', right: '$', display: false},
+                        {left: '$', right: '$', display: true},
+                        {left: '
+    }
+
+    showToast(`Berhasil mengkonversi ${result.parsedQuestions.length} paket soal!`, 'success');
+}
+
+function parseRawTextToCBTFormat(rawText, defaultTS = 'PG', defaultKD = '1.0.1', defaultKJ = 'A', autoMath = true, parseMode = 'auto', optionCount = 5) {
+    if (!rawText || !rawText.trim()) return { text: '', parsedQuestions: [], optionCount };
+
+    const lines = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const parsedQuestions = [];
+
+    if (parseMode === 'enter') {
+        let currentNum = 1;
+        let step = 0; // 0: Question, 1: A, 2: B, 3: C, 4: D, 5: E/KJ
+        let qText = '', optA = '', optB = '', optC = '', optD = '', optE = '', kj = defaultKJ;
+
+        function pushEnterQuestion() {
+            if (!qText.trim()) return;
+
+            let finalQText = qText.trim();
+            let finalA = optA.trim();
+            let finalB = optB.trim();
+            let finalC = optC.trim();
+            let finalD = optD.trim();
+            let finalE = optE.trim();
+
+            if (autoMath) {
+                finalQText = autoConvertMathToLatex(finalQText);
+                finalA = autoConvertMathToLatex(finalA);
+                finalB = autoConvertMathToLatex(finalB);
+                finalC = autoConvertMathToLatex(finalC);
+                finalD = autoConvertMathToLatex(finalD);
+                if (optionCount >= 5) finalE = autoConvertMathToLatex(finalE);
+            }
+
+            const opts = { A: finalA, B: finalB, C: finalC, D: finalD };
+            if (optionCount >= 5) opts.E = finalE;
+
+            parsedQuestions.push({
+                num: currentNum++,
+                ts: defaultTS,
+                kd: defaultKD,
+                kj: (kj || defaultKJ).toUpperCase().trim(),
+                abs: '',
+                questionText: finalQText,
+                options: opts
+            });
+
+            qText = ''; optA = ''; optB = ''; optC = ''; optD = ''; optE = ''; kj = defaultKJ;
+            step = 0;
+        }
+
+        const keyRegex = /^\s*(?:Kunci|KJ|Jawaban|Kunci\s+Jawaban|Answer|Ans)\s*[:=]?\s*([A-Ea-e])/i;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+            if (!trimmed) {
+                if (step >= (optionCount === 4 ? 4 : 5)) {
+                    pushEnterQuestion();
+                }
+                continue;
+            }
+
+            const keyMatch = trimmed.match(keyRegex);
+            if (keyMatch) {
+                kj = keyMatch[1].toUpperCase();
+                pushEnterQuestion();
+                continue;
+            }
+
+            let cleanText = trimmed;
+            cleanText = cleanText.replace(/^(?:Soal|No\.?)?\s*\d+[\.\)\:\-]\s*/i, '');
+            cleanText = cleanText.replace(/^[A-Ea-e][\.\)\:\-]\s*/i, '');
+
+            if (step === 0) {
+                qText = cleanText;
+                step = 1;
+            } else if (step === 1) {
+                optA = cleanText;
+                step = 2;
+            } else if (step === 2) {
+                optB = cleanText;
+                step = 3;
+            } else if (step === 3) {
+                optC = cleanText;
+                step = 4;
+            } else if (step === 4) {
+                optD = cleanText;
+                if (optionCount === 4) {
+                    step = 5;
+                } else {
+                    step = 5; // Will hold option E in 5-option mode
+                }
+            } else if (step === 5) {
+                if (optionCount === 4) {
+                    if (/^[A-Da-d]$/i.test(trimmed)) {
+                        kj = trimmed.toUpperCase();
+                        pushEnterQuestion();
+                    } else if (/^(?:Kunci|KJ)/i.test(trimmed)) {
+                        const m = trimmed.match(/([A-Da-d])/i);
+                        if (m) kj = m[1].toUpperCase();
+                        pushEnterQuestion();
+                    } else {
+                        pushEnterQuestion();
+                        qText = cleanText;
+                        step = 1;
+                    }
+                } else {
+                    if (/^[A-Ea-e]$/i.test(trimmed)) {
+                        kj = trimmed.toUpperCase();
+                        pushEnterQuestion();
+                    } else if (/^(?:Kunci|KJ)/i.test(trimmed)) {
+                        const m = trimmed.match(/([A-Ea-e])/i);
+                        if (m) kj = m[1].toUpperCase();
+                        pushEnterQuestion();
+                    } else {
+                        optE = cleanText;
+                        step = 6;
+                    }
+                }
+            } else if (step === 6) {
+                if (/^[A-Ea-e]$/i.test(trimmed)) {
+                    kj = trimmed.toUpperCase();
+                    pushEnterQuestion();
+                } else if (/^(?:Kunci|KJ)/i.test(trimmed)) {
+                    const m = trimmed.match(/([A-Ea-e])/i);
+                    if (m) kj = m[1].toUpperCase();
+                    pushEnterQuestion();
+                } else {
+                    pushEnterQuestion();
+                    qText = cleanText;
+                    step = 1;
+                }
+            }
+        }
+
+        pushEnterQuestion();
+    } else {
+        // Smart Auto Mode
+        let currentQuestion = null;
+        let currentOptions = {};
+        let currentKey = null;
+        let currentNum = 1;
+
+        function pushQuestion() {
+            if (!currentQuestion || !currentQuestion.text.trim()) return;
+
+            let qText = currentQuestion.text.trim();
+            let optA = currentOptions['A'] || '';
+            let optB = currentOptions['B'] || '';
+            let optC = currentOptions['C'] || '';
+            let optD = currentOptions['D'] || '';
+            let optE = currentOptions['E'] || '';
+
+            if (autoMath) {
+                qText = autoConvertMathToLatex(qText);
+                optA = autoConvertMathToLatex(optA);
+                optB = autoConvertMathToLatex(optB);
+                optC = autoConvertMathToLatex(optC);
+                optD = autoConvertMathToLatex(optD);
+                if (optionCount >= 5) optE = autoConvertMathToLatex(optE);
+            }
+
+            const opts = { A: optA, B: optB, C: optC, D: optD };
+            if (optionCount >= 5) opts.E = optE;
+
+            parsedQuestions.push({
+                num: currentNum,
+                ts: defaultTS,
+                kd: defaultKD,
+                kj: (currentKey || defaultKJ).toUpperCase().trim(),
+                abs: '',
+                questionText: qText,
+                options: opts
+            });
+
+            currentNum++;
+            currentQuestion = null;
+            currentOptions = {};
+            currentKey = null;
+        }
+
+        const qNumRegex = /^(?:Soal|No\.?)?\s*(\d+)[\.\)\:\-\s]\s*(.*)/i;
+        const optRegex = /^\s*[\(\[]?([A-Ea-e])[\.\)\:\-\s\]]\s*(.*)/;
+        const keyRegex = /^\s*(?:Kunci|KJ|Jawaban|Kunci\s+Jawaban|Answer|Ans)\s*[:=]?\s*([A-Ea-e])/i;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+
+            const keyMatch = trimmed.match(keyRegex);
+            if (keyMatch) {
+                currentKey = keyMatch[1].toUpperCase();
+                continue;
+            }
+
+            const qMatch = trimmed.match(qNumRegex);
+            if (qMatch) {
+                pushQuestion();
+                currentQuestion = {
+                    num: parseInt(qMatch[1], 10) || currentNum,
+                    text: qMatch[2] || ''
+                };
+                continue;
+            }
+
+            const optMatch = trimmed.match(optRegex);
+            if (optMatch && currentQuestion) {
+                const letter = optMatch[1].toUpperCase();
+                if (optionCount === 4 && letter === 'E') {
+                    // Ignore option E if 4-option mode is selected
+                } else {
+                    currentOptions[letter] = optMatch[2] || '';
+                }
+                continue;
+            }
+
+            if (currentQuestion) {
+                const numOptions = Object.keys(currentOptions).length;
+                if ((numOptions >= optionCount || currentKey) && !trimmed.match(optRegex) && !trimmed.match(keyRegex)) {
+                    pushQuestion();
+                    currentQuestion = {
+                        num: currentNum,
+                        text: trimmed
+                    };
+                } else if (numOptions === 0) {
+                    currentQuestion.text += (currentQuestion.text ? '\n' : '') + trimmed;
+                } else {
+                    const keys = Object.keys(currentOptions);
+                    const lastKey = keys[keys.length - 1];
+                    currentOptions[lastKey] += (currentOptions[lastKey] ? ' ' : '') + trimmed;
+                }
+            } else {
+                currentQuestion = {
+                    num: 1,
+                    text: trimmed
+                };
+            }
+        }
+
+        pushQuestion();
+    }
+
+    const outputLines = [];
+    for (let i = 0; i < parsedQuestions.length; i++) {
+        const q = parsedQuestions[i];
+        outputLines.push(`TS\t${q.ts}`);
+        outputLines.push(`KD\t${q.kd}`);
+        outputLines.push(`KJ\t${q.kj}`);
+        outputLines.push(`ABS\t`);
+        outputLines.push(`${q.num}.\t${q.questionText}`);
+        outputLines.push(`A\t${q.options.A || ''}`);
+        outputLines.push(`B\t${q.options.B || ''}`);
+        outputLines.push(`C\t${q.options.C || ''}`);
+        outputLines.push(`D\t${q.options.D || ''}`);
+        if (optionCount >= 5) {
+            outputLines.push(`E\t${q.options.E || ''}`);
+        }
+
+        if (i < parsedQuestions.length - 1) {
+            outputLines.push(''); // enter 1x
+        }
+    }
+
+    return {
+        text: outputLines.join('\n'),
+        parsedQuestions,
+        optionCount
+    };
+}
+
+function switchConvertTab(tab) {
+    const btnText = document.getElementById('tab-btn-text');
+    const btnTable = document.getElementById('tab-btn-table');
+    const contentText = document.getElementById('cvt-tab-content-text');
+    const contentTable = document.getElementById('cvt-tab-content-table');
+
+    if (tab === 'text') {
+        btnText?.classList.add('bg-white', 'shadow-sm', 'text-indigo-700');
+        btnText?.classList.remove('text-slate-600');
+        btnTable?.classList.remove('bg-white', 'shadow-sm', 'text-indigo-700');
+        btnTable?.classList.add('text-slate-600');
+        contentText?.classList.remove('hidden');
+        contentTable?.classList.add('hidden');
+    } else {
+        btnTable?.classList.add('bg-white', 'shadow-sm', 'text-indigo-700');
+        btnTable?.classList.remove('text-slate-600');
+        btnText?.classList.remove('bg-white', 'shadow-sm', 'text-indigo-700');
+        btnText?.classList.add('text-slate-600');
+        contentTable?.classList.remove('hidden');
+        contentText?.classList.add('hidden');
+    }
+}
+
+function copyConvertedTextToClipboard() {
+    const outputTextarea = document.getElementById('cvt-output-text');
+    if (!outputTextarea || !outputTextarea.value) {
+        showToast('Belum ada hasil konversi untuk disalin.', 'error');
+        return;
+    }
+
+    navigator.clipboard.writeText(outputTextarea.value).then(() => {
+        showToast('Hasil convert berhasil disalin ke clipboard!', 'success');
+    }).catch(err => {
+        outputTextarea.select();
+        document.execCommand('copy');
+        showToast('Hasil convert disalin ke clipboard!', 'success');
+    });
+}
+
+function downloadConvertedTextFile() {
+    if (!currentConvertedData || !currentConvertedData.text) {
+        showToast('Belum ada data hasil konversi.', 'error');
+        return;
+    }
+
+    const blob = new Blob([currentConvertedData.text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Extraordinary_CBT_Template_${Date.now()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('File template berhasil diunduh.', 'success');
+}
+
+function downloadConvertedWordDoc() {
+    if (!currentConvertedData || !currentConvertedData.parsedQuestions || currentConvertedData.parsedQuestions.length === 0) {
+        showToast('Belum ada data hasil konversi untuk diunduh.', 'error');
+        return;
+    }
+
+    const questions = currentConvertedData.parsedQuestions;
+    const optionCount = currentConvertedData.optionCount || 5;
+
+    const tablesHtml = questions.map(q => `
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 0px; page-break-inside: avoid; border: 1.5pt solid #94a3b8; mso-padding-alt: 4pt 6pt 4pt 6pt;">
+            <tbody>
+                <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">TS</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.ts)}</td>
+                </tr>
+                <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">KD</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.kd)}</td>
+                </tr>
+                <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">KJ</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.kj)}</td>
+                </tr>
+                <tr style="background-color: #d1fae5; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #a7f3d0; color: #064e3b; font-weight: bold; mso-para-margin: 0cm;">ABS</td>
+                    <td style="padding: 4pt 6pt; color: #064e3b; mso-para-margin: 0cm;">${qbEscapeHtml(q.abs || '')}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; vertical-align: top; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">${q.num}.</td>
+                    <td style="padding: 4pt 6pt; font-weight: 600; color: #0f172a; line-height: 1.4; mso-para-margin: 0cm;">${qbEscapeHtml(q.questionText)}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">A</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.A || '')}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">B</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.B || '')}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">C</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.C || '')}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: ${optionCount >= 5 ? '1pt solid #e2e8f0' : '1pt solid #cbd5e1'};">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">D</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.D || '')}</td>
+                </tr>
+                ${optionCount >= 5 ? `
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">E</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.E || '')}</td>
+                </tr>
+                ` : ''}
+            </tbody>
+        </table>
+        <p style="margin: 0 !important; padding: 0 !important; mso-para-margin: 0cm !important; mso-para-margin-top: 0cm !important; mso-para-margin-bottom: 0cm !important; height: 12pt; line-height: 12pt;">&nbsp;</p>
+    `).join('');
+
+    const fullDocHtml = `
+        <html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns:m="http://schemas.microsoft.com/office/2004/12/omml" xmlns="http://www.w3.org/TR/REC-html40">
+        <head>
+            <meta charset="utf-8">
+            <title>Hasil Convert Extraordinary CBT</title>
+            <!--[if gte mso 9]>
+            <xml>
+             <w:WordDocument>
+              <w:View>Print</w:View>
+              <w:Zoom>100</w:Zoom>
+              <w:DoNotOptimizeForBrowser/>
+             </w:WordDocument>
+            </xml>
+            <![endif]-->
+            <style>
+                @page { size: A4; margin: 1.5cm; }
+                body, table, td, p, div, span {
+                    font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
+                    font-size: 10pt;
+                    color: #1e293b;
+                    line-height: 1.35;
+                    margin: 0 !important;
+                    padding: 0;
+                    mso-para-margin: 0cm !important;
+                    mso-para-margin-top: 0cm !important;
+                    mso-para-margin-bottom: 0cm !important;
+                    mso-line-height-rule: exactly;
+                }
+                p {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    mso-para-margin: 0cm !important;
+                    mso-para-margin-top: 0cm !important;
+                    mso-para-margin-bottom: 0cm !important;
+                }
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-bottom: 0px;
+                    page-break-inside: avoid;
+                    border: 1.5pt solid #cbd5e1;
+                    mso-yfti-tbllook: 1184;
+                    mso-padding-alt: 4pt 6pt 4pt 6pt;
+                }
+                td {
+                    border: 1pt solid #cbd5e1;
+                    padding: 4pt 6pt;
+                    font-size: 10pt;
+                    vertical-align: top;
+                    mso-para-margin: 0cm !important;
+                }
+            </style>
+        </head>
+        <body>
+            <h3 style="font-family: Arial, sans-serif; font-size: 14pt; font-weight: bold; color: #0f172a; margin: 0 0 12pt 0 !important; mso-para-margin-bottom: 12pt !important;">Extraordinary CBT Question Template</h3>
+            ${tablesHtml}
+        </body>
+        </html>
+    `;
+
+    const blob = new Blob(['\ufeff' + fullDocHtml], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Hasil_Convert_CBT_Tabel_${Date.now()}.doc`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('File Word Tabel CBT berhasil diunduh.', 'success');
+}
+
+function openImportConvertedToBankModal() {
+    if (!currentConvertedData || !currentConvertedData.parsedQuestions || currentConvertedData.parsedQuestions.length === 0) {
+        showToast('Belum ada hasil konversi soal. Silakan konversi soal terlebih dahulu.', 'error');
+        return;
+    }
+
+    const parsedQuestions = currentConvertedData.parsedQuestions;
+    const allowedSubjects = getTeacherAllowedSubjects();
+    const subjects = appState.subjects || [];
+    const classes = appState.classes || [];
+    let existingGroups = appState.questionBankGroups || [];
+
+    if (appState.role === 'teacher') {
+        const allowedIds = allowedSubjects.map(s => String(s.id));
+        const filtered = existingGroups.filter(bg => allowedIds.includes(String(bg.subjectId)));
+        if (filtered.length > 0) existingGroups = filtered;
+    }
+
+    const modal = document.getElementById('modal-container');
+    if (!modal) return;
+
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">
+            <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
+                <!-- Header -->
+                <div class="p-5 bg-gradient-to-r from-emerald-600 to-teal-700 text-white flex justify-between items-center shrink-0">
+                    <div class="flex items-center space-x-3">
+                        <div class="p-2.5 bg-white/10 rounded-2xl">
+                            <i class="fa-solid fa-file-import text-lg"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-base leading-tight">Import Hasil Convert ke Bank Soal</h3>
+                            <p class="text-xs text-emerald-100 font-medium">Akan mengimpor <span class="font-bold underline">${parsedQuestions.length}</span> butir soal</p>
+                        </div>
+                    </div>
+                    <button type="button" onclick="closeImportBankModal()" class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition cursor-pointer">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+
+                <!-- Form -->
+                <form onsubmit="executeImportConvertedToBank(event)" class="p-6 overflow-y-auto space-y-5 text-xs sm:text-sm">
+                    <!-- Choose Mode -->
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Tujuan Bank Soal</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <label id="lbl-mode-existing" class="flex items-center justify-center space-x-2 p-3 border-2 border-indigo-600 bg-indigo-50/60 rounded-2xl cursor-pointer transition">
+                                <input type="radio" name="import-mode" value="existing" checked onchange="toggleImportBankMode('existing')" class="text-indigo-600 focus:ring-indigo-500 cursor-pointer">
+                                <span class="font-bold text-indigo-950 text-xs">Pilih Bank Soal Ada</span>
+                            </label>
+                            <label id="lbl-mode-new" class="flex items-center justify-center space-x-2 p-3 border-2 border-slate-200 bg-white hover:bg-slate-50 rounded-2xl cursor-pointer transition">
+                                <input type="radio" name="import-mode" value="new" onchange="toggleImportBankMode('new')" class="text-indigo-600 focus:ring-indigo-500 cursor-pointer">
+                                <span class="font-bold text-slate-700 text-xs">+ Buat Kode Soal Baru</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Option 1: Existing Group -->
+                    <div id="section-import-existing" class="space-y-2">
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-600">Pilih Bank Soal / Kode Soal <span class="text-rose-500">*</span></label>
+                        ${existingGroups.length === 0 ? `
+                            <div class="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-800">
+                                Belum ada Bank Soal tersimpan. Silakan pilih <b>"+ Buat Kode Soal Baru"</b> di atas.
+                            </div>
+                        ` : `
+                            <select id="import-bank-code-existing" class="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl font-bold text-xs focus:ring-2 focus:ring-indigo-500 focus:bg-white transition">
+                                ${existingGroups.map(bg => {
+                                    const subj = subjects.find(s => String(s.id) === String(bg.subjectId));
+                                    const cls = classes.find(c => String(c.id) === String(bg.classId));
+                                    return `<option value="${bg.code}">${bg.code} - ${subj?.name || 'Umum'} (Kelas ${cls?.name || 'Semua'})</option>`;
+                                }).join('')}
+                            </select>
+                        `}
+                    </div>
+
+                    <!-- Option 2: New Group Form -->
+                    <div id="section-import-new" class="hidden space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Kode Soal Baru <span class="text-rose-500">*</span></label>
+                            <input type="text" id="import-bank-code-new" value="KODE-SOAL-${(appState.questionBankGroups || []).length + 1}" class="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl font-mono text-xs font-bold focus:ring-2 focus:ring-indigo-500" placeholder="misal: MTK-X-PAS-2026" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Mata Pelajaran <span class="text-rose-500">*</span></label>
+                            <select id="import-bank-mapel" class="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
+                                ${allowedSubjects.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Kelas <span class="text-rose-500">*</span></label>
+                            <select id="import-bank-kelas" class="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
+                                ${(appState.classes || []).map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="flex justify-end items-center space-x-2 pt-3 border-t border-slate-100">
+                        <button type="button" onclick="closeImportBankModal()" class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition cursor-pointer text-xs">
+                            Batal
+                        </button>
+                        <button type="submit" id="btn-submit-import-bank" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-md transition flex items-center space-x-2 cursor-pointer text-xs">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                            <span>Proses Import ke Bank Soal</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+}
+
+function toggleImportBankMode(mode) {
+    const secExisting = document.getElementById('section-import-existing');
+    const secNew = document.getElementById('section-import-new');
+    const lblExisting = document.getElementById('lbl-mode-existing');
+    const lblNew = document.getElementById('lbl-mode-new');
+    const inputCodeNew = document.getElementById('import-bank-code-new');
+
+    if (mode === 'existing') {
+        secExisting?.classList.remove('hidden');
+        secNew?.classList.add('hidden');
+        if (inputCodeNew) inputCodeNew.required = false;
+
+        lblExisting?.classList.add('border-indigo-600', 'bg-indigo-50/60', 'text-indigo-950');
+        lblExisting?.classList.remove('border-slate-200', 'bg-white', 'hover:bg-slate-50');
+
+        lblNew?.classList.remove('border-indigo-600', 'bg-indigo-50/60', 'text-indigo-950');
+        lblNew?.classList.add('border-slate-200', 'bg-white', 'hover:bg-slate-50');
+    } else {
+        secExisting?.classList.add('hidden');
+        secNew?.classList.remove('hidden');
+        if (inputCodeNew) inputCodeNew.required = true;
+
+        lblNew?.classList.add('border-indigo-600', 'bg-indigo-50/60', 'text-indigo-950');
+        lblNew?.classList.remove('border-slate-200', 'bg-white', 'hover:bg-slate-50');
+
+        lblExisting?.classList.remove('border-indigo-600', 'bg-indigo-50/60', 'text-indigo-950');
+        lblExisting?.classList.add('border-slate-200', 'bg-white', 'hover:bg-slate-50');
+    }
+}
+
+function closeImportBankModal() {
+    closeModal();
+}
+
+async function executeImportConvertedToBank(e) {
+    if (e) e.preventDefault();
+
+    if (!currentConvertedData || !currentConvertedData.parsedQuestions || currentConvertedData.parsedQuestions.length === 0) {
+        showToast('Tidak ada data hasil konversi untuk diimpor.', 'error');
+        return;
+    }
+
+    const mode = document.querySelector('input[name="import-mode"]:checked')?.value || 'existing';
+    const parsedQuestions = currentConvertedData.parsedQuestions;
+    const optionCount = currentConvertedData.optionCount || 5;
+
+    let targetCode = '';
+    let targetSubjectId = '';
+    let targetClassId = '';
+
+    if (mode === 'existing') {
+        const codeSelect = document.getElementById('import-bank-code-existing');
+        targetCode = codeSelect?.value || '';
+
+        if (!targetCode) {
+            showToast('Silakan pilih Bank Soal yang sudah ada atau pilih "Buat Kode Soal Baru".', 'error');
+            return;
+        }
+
+        const group = (appState.questionBankGroups || []).find(bg => String(bg.code) === String(targetCode));
+        targetSubjectId = group ? group.subjectId : (appState.subjects[0]?.id || '');
+        targetClassId = group ? group.classId : (appState.classes[0]?.id || '');
+    } else {
+        targetCode = (document.getElementById('import-bank-code-new')?.value || '').trim();
+        targetSubjectId = document.getElementById('import-bank-mapel')?.value || (appState.subjects[0]?.id || '');
+        targetClassId = document.getElementById('import-bank-kelas')?.value || (appState.classes[0]?.id || '');
+
+        if (!targetCode) {
+            showToast('Kode soal baru wajib diisi.', 'error');
+            return;
+        }
+
+        // Create new bank group if not existing
+        let group = (appState.questionBankGroups || []).find(bg => String(bg.code) === String(targetCode));
+        if (!group) {
+            group = { id: 'BG' + Date.now(), code: targetCode, subjectId: targetSubjectId, classId: targetClassId };
+            appState.questionBankGroups.push(group);
+
+            try {
+                await fetch('/api/question-bank-groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(group)
+                });
+            } catch (err) {}
+
+            saveState('questionBankGroups');
+        }
+    }
+
+    // Convert parsed questions to Bank Soal objects
+    const newQuestions = [];
+    parsedQuestions.forEach((q, idx) => {
+        const isEssay = (q.ts || '').toUpperCase().includes('ESY') || (q.ts || '').toUpperCase().includes('ESSAY');
+
+        const opts = [];
+        if (q.options) {
+            if (q.options.A !== undefined) opts.push(q.options.A);
+            if (q.options.B !== undefined) opts.push(q.options.B);
+            if (q.options.C !== undefined) opts.push(q.options.C);
+            if (q.options.D !== undefined) opts.push(q.options.D);
+            if (optionCount >= 5 && q.options.E !== undefined) opts.push(q.options.E);
+        }
+
+        const kjLetter = (q.kj || 'A').toUpperCase().trim();
+        let answerVal = kjLetter;
+        if (q.options && q.options[kjLetter] !== undefined) {
+            answerVal = q.options[kjLetter];
+        }
+
+        const newQObj = {
+            id: 'Q_' + Date.now() + '_' + idx + '_' + Math.random().toString(36).substr(2, 4),
+            code: targetCode,
+            subjectId: targetSubjectId,
+            classId: targetClassId,
+            type: isEssay ? 'essay' : 'mc',
+            question: q.questionText || '',
+            imageUrl: '',
+            options: isEssay ? [] : opts,
+            answer: answerVal,
+            explanation: ''
+        };
+
+        appState.questionBank.push(newQObj);
+        newQuestions.push(newQObj);
+    });
+
+    saveState('questionBank');
+
+    try {
+        await fetch('/api/questions/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ questions: newQuestions })
+        });
+    } catch(err) {}
+
+    closeModal();
+    showToast(`Berhasil mengimpor ${newQuestions.length} butir soal ke Bank Soal (${targetCode})!`, 'success');
+
+    appState.activeBankGroupCode = targetCode;
+    const viewContainer = document.getElementById('view-container');
+    if (viewContainer) {
+        renderQuestionBankModule(viewContainer);
+    }
+}
+
+function extractTextAndImagesFromNode(node) {
+    if (!node) return '';
+    let result = '';
+
+    function walk(child) {
+        if (!child) return;
+        if (child.nodeType === Node.TEXT_NODE) {
+            result += child.textContent;
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+            const tagName = child.tagName.toLowerCase();
+            if (tagName === 'img') {
+                const src = child.getAttribute('src');
+                if (src) {
+                    const alt = child.getAttribute('alt') || '';
+                    result += ` <img src="${src}" alt="${alt}" style="max-width: 100%; height: auto; display: inline-block; margin: 4px 0;" /> `;
+                }
+            } else if (tagName === 'br') {
+                result += '\n';
+            } else if (['p', 'div', 'tr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
+                for (const grandChild of child.childNodes) {
+                    walk(grandChild);
+                }
+                result += '\n';
+            } else {
+                for (const grandChild of child.childNodes) {
+                    walk(grandChild);
+                }
+            }
+        }
+    }
+
+    walk(node);
+    return result;
+}
+
+function parseWordHtmlToText(html) {
+    if (!html) return '';
+
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+
+    const tables = temp.querySelectorAll('table');
+    if (tables.length > 0) {
+        const textParts = [];
+        tables.forEach(table => {
+            const rows = table.querySelectorAll('tr');
+            let qNum = '', qText = '', optA = '', optB = '', optC = '', optD = '', optE = '', kj = '';
+            let isCbtTable = false;
+
+            rows.forEach(row => {
+                const cells = Array.from(row.querySelectorAll('td, th')).map(c => extractTextAndImagesFromNode(c).trim());
+                if (cells.length >= 2) {
+                    const col1 = cells[0].toUpperCase();
+                    const col2 = cells[1];
+
+                    if (['TS', 'KD', 'ABS'].includes(col1)) {
+                        isCbtTable = true;
+                    } else if (col1 === 'KJ') {
+                        isCbtTable = true;
+                        kj = col2;
+                    } else if (/^\d+[\.\)]?$/.test(col1) || col1.endsWith('.')) {
+                        isCbtTable = true;
+                        qNum = col1.replace(/\D/g, '');
+                        qText = col2;
+                    } else if (['A', 'B', 'C', 'D', 'E'].includes(col1)) {
+                        isCbtTable = true;
+                        if (col1 === 'A') optA = col2;
+                        if (col1 === 'B') optB = col2;
+                        if (col1 === 'C') optC = col2;
+                        if (col1 === 'D') optD = col2;
+                        if (col1 === 'E') optE = col2;
+                    }
+                }
+            });
+
+            if (isCbtTable && qText) {
+                let block = `${qNum || '1'}. ${qText}`;
+                if (optA) block += `\nA. ${optA}`;
+                if (optB) block += `\nB. ${optB}`;
+                if (optC) block += `\nC. ${optC}`;
+                if (optD) block += `\nD. ${optD}`;
+                if (optE) block += `\nE. ${optE}`;
+                if (kj) block += `\nKunci: ${kj}`;
+                textParts.push(block);
+            } else {
+                rows.forEach(r => {
+                    const cellTexts = Array.from(r.querySelectorAll('td, th')).map(c => extractTextAndImagesFromNode(c).trim()).join(' | ');
+                    if (cellTexts) textParts.push(cellTexts);
+                });
+            }
+        });
+
+        temp.querySelectorAll('table').forEach(t => t.remove());
+        const otherText = extractTextAndImagesFromNode(temp);
+        if (otherText.trim()) {
+            textParts.unshift(otherText.trim());
+        }
+
+        return textParts.join('\n\n');
+    }
+
+    const fullText = extractTextAndImagesFromNode(temp);
+    return fullText.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function handleConvertWordFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    showToast('Membaca file Word...', 'info');
+
+    const processWithMammoth = (mammothInst) => {
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            const arrayBuffer = evt.target.result;
+            mammothInst.convertToHtml({ arrayBuffer: arrayBuffer })
+                .then(function(result) {
+                    const htmlContent = result.value || '';
+                    const extractedText = parseWordHtmlToText(htmlContent);
+                    const textarea = document.getElementById('cvt-raw-text');
+                    if (textarea) {
+                        textarea.value = extractedText;
+                    }
+                    showToast('Berhasil mengimpor teks dari file Word!', 'success');
+                })
+                .catch(function(err) {
+                    console.warn('Mammoth convert error, falling back to raw text:', err);
+                    const readerText = new FileReader();
+                    readerText.onload = function(txtEvt) {
+                        const textarea = document.getElementById('cvt-raw-text');
+                        if (textarea) textarea.value = txtEvt.target.result;
+                        showToast('Berhasil mengimpor teks file!', 'success');
+                    };
+                    readerText.readAsText(file);
+                });
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    if (window.mammoth) {
+        processWithMammoth(window.mammoth);
+    } else {
+        import('mammoth').then(mod => {
+            window.mammoth = mod.default || mod;
+            processWithMammoth(window.mammoth);
+        }).catch(err => {
+            console.error('Failed to load mammoth:', err);
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                const textarea = document.getElementById('cvt-raw-text');
+                if (textarea) textarea.value = evt.target.result;
+                showToast('Berhasil mengimpor teks file!', 'success');
+            };
+            reader.readAsText(file);
+        });
+    }
+}
+
+// Improved Multi-Format Question Import Modal
+function openQuestionImportModal(code) {
+    const modal = document.getElementById('modal-container');
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
+            <div class="bg-white w-full max-w-xl rounded-3xl shadow-2xl p-6 space-y-5 my-6">
+                <div class="flex justify-between items-center pb-2 border-b">
+                    <h3 class="font-bold flex items-center space-x-2 text-slate-800 text-base">
+                        <i class="fa-solid fa-file-arrow-up text-emerald-600"></i>
+                        <span>Import Soal (Word, Excel, Text)</span>
+                    </h3>
+                    <button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-lg text-slate-400 hover:text-slate-600"></i></button>
+                </div>
+
+                <!-- Template Download Options -->
+                <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2">
+                    <p class="font-bold text-xs text-slate-700"><i class="fa-solid fa-download text-emerald-600 mr-1"></i> Download Template Resmi:</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button type="button" onclick="downloadQuestionImportTemplateWord()" class="py-2.5 px-3 bg-white border border-slate-200 hover:bg-emerald-50 hover:border-emerald-300 text-slate-700 hover:text-emerald-800 rounded-xl font-semibold text-xs flex items-center justify-center space-x-2 shadow-sm transition">
+                            <i class="fa-solid fa-file-word text-blue-600"></i><span>Template Word (.docx/.doc)</span>
+                        </button>
+                        <button type="button" onclick="downloadQuestionImportTemplateExcel()" class="py-2.5 px-3 bg-white border border-slate-200 hover:bg-emerald-50 hover:border-emerald-300 text-slate-700 hover:text-emerald-800 rounded-xl font-semibold text-xs flex items-center justify-center space-x-2 shadow-sm transition">
+                            <i class="fa-solid fa-file-excel text-emerald-600"></i><span>Template Excel (.xlsx)</span>
+                        </button>
+                    </div>
+                    <button type="button" onclick="openTemplateGuideModal()" class="w-full mt-1 py-1.5 text-[11px] text-emerald-700 font-bold hover:underline text-center cursor-pointer">
+                        <i class="fa-solid fa-circle-info mr-1"></i> Lihat Contoh Format Teks & Rumus Matematika
+                    </button>
+                </div>
+
+                <!-- File Drop / Upload -->
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold uppercase text-slate-700">Opsi 1: Upload File (.docx, .doc, .pdf, .html, .htm, .zip, .xlsx, .csv, .txt)</label>
+                    <div class="border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-2xl p-4 text-center transition bg-slate-50/50">
+                        <i class="fa-solid fa-cloud-arrow-up text-2xl text-slate-400 mb-1"></i>
+                        <p class="text-xs text-slate-600 mb-2 font-medium">Pilih file Word, PDF, Web Page (HTML/ZIP), Excel, atau Teks dari komputer Anda</p>
+                        <input type="file" id="question-import-file" accept=".docx, .doc, .pdf, .html, .htm, .zip, .xlsx, .xls, .csv, .txt" onchange="handleQuestionImportFile(event, '${code}')" class="w-full text-xs text-slate-500 file:mr-auto file:mx-auto file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-700 cursor-pointer"/>
+                    </div>
+                </div>
+
+                <!-- Direct Paste Option -->
+                <div class="space-y-2 pt-2 border-t">
+                    <label class="block text-xs font-bold uppercase text-slate-700">Opsi 2: Tempel Teks Soal Langsung (Copy-Paste)</label>
+                    <textarea id="direct-import-textarea" rows="4" class="w-full p-3 bg-slate-50 border rounded-2xl text-xs font-mono" placeholder="1. Soal nomor satu...&#10;A. Pilihan A&#10;B. Pilihan B&#10;Kunci: B&#10;Pembahasan: Penjelasan..."></textarea>
+                    <button type="button" onclick="handleQuestionDirectTextImport('${code}')" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow transition">
+                        <i class="fa-solid fa-file-import mr-1"></i> Proses Import dari Teks
+                    </button>
+                </div>
+
+                <div class="flex justify-end pt-2 border-t">
+                    <button type="button" onclick="closeModal()" class="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold">Tutup</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function openTemplateGuideModal() {
+    const modal = document.getElementById('modal-container');
+    const guideHtml = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
+            <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-6 space-y-4 my-6">
+                <div class="flex justify-between items-center pb-2 border-b">
+                    <h3 class="font-bold text-slate-800 text-base flex items-center space-x-2">
+                        <i class="fa-solid fa-book-open text-emerald-600"></i>
+                        <span>Panduan Format Import Extraordinary CBT & Rumus Matematika</span>
+                    </h3>
+                    <button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-lg text-slate-400"></i></button>
+                </div>
+                
+                <div class="space-y-3 text-xs text-slate-600 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
+                    <div class="bg-emerald-50 p-3 rounded-2xl border border-emerald-200 text-emerald-900 space-y-1">
+                        <p class="font-bold"><i class="fa-solid fa-bolt text-emerald-600 mr-1"></i> Mode Impor Super Efisien (HTML / ZIP & Smart Auto-Detect):</p>
+                        <p class="text-[11px]"><b>1. Ekspor Word ke Web Page / ZIP:</b> Buka dokumen Word Anda -> Pilih <b>File -> Save As -> Web Page (*.htm; *.html)</b>. Jika ada gambar, zip file HTML bersama folder gambarnya dan upload file <b>.zip</b> atau <b>.html</b> langsung!</p>
+                        <p class="text-[11px]"><b>2. Smart Math Auto-Formatter (Tanpa Tanda $):</b> Sistem kini secara otomatis mengenali ekspresi rumus matematika standar Word/Teks biasa seperti <code class="bg-emerald-100 px-1 rounded font-mono">(-2)^4</code>, <code class="bg-emerald-100 px-1 rounded font-mono">a^8b^3c^4 / a^2b^2c</code>, <code class="bg-emerald-100 px-1 rounded font-mono">3√5</code>, <code class="bg-emerald-100 px-1 rounded font-mono">^2Log 16</code>, <code class="bg-emerald-100 px-1 rounded font-mono">(fog)(x)</code>, dan <code class="bg-emerald-100 px-1 rounded font-mono">f^-1(x)</code> tanpa mengharuskan Anda mengetik tanda <code class="bg-emerald-100 px-1 rounded font-mono">$</code>!</p>
+                    </div>
+
+                    <div class="bg-amber-50 p-3 rounded-2xl border border-amber-200 text-amber-900 space-y-1">
+                        <p class="font-bold"><i class="fa-solid fa-table-cells mr-1"></i> Format Tabel Extraordinary CBT Word:</p>
+                        <p class="text-[11px]">Sistem mengenali tabel <b>Extraordinary CBT by shellrean</b> secara otomatis:</p>
+                        <ul class="list-disc list-inside space-y-0.5 ml-1 font-mono text-[11px]">
+                            <li><code class="bg-amber-100 px-1 rounded font-bold">TS</code>: Tipe Soal (<code class="bg-amber-100 px-1 rounded">PG</code> = Pilihan Ganda, <code class="bg-amber-100 px-1 rounded">ESY</code> = Essay/Uraian)</li>
+                            <li><code class="bg-amber-100 px-1 rounded font-bold">KD</code>: Kode Kompetensi Dasar (misal <code class="bg-amber-100 px-1 rounded">1.0.1</code>)</li>
+                            <li><code class="bg-amber-100 px-1 rounded font-bold">KJ</code>: Kunci Jawaban (<code class="bg-amber-100 px-1 rounded">A</code>, <code class="bg-amber-100 px-1 rounded">B</code>, <code class="bg-amber-100 px-1 rounded">C</code>, <code class="bg-amber-100 px-1 rounded">D</code>, <code class="bg-amber-100 px-1 rounded">E</code> atau teks kunci essay)</li>
+                            <li><code class="bg-amber-100 px-1 rounded font-bold">ABS</code>: Acak/Absolut (Bisa dikosongkan)</li>
+                            <li>Baris Nomor <code class="bg-amber-100 px-1 rounded font-bold">1.</code>, <code class="bg-amber-100 px-1 rounded font-bold">2.</code>: Isi Teks Soal</li>
+                            <li>Baris <code class="bg-amber-100 px-1 rounded font-bold">A</code>, <code class="bg-amber-100 px-1 rounded font-bold">B</code>, <code class="bg-amber-100 px-1 rounded font-bold">C</code>, <code class="bg-amber-100 px-1 rounded font-bold">D</code>, <code class="bg-amber-100 px-1 rounded font-bold">E</code>: Pilihan Jawaban</li>
+                        </ul>
+                    </div>
+
+                    <div class="bg-blue-50 p-3 rounded-2xl border border-blue-200 text-blue-900 space-y-1">
+                        <p class="font-bold"><i class="fa-solid fa-square-root-variable mr-1"></i> Cara Memasukkan Rumus Matematika (Gunakan Simbol $ ... $):</p>
+                        <p class="text-[11px]">Cukup apit rumus menggunakan tanda <code class="bg-blue-100 px-1 py-0.5 rounded font-mono">$...$</code> di Word:</p>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono mt-1">
+                            <div class="bg-white p-2 rounded-xl border border-blue-100">
+                                <b class="text-blue-700">1. Pangkat / Eksponen:</b><br/>
+                                <code class="bg-blue-50 px-1 rounded">$(-2)^4$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$(2x^2y)^0$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$3^2 \\times 81 = 3^n$</code>
+                            </div>
+                            <div class="bg-white p-2 rounded-xl border border-blue-100">
+                                <b class="text-blue-700">2. Pecahan / Pembagian:</b><br/>
+                                <code class="bg-blue-50 px-1 rounded">$\\frac{a^8 b^3 c^4}{a^2 b^2 c}$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$\\frac{6^2 + 8^2}{2^2}$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$\\frac{3-4x}{x+3}$</code>
+                            </div>
+                            <div class="bg-white p-2 rounded-xl border border-blue-100">
+                                <b class="text-blue-700">3. Bentuk Akar:</b><br/>
+                                <code class="bg-blue-50 px-1 rounded">$\\sqrt[3]{5^5}$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$3\\sqrt{5} + 4\\sqrt{5}$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$2\\sqrt{50} + 3\\sqrt{8}$</code>
+                            </div>
+                            <div class="bg-white p-2 rounded-xl border border-blue-100">
+                                <b class="text-blue-700">4. Logaritma & Fungsi:</b><br/>
+                                <code class="bg-blue-50 px-1 rounded">$^2\\log 16$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$(f \\circ g)(x)$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$f^{-1}(x) = \\frac{x-2}{5}$</code>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="space-y-1">
+                        <p class="font-bold text-slate-800">Contoh Tabel Extraordinary CBT dengan Rumus Matematika:</p>
+                        <pre class="bg-slate-900 text-emerald-300 p-4 rounded-2xl font-mono text-[11px] overflow-x-auto whitespace-pre-wrap select-all">
+TS  | PG
+KD  | 1.0.1
+KJ  | E
+ABS | 
+1.  | Nilai dari $(-2)^4$ adalah ....
+A   | 4
+B   | -8
+C   | 8
+D   | -16
+E   | 16
+
+TS  | PG
+KD  | 1.0.1
+KJ  | A
+ABS | 
+2.  | Nilai dari $\\frac{a^8 b^3 c^4}{a^2 b^2 c}$ adalah ....
+A   | $a^6 b c^3$
+B   | $a^3 b^2 c^3$
+C   | $a^6 b^4 c^3$
+D   | $a^3 b^2 c^5$
+E   | $a^6 b^3 c^2$
+                        </pre>
+                    </div>
+                </div>
+
+                <div class="flex justify-end space-x-2 pt-2 border-t">
+                    <button type="button" onclick="downloadQuestionImportTemplateWord()" class="px-4 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold cursor-pointer">
+                        <i class="fa-solid fa-file-word mr-1"></i> Unduh Template Word (.doc)
+                    </button>
+                    <button type="button" onclick="closeModal()" class="px-5 py-2 bg-slate-800 text-white rounded-xl text-xs font-semibold">Mengerti</button>
+                </div>
+            </div>
+        </div>
+    `;
+    modal.innerHTML = guideHtml;
+}
+
+function downloadQuestionImportTemplateWord() {
+    const htmlContent = `
+        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+        <head>
+            <meta charset='utf-8'>
+            <title>Extraordinary CBT Template by shellrean</title>
+            <style>
+                body { font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #000; }
+                h3 { font-size: 14pt; font-weight: bold; margin-bottom: 8px; }
+                .perhatian { font-size: 10pt; margin-bottom: 12px; }
+                .tipe-soal { font-size: 10pt; margin-bottom: 16px; }
+                table { width: 100%; border-collapse: collapse; margin-bottom: 20px; page-break-inside: avoid; }
+                td, th { border: 1px solid #000; padding: 5px 8px; font-size: 10pt; vertical-align: top; }
+                .bg-ts { background-color: #FFF2CC; font-weight: bold; width: 60px; }
+                .bg-ts-val { background-color: #FFF2CC; font-weight: bold; }
+                .bg-kj { background-color: #E2EFDA; font-weight: bold; width: 60px; }
+                .bg-kj-val { background-color: #E2EFDA; }
+                .no-col { width: 35px; font-weight: bold; text-align: center; }
+            </style>
+        </head>
+        <body>
+            <h3>Extraordinary CBT Template by shellrean</h3>
+            <div class="perhatian">
+                <b>Perhatian:</b><br/>
+                1. Dilarang membuat table selain format Extraordinary CBT<br/>
+                2. Dilarang menyimpan floating image<br/>
+            </div>
+            <div class="tipe-soal">
+                <b>Tipe soal wajib diisi pada baris [TS]</b><br/>
+                1. PG : Pilihan ganda<br/>
+                2. PGX : Pilihan ganda kompleks<br/>
+                3. ESY : Esay / Uraian<br/>
+                4. SKT : Isian singkat<br/>
+                5. JD : Menjodohkan 1-1<br/>
+                6. JDX : Menjodohkan 1-X<br/>
+                7. URT : Mengurutkan<br/>
+                8. STJ : Setuju tidak setuju<br/>
+                9. BNR : Benar salah<br/>
+            </div>
+            <p style="font-size: 10pt; font-style: italic; margin-bottom: 15px;">Tipe soal pilihan ganda, disini kita mengisi TS dengan PG. Yang harus diperhatikan disini adalah KJ pastikan KJ tersedia pada opsi.</p>
+
+            <!-- Soal 1: Eksponen -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">PG</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">E</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">1.</td><td>Nilai dari $(-2)^4$ adalah ....</td></tr>
+                <tr><td class="no-col">A</td><td>4</td></tr>
+                <tr><td class="no-col">B</td><td>-8</td></tr>
+                <tr><td class="no-col">C</td><td>8</td></tr>
+                <tr><td class="no-col">D</td><td>-16</td></tr>
+                <tr><td class="no-col">E</td><td>16</td></tr>
+            </table>
+
+            <!-- Soal 2: Pecahan Eksponen -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">PG</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">A</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">2.</td><td>Nilai dari $\\frac{a^8 b^3 c^4}{a^2 b^2 c}$ adalah ....</td></tr>
+                <tr><td class="no-col">A</td><td>$a^6 b c^3$</td></tr>
+                <tr><td class="no-col">B</td><td>$a^3 b^2 c^3$</td></tr>
+                <tr><td class="no-col">C</td><td>$a^6 b^4 c^3$</td></tr>
+                <tr><td class="no-col">D</td><td>$a^3 b^2 c^5$</td></tr>
+                <tr><td class="no-col">E</td><td>$a^6 b^3 c^2$</td></tr>
+            </table>
+
+            <!-- Soal 3: Bentuk Akar -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">PG</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">A</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">3.</td><td>Bentuk lain dari $\\sqrt[3]{5^5}$ adalah ....</td></tr>
+                <tr><td class="no-col">A</td><td>$5^{\\frac{5}{3}}$</td></tr>
+                <tr><td class="no-col">B</td><td>$5^{\\frac{3}{5}}$</td></tr>
+                <tr><td class="no-col">C</td><td>$5^{\\frac{3}{3}}$</td></tr>
+                <tr><td class="no-col">D</td><td>$3^{\\frac{3}{5}}$</td></tr>
+                <tr><td class="no-col">E</td><td>$3^{\\frac{5}{3}}$</td></tr>
+            </table>
+
+            <!-- Soal 4: Logaritma -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">PG</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">C</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">4.</td><td>Nilai dari $^5\\log 25 + ^3\\log 27$ adalah ....</td></tr>
+                <tr><td class="no-col">A</td><td>5</td></tr>
+                <tr><td class="no-col">B</td><td>6</td></tr>
+                <tr><td class="no-col">C</td><td>5</td></tr>
+                <tr><td class="no-col">D</td><td>8</td></tr>
+                <tr><td class="no-col">E</td><td>9</td></tr>
+            </table>
+
+            <!-- Soal 5: Fungsi Invers (Uraian / Essay) -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">ESY</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">$f^{-1}(x) = \\frac{x-2}{5}$</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">5.</td><td>Jika $f(x) = 5x + 2$, tentukan invers dari fungsi $f(x)$!</td></tr>
+            </table>
+        </body>
+        </html>
+    `;
+    const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Extraordinary_CBT_Template_Matematika.doc';
+    a.click();
+    showToast('Template Extraordinary CBT Word Matematika berhasil diunduh!', 'success');
+}
+
+function downloadQuestionImportTemplateExcel() {
+    if (!window.XLSX) {
+        showToast('Library SheetJS belum siap.', 'error');
+        return;
+    }
+
+    const templateData = [
+        ["No", "Soal", "Gambar_URL", "Opsi_A", "Opsi_B", "Opsi_C", "Opsi_D", "Opsi_E", "Kunci_Jawaban", "Jenis_Soal", "Pembahasan"],
+        [1, "Berapakah nilai x dari $3x - 6 = 12$?", "", "x = 4", "x = 6", "x = 8", "x = 10", "x = 12", "B", "PG", "3x = 18 maka x = 6"],
+        [2, "Sebutkan rukun Islam yang pertama!", "", "", "", "", "", "", "Syahadat", "Essay", "Rukun islam pertama adalah syahadat."]
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(templateData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Template_Soal");
+    XLSX.writeFile(wb, "Template_Import_Soal_Madrasah.xlsx");
+    showToast('Template Excel (.xlsx) berhasil diunduh!', 'success');
+}
+
+function autoFormatMathExpressions(str) {
+    if (!str) return '';
+    let s = String(str).trim();
+    if (!s) return '';
+
+    // If string already contains explicit $ or \( or \[
+    if (s.includes('$') || s.includes('\\(') || s.includes('\\[')) {
+        return s;
+    }
+
+    // If string contains raw LaTeX commands (e.g. \frac{a}{b}, \sqrt{x}, \alpha, \times, etc.)
+    if (/\\(frac|sqrt|text|begin|end|alpha|beta|gamma|theta|pi|infty|sum|int|lim|times|div|pm|le|ge|neq|approx|cdot|circ)/i.test(s)) {
+        // Auto-wrap raw LaTeX command in math delimiters $ ... $
+        return `$${s}$`;
+    }
+
+    // Convert Unicode superscripts: x², x³, x⁴, aⁿ
+    s = s.replace(/([a-zA-Z0-9_\)\>]+)[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, function(match, base) {
+        const supMap = {'⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5','⁶':'6','⁷':'7','⁸':'8','⁹':'9'};
+        let exp = match.slice(base.length).split('').map(c => supMap[c] || c).join('');
+        return `$${base}^{${exp}}$`;
+    });
+
+    // Convert Unicode subscripts: x₁, x₂
+    s = s.replace(/([a-zA-Z0-9_\)\>]+)[₀₁₂₃₄₅₆₇₈₉]+/g, function(match, base) {
+        const subMap = {'₀':'0','₁':'1','₂':'2','₃':'3','₄':'4','₅':'5','₆':'6','₇':'7','₈':'8','₉':'9'};
+        let sub = match.slice(base.length).split('').map(c => subMap[c] || c).join('');
+        return `$${base}_{${sub}}$`;
+    });
+
+    // Auto-detect math formulas without '$' and convert them
+    // Exponents: (-2)^4, (2x^2y)^0, 3^2, 3^n, x^2
+    s = s.replace(/(\(?[-+]?\w+\)?)\^(\w+|\(?[-+]?\d+\)?)/g, '$$$1^{$2}$$');
+
+    // Square roots: √5, 3√5, √16, 2√50
+    s = s.replace(/(\d*)\s*√(\w+|\d+)/g, '$$$1\\sqrt{$2}$$');
+
+    // Logarithms: ^2Log 16, ^5Log 25, ^3Log 27
+    s = s.replace(/\^(\d+)\s*(Log|log)\s*(\d+|\w+)/gi, '$$^{$1}\\text{Log } $3$$');
+
+    // Composite & Inverse Functions: (fog)(x), f^-1(x)
+    s = s.replace(/\(fog\)\(([^)]+)\)/gi, '$$(f \\circ g)($1)$$');
+    s = s.replace(/f\^-1\(([^)]+)\)/gi, '$$f^{-1}($1)$$');
+
+    // Fractions: (6^2+8^2)/2^2 or (3-4x)/(x+3)
+    s = s.replace(/(\([^)]+\)|[a-zA-Z0-9^]+)\s*\/\s*(\([^)]+\)|[a-zA-Z0-9^]+)/g, function(m, num, den) {
+        let cleanNum = num.replace(/^\(|\)$/g, '');
+        let cleanDen = den.replace(/^\(|\)$/g, '');
+        return `$\\frac{${cleanNum}}{${cleanDen}}$`;
+    });
+
+    s = s.replace(/\$\$/g, '$');
+    return s;
+}
+
+function cleanAndFormatMathCellContent(cell) {
+    if (!cell) return '';
+
+    let inner = cell.innerHTML ? cell.innerHTML.trim() : '';
+
+    inner = inner.replace(/([a-zA-Z0-9_\)\>]+)\s*<sup>([\s\S]*?)<\/sup>/gi, function(match, base, exp) {
+        const cleanExp = exp.replace(/<[^>]+>/g, '').trim();
+        const cleanBase = base.replace(/<[^>]+>/g, '').trim();
+        return `$${cleanBase}^{${cleanExp}}$`;
+    });
+
+    inner = inner.replace(/<sup>([\s\S]*?)<\/sup>\s*(Log|log)/gi, function(match, exp, log) {
+        const cleanExp = exp.replace(/<[^>]+>/g, '').trim();
+        return `$^${cleanExp}\\text{Log}$`;
+    });
+
+    inner = inner.replace(/<sub>([\s\S]*?)<\/sub>/gi, function(match, sub) {
+        const cleanSub = sub.replace(/<[^>]+>/g, '').trim();
+        return `$_{${cleanSub}}$`;
+    });
+
+    const temp = document.createElement('div');
+    temp.innerHTML = inner;
+
+    // Remove hr and img elements
+    temp.querySelectorAll('hr').forEach(hr => hr.remove());
+    const imgs = temp.querySelectorAll('img');
+    imgs.forEach(img => img.remove());
+
+    let textContent = temp.textContent || temp.innerText || '';
+    textContent = textContent.replace(/^[\-\—\–\―]{2,}$/gm, '').trim();
+
+    let formattedText = autoFormatMathExpressions(textContent);
+
+    return formattedText.trim();
+}
+
+function handleQuestionImportFile(e, code) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const fileName = file.name.toLowerCase();
+
+    if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.csv')) {
+        // Excel Import
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            try {
+                const data = new Uint8Array(evt.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                if (rows.length < 2) {
+                    showToast('File Excel kosong atau format tidak sesuai.', 'error');
+                    return;
+                }
+
+                const group = appState.questionBankGroups.find(bg => String(bg.code) === String(code));
+                let addedCount = 0;
+
+                for (let i = 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    if (!row || row.length === 0 || !row[1]) continue;
+
+                    const qText = autoFormatMathExpressions(String(row[1] || '').trim());
+                    const imgUrl = String(row[2] || '').trim();
+                    const optA = autoFormatMathExpressions(String(row[3] || '').trim());
+                    const optB = autoFormatMathExpressions(String(row[4] || '').trim());
+                    const optC = autoFormatMathExpressions(String(row[5] || '').trim());
+                    const optD = autoFormatMathExpressions(String(row[6] || '').trim());
+                    const optE = autoFormatMathExpressions(String(row[7] || '').trim());
+                    const keyVal = String(row[8] || '').trim();
+                    const kindVal = String(row[9] || '').trim().toLowerCase();
+                    const expVal = autoFormatMathExpressions(String(row[10] || '').trim());
+
+                    let options = [optA, optB, optC, optD, optE].filter(o => o !== '');
+                    const isEssay = kindVal === 'essay' || kindVal === 'esy' || options.length === 0;
+
+                    let answerKey = keyVal;
+                    if (!isEssay) {
+                        const keyUpper = keyVal.toUpperCase();
+                        if (['A', 'B', 'C', 'D', 'E'].includes(keyUpper)) {
+                            const idx = keyUpper.charCodeAt(0) - 65;
+                            if (options[idx]) answerKey = options[idx];
+                        }
+                    }
+
+                    appState.questionBank.push({
+                        id: 'Q_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                        code: code,
+                        subjectId: group ? group.subjectId : (appState.subjects[0]?.id || ''),
+                        classId: group ? group.classId : (appState.classes[0]?.id || ''),
+                        type: isEssay ? 'essay' : 'mc',
+                        question: qText,
+                        imageUrl: imgUrl,
+                        options: isEssay ? [] : (options.length > 0 ? options : ['A', 'B', 'C', 'D', 'E']),
+                        answer: answerKey || (isEssay ? 'Jawaban' : (options[0] || 'A')),
+                        explanation: expVal
+                    });
+                    addedCount++;
+                }
+
+                saveState('questionBank');
+                closeModal();
+                showToast(`Berhasil import ${addedCount} soal dari Excel!`, 'success');
+                renderQuestionBankModule(document.getElementById('view-container'));
+            } catch (err) {
+                console.error('Excel import error:', err);
+                showToast('Gagal membaca file Excel. Pastikan format sesuai template.', 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    } else if (fileName.endsWith('.zip') && window.JSZip) {
+        // ZIP Archive containing HTML & Images
+        const reader = new FileReader();
+        reader.onload = async function(evt) {
+            try {
+                const zip = await window.JSZip.loadAsync(evt.target.result);
+                let htmlFile = null;
+
+                zip.forEach((relativePath, file) => {
+                    if (!file.dir && (relativePath.endsWith('.html') || relativePath.endsWith('.htm'))) {
+                        if (!htmlFile || relativePath.toLowerCase().includes('index') || relativePath.toLowerCase().includes('default')) {
+                            htmlFile = file;
+                        }
+                    }
+                });
+
+                if (!htmlFile) {
+                    showToast('File HTML (.html / .htm) tidak ditemukan di dalam archive ZIP.', 'error');
+                    return;
+                }
+
+                let htmlText = await htmlFile.async('text');
+
+                const imageEntries = [];
+                zip.forEach((relativePath, file) => {
+                    if (!file.dir && /\.(png|jpe?g|gif|webp|svg)$/i.test(relativePath)) {
+                        imageEntries.push({ path: relativePath, file });
+                    }
+                });
+
+                for (const imgEntry of imageEntries) {
+                    const base64Data = await imgEntry.file.async('base64');
+                    const ext = imgEntry.path.split('.').pop().toLowerCase();
+                    const mimeType = ext === 'svg' ? 'image/svg+xml' : (ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
+                    const dataUrl = `data:${mimeType};base64,${base64Data}`;
+
+                    const cleanImgName = imgEntry.path.split('/').pop();
+                    const regex = new RegExp(`(src=["'])([^"']*${cleanImgName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')})(["'])`, 'gi');
+                    htmlText = htmlText.replace(regex, `$1${dataUrl}$3`);
+                }
+
+                parseQuestionsFromTextOrHtml(htmlText, code);
+                showToast('Berhasil membaca file HTML & Gambar dari ZIP!', 'success');
+            } catch (err) {
+                console.error('ZIP import error:', err);
+                showToast('Gagal memproses file ZIP. Pastikan berisi file HTML & folder gambar Word.', 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    } else if (fileName.endsWith('.html') || fileName.endsWith('.htm')) {
+        // Standalone HTML / Web Page Import
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            parseQuestionsFromTextOrHtml(evt.target.result, code);
+        };
+        reader.readAsText(file);
+    } else if (fileName.endsWith('.pdf')) {
+        // PDF Import using PDF.js
+        const reader = new FileReader();
+        reader.onload = async function(evt) {
+            try {
+                if (!window.pdfjsLib) {
+                    showToast('Library PDF.js sedang dimuat, coba beberapa detik lagi.', 'error');
+                    return;
+                }
+                window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js';
+                const pdfData = new Uint8Array(evt.target.result);
+                const pdf = await window.pdfjsLib.getDocument({ data: pdfData }).promise;
+                
+                let fullText = '';
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const textContent = await page.getTextContent();
+                    let lastY;
+                    let text = '';
+                    for (const item of textContent.items) {
+                        if (lastY !== undefined && Math.abs(lastY - item.transform[5]) > 2) {
+                            text += '\n';
+                        } else if (lastY !== undefined && text.length > 0 && !text.endsWith(' ')) {
+                            text += ' ';
+                        }
+                        text += item.str;
+                        lastY = item.transform[5];
+                    }
+                    fullText += text + '\n\n';
+                }
+
+                parseQuestionsFromTextOrHtml(fullText, code);
+                showToast('Berhasil membaca & mengekstrak teks dari file PDF!', 'success');
+            } catch (err) {
+                console.error('PDF import error:', err);
+                showToast('Gagal membaca file PDF. Pastikan file tidak dikunci/password.', 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    } else if (fileName.endsWith('.docx')) {
+        const processDocx = (mammothInstance) => {
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                const arrayBuffer = evt.target.result;
+                mammothInstance.convertToHtml({ arrayBuffer: arrayBuffer })
+                    .then(function(result) {
+                        const htmlContent = result.value;
+                        parseQuestionsFromTextOrHtml(htmlContent, code);
+                    })
+                    .catch(function(err) {
+                        console.warn('Mammoth import failed, falling back to raw text:', err);
+                        const text = new TextDecoder('utf-8').decode(arrayBuffer);
+                        parseQuestionsFromTextOrHtml(text, code);
+                    });
+            };
+            reader.readAsArrayBuffer(file);
+        };
+
+        if (window.mammoth) {
+            processDocx(window.mammoth);
+        } else {
+            import('mammoth').then(mod => {
+                window.mammoth = mod.default || mod;
+                processDocx(window.mammoth);
+            }).catch(err => {
+                console.error("Failed to load mammoth", err);
+                const reader = new FileReader();
+                reader.onload = function(evt) {
+                    parseQuestionsFromTextOrHtml(evt.target.result, code);
+                };
+                reader.readAsText(file);
+            });
+        }
+    } else {
+        // Plain Text or .doc fallback
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            parseQuestionsFromTextOrHtml(evt.target.result, code);
+        };
+        reader.readAsText(file);
+    }
+}
+
+function handleQuestionDirectTextImport(code) {
+    const textarea = document.getElementById('direct-import-textarea');
+    if (!textarea || !textarea.value.trim()) {
+        showToast('Ketik atau tempel teks soal terlebih dahulu.', 'error');
+        return;
+    }
+    parseQuestionsFromTextOrHtml(textarea.value, code);
+}
+
+function parseQuestionsFromTextOrHtml(rawContent, code) {
+    if (!rawContent) return;
+
+    const group = appState.questionBankGroups.find(bg => String(bg.code) === String(code));
+    let questionsToAdd = [];
+
+    // 1. Extraordinary CBT Table Parser (if HTML tables are present from Mammoth / Word HTML)
+    if (/<table[^>]*>/i.test(rawContent)) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = rawContent;
+        const tables = tempDiv.querySelectorAll('table');
+
+        tables.forEach(table => {
+            const trs = Array.from(table.querySelectorAll('tr'));
+            if (trs.length === 0) return;
+
+            let ts = 'PG';
+            let kd = '';
+            let kj = '';
+            let qText = '';
+            let imgUrl = '';
+            let options = [];
+            let exp = '';
+
+            trs.forEach(tr => {
+                const cells = Array.from(tr.querySelectorAll('td, th')).map(c => {
+                    const img = c.querySelector('img');
+                    if (img && img.src && !imgUrl) {
+                        imgUrl = img.src;
+                    }
+                    return cleanAndFormatMathCellContent(c);
+                });
+
+                if (cells.length === 0) return;
+
+                const c0 = (cells[0] || '').trim();
+                const c1 = cells.length > 1 ? (cells[1] || '').trim() : '';
+                const c0Upper = c0.toUpperCase();
+
+                if (c0Upper === 'TS') {
+                    ts = c1.toUpperCase() || 'PG';
+                } else if (c0Upper === 'KD') {
+                    kd = c1;
+                } else if (c0Upper === 'KJ') {
+                    kj = c1;
+                } else if (c0Upper === 'ABS') {
+                    // ABS cell, skip
+                } else if (/^\d+[\.\)]?$/.test(c0) || (/^\d+[\.\)]\s/.test(c0) && !qText)) {
+                    qText = c1 || c0.replace(/^\d+[\.\)]\s*/, '');
+                } else if (/^[A-E][\.\)]?$/i.test(c0)) {
+                    if (c1) options.push(c1);
+                } else if (c0Upper.startsWith('PEMBAHASAN') || c0Upper.startsWith('EXPLANATION')) {
+                    exp = c1 || c0.replace(/^(PEMBAHASAN|EXPLANATION)[:\s]*/i, '');
+                } else if (!qText && c0 && !['TS','KD','KJ','ABS'].includes(c0Upper)) {
+                    qText = c0;
+                }
+            });
+
+            if (qText) {
+                const isEssay = ts.includes('ESY') || ts.includes('ESSAY') || options.length === 0;
+                let answerKey = kj;
+                if (!isEssay && ['A', 'B', 'C', 'D', 'E'].includes(kj.toUpperCase())) {
+                    const idx = kj.toUpperCase().charCodeAt(0) - 65;
+                    if (options[idx]) answerKey = options[idx];
+                }
+
+                questionsToAdd.push({
+                    id: 'Q_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                    code: code,
+                    subjectId: group ? group.subjectId : (appState.subjects[0]?.id || ''),
+                    classId: group ? group.classId : (appState.classes[0]?.id || ''),
+                    type: isEssay ? 'essay' : 'mc',
+                    question: qText,
+                    imageUrl: imgUrl || '',
+                    options: isEssay ? [] : (options.length > 0 ? options : ['A', 'B', 'C', 'D', 'E']),
+                    answer: answerKey || (isEssay ? 'Jawaban' : (options[0] || 'A')),
+                    explanation: exp || ''
+                });
+            }
+        });
+
+        if (questionsToAdd.length > 0) {
+            appState.questionBank.push(...questionsToAdd);
+            saveState('questionBank');
+            closeModal();
+            showToast(`Berhasil mengimpor ${questionsToAdd.length} butir soal Extraordinary CBT!`, 'success');
+            renderQuestionBankModule(document.getElementById('view-container'));
+            return;
+        }
+    }
+
+    // 2. Line-by-Line Fallback Parser (for plain text, Extraordinary CBT text lines, or non-table imports)
+    let processed = rawContent.replace(/<img\s+[^>]*src=["']([^"']+)["'][^>]*>/gi, '\n[Gambar: $1]\n')
+                               .replace(/<br\s*[\/]?>/gi, '\n')
+                               .replace(/<\/p>/gi, '\n')
+                               .replace(/<\/div>/gi, '\n')
+                               .replace(/<\/tr>/gi, '\n')
+                               .replace(/<\/li>/gi, '\n');
+
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = processed;
+    let cleanText = tempDiv.textContent || tempDiv.innerText || processed;
+
+    cleanText = cleanText.replace(/Extraordinary CBT Template by shellrean/gi, '')
+                        .replace(/TEMPLATE IMPORT SOAL MADRASAH/gi, '');
+
+    const lines = cleanText.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+
+    let addedCount = 0;
+    let currentQ = null;
+    let currentOptions = [];
+    let currentAnswer = '';
+    let currentImg = '';
+    let currentExp = '';
+    let currentTS = 'PG';
+
+    const saveCurrent = () => {
+        if (!currentQ || !currentQ.question) return;
+
+        const qTextLower = currentQ.question.toLowerCase();
+        const ansLower = String(currentAnswer || '').toLowerCase();
+        const isEssay = currentTS.includes('ESY') || currentTS.includes('ESSAY') || currentOptions.length === 0 || qTextLower.includes('esay') || qTextLower.includes('essay') || ansLower.includes('esay') || ansLower.includes('essay');
+
+        let answerKey = String(currentAnswer || '').replace(/\s*\((essay|esay)\)/i, '').trim();
+        if (!isEssay) {
+            const keyUpper = String(answerKey || '').toUpperCase();
+            if (['A', 'B', 'C', 'D', 'E'].includes(keyUpper)) {
+                const idx = keyUpper.charCodeAt(0) - 65;
+                if (currentOptions[idx]) answerKey = currentOptions[idx];
+            }
+        }
+
+        const finalQuestionText = autoFormatMathExpressions(currentQ.question.replace(/\s*\((essay|esay)\)/i, '').trim());
+        const finalOptions = isEssay ? [] : (currentOptions.length > 0 ? currentOptions.map(opt => autoFormatMathExpressions(opt)) : ['A', 'B', 'C', 'D', 'E']);
+        const finalExp = autoFormatMathExpressions(currentExp || '');
+
+        appState.questionBank.push({
+            id: 'Q_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+            code: code,
+            subjectId: group ? group.subjectId : (appState.subjects[0]?.id || ''),
+            classId: group ? group.classId : (appState.classes[0]?.id || ''),
+            type: isEssay ? 'essay' : 'mc',
+            question: finalQuestionText,
+            imageUrl: currentImg || '',
+            options: finalOptions,
+            answer: autoFormatMathExpressions(answerKey || (isEssay ? 'Jawaban' : (finalOptions[0] || 'A'))),
+            explanation: finalExp
+        });
+        addedCount++;
+        
+        currentQ = null;
+        currentOptions = [];
+        currentAnswer = '';
+        currentImg = '';
+        currentExp = '';
+        currentTS = 'PG';
+    };
+
+    lines.forEach(line => {
+        const uLine = line.toUpperCase();
+        if (uLine.startsWith('TS')) {
+            const val = line.replace(/^TS[:\s]*/i, '').trim().toUpperCase();
+            if (val) currentTS = val;
+        } else if (uLine.startsWith('KD')) {
+            // KD line, skip or store
+        } else if (uLine.startsWith('KJ')) {
+            currentAnswer = line.replace(/^KJ[:\s]*/i, '').trim();
+        } else if (uLine.startsWith('ABS')) {
+            // ABS line, skip
+        } else if (/^\d+[\.\)]\s?/.test(line)) {
+            saveCurrent();
+            const qText = line.replace(/^\d+[\.\)]\s*/, '');
+            currentQ = { question: qText };
+        } else if (/^\[Gambar:\s*(.*?)\]/i.test(line)) {
+            const match = line.match(/^\[Gambar:\s*(.*?)\]/i);
+            if (match && match[1]) currentImg = match[1].trim();
+        } else if (/^[A-Ea-e][\.\)]\s/.test(line) || (currentQ && /^[A-Ea-e]\s/.test(line))) {
+            const optText = line.replace(/^[A-Ea-e][\.\)]?\s*/, '');
+            currentOptions.push(optText);
+        } else if (currentQ && /^[A-Ea-e]$/.test(line)) {
+            // Option letter on its own line, push an empty option to be filled by the next line
+            currentOptions.push('');
+        } else if (/^(kunci\s*jawaban|kunci|jawaban|ans)[:\s]/i.test(line)) {
+            currentAnswer = line.replace(/^(kunci\s*jawaban|kunci|jawaban|ans)[:\s]*/i, '').trim();
+        } else if (/^(pembahasan|penjelasan|expl)[:\s]/i.test(line)) {
+            currentExp = line.replace(/^(pembahasan|penjelasan|expl)[:\s]*/i, '').trim();
+        } else if (currentQ) {
+            if (currentExp) {
+                currentExp += ' ' + line;
+            } else if (currentOptions.length > 0 && currentOptions[currentOptions.length - 1] === '') {
+                // Fill the empty option that was just a letter on the previous line
+                currentOptions[currentOptions.length - 1] = line;
+            } else if (currentOptions.length > 0) {
+                currentOptions[currentOptions.length - 1] += ' ' + line;
+            } else {
+                currentQ.question += (currentQ.question ? ' ' : '') + line;
+            }
+        } else {
+            if (line.length > 2 && !['TS','KD','KJ','ABS','PERHATIAN'].includes(uLine)) {
+                saveCurrent();
+                currentQ = { question: line };
+            }
+        }
+    });
+    saveCurrent();
+
+    saveState('questionBank');
+    closeModal();
+    showToast(`Berhasil mengimpor ${addedCount} butir soal!`, 'success');
+    renderQuestionBankModule(document.getElementById('view-container'));
+}
+
+// Exports
+window.renderQuestionBankModule = renderQuestionBankModule;
+window.selectQuestionBankGroup = selectQuestionBankGroup;
+window.openQuestionBankGroupModal = openQuestionBankGroupModal;
+window.saveQuestionBankGroup = saveQuestionBankGroup;
+window.deleteQuestionBankGroup = deleteQuestionBankGroup;
+window.deleteIndividualQuestion = deleteIndividualQuestion;
+window.openAIGeneratorModal = openAIGeneratorModal;
+window.executeNonAIGenerator = executeNonAIGenerator;
+window.executeAIGenerator = executeAIGenerator;
+window.generateEnrichmentNonAI = generateEnrichmentNonAI;
+window.downloadWordTemplate = downloadWordTemplate;
+window.openPreviewQuestionBankModal = openPreviewQuestionBankModal;
+window.togglePreviewAnswers = togglePreviewAnswers;
+window.togglePreviewExplanations = togglePreviewExplanations;
+window.printQuestionPaper = printQuestionPaper;
+window.downloadWordFromPreview = downloadWordFromPreview;
+window.openQuestionImportModal = openQuestionImportModal;
+window.openConvertQuestionModal = openConvertQuestionModal;
+window.autoConvertMathToLatex = autoConvertMathToLatex;
+window.loadActiveBankQuestionsToConvert = loadActiveBankQuestionsToConvert;
+window.runQuestionConversion = runQuestionConversion;
+window.parseRawTextToCBTFormat = parseRawTextToCBTFormat;
+window.switchConvertTab = switchConvertTab;
+window.copyConvertedTextToClipboard = copyConvertedTextToClipboard;
+window.downloadConvertedTextFile = downloadConvertedTextFile;
+window.downloadConvertedWordDoc = downloadConvertedWordDoc;
+window.handleConvertWordFileUpload = handleConvertWordFileUpload;
+window.parseWordHtmlToText = parseWordHtmlToText;
+window.downloadQuestionImportTemplate = downloadQuestionImportTemplateWord;
+window.downloadQuestionImportTemplateWord = downloadQuestionImportTemplateWord;
+window.downloadQuestionImportTemplateExcel = downloadQuestionImportTemplateExcel;
+window.handleQuestionImportFile = handleQuestionImportFile;
+window.handleQuestionWordImport = handleQuestionImportFile;
+window.handleQuestionDirectTextImport = handleQuestionDirectTextImport;
+window.openTemplateGuideModal = openTemplateGuideModal;
+window.openAddSingleQuestionModal = openAddSingleQuestionModal;
+window.openEditSingleQuestionModal = openEditSingleQuestionModal;
+window.toggleSingleQTypeOptions = toggleSingleQTypeOptions;
+window.handleSingleQImageUpload = handleSingleQImageUpload;
+window.saveSingleQuestion = saveSingleQuestion;
+window.renderGradesModule = renderGradesModule;
+window.handleGradeClassChange = handleGradeClassChange;
+window.handleGradeSubjectChange = handleGradeSubjectChange;
+window.handleSingleGradeChange = handleSingleGradeChange;
+window.saveCurrentDOMGradesToState = saveCurrentDOMGradesToState;
+window.saveAllMatrixGrades = saveAllMatrixGrades;
+window.openAddGradeColumnModal = openAddGradeColumnModal;
+window.confirmAddGradeColumn = confirmAddGradeColumn;
+window.printGradesMatrix = printGradesMatrix;
+window.exportGradesMatrixExcel = exportGradesMatrixExcel;
+window.renderJournalModule = renderJournalModule;
+window.openJournalModal = openJournalModal;
+window.openEditJournalModal = openEditJournalModal;
+window.saveEditedJournal = saveEditedJournal;
+window.deleteJournal = deleteJournal;
+window.saveJournal = saveJournal;
+window.downloadJournalAsWord = downloadJournalAsWord;
+
+window.openImportConvertedToBankModal = openImportConvertedToBankModal;
+window.toggleImportBankMode = toggleImportBankMode;
+window.closeImportBankModal = closeImportBankModal;
+window.executeImportConvertedToBank = executeImportConvertedToBank;
+
+window.openExportCbtTableFilterModal = openExportCbtTableFilterModal;
+window.toggleCbtNumFilterInput = toggleCbtNumFilterInput;
+window.executeExportCbtTableWord = executeExportCbtTableWord;
+
+// Automatically expose functions and state to window for global inline handlers
+Object.assign(window, {
+  getTeacherAllowedSubjects,
+  renderQuestionBankModule,
+  selectQuestionBankGroup,
+  openQuestionBankGroupModal,
+  saveQuestionBankGroup,
+  deleteQuestionBankGroup,
+  deleteIndividualQuestion,
+  openAIGeneratorModal,
+  executeAIGenerator,
+  downloadWordTemplate,
+  openPreviewQuestionBankModal,
+  togglePreviewAnswers,
+  togglePreviewExplanations,
+  printQuestionPaper,
+  downloadWordFromPreview,
+  openExportCbtTableFilterModal,
+  toggleCbtNumFilterInput,
+  executeExportCbtTableWord,
+  renderGradesModule,
+  handleGradeClassChange,
+  handleGradeSubjectChange,
+  handleSingleGradeChange,
+  saveCurrentDOMGradesToState,
+  saveAllMatrixGrades,
+  openAddGradeColumnModal,
+  confirmAddGradeColumn,
+  printGradesMatrix,
+  exportGradesMatrixExcel,
+  renderJournalModule,
+  openJournalModal,
+  openEditJournalModal,
+  saveEditedJournal,
+  deleteJournal,
+  generateEnrichmentNonAI,
+  generateEnrichmentAI,
+  saveJournal,
+  downloadJournalAsWord,
+  openQuestionImportModal,
+  openConvertQuestionModal,
+  autoConvertMathToLatex,
+  loadActiveBankQuestionsToConvert,
+  runQuestionConversion,
+  parseRawTextToCBTFormat,
+  switchConvertTab,
+  copyConvertedTextToClipboard,
+  downloadConvertedTextFile,
+  downloadConvertedWordDoc,
+  openImportConvertedToBankModal,
+  toggleImportBankMode,
+  closeImportBankModal,
+  executeImportConvertedToBank,
+  handleConvertWordFileUpload,
+  parseWordHtmlToText,
+  downloadQuestionImportTemplate: downloadQuestionImportTemplateWord,
+  downloadQuestionImportTemplateWord,
+  downloadQuestionImportTemplateExcel,
+  handleQuestionImportFile,
+  handleQuestionWordImport: handleQuestionImportFile,
+  handleQuestionDirectTextImport,
+  openTemplateGuideModal,
+  openAddSingleQuestionModal,
+  openEditSingleQuestionModal,
+  toggleSingleQTypeOptions,
+  handleSingleQImageUpload,
+  saveSingleQuestion
+});
+
+, right: '
+    }
+
+    showToast(`Berhasil mengkonversi ${result.parsedQuestions.length} paket soal!`, 'success');
+}
+
+function parseRawTextToCBTFormat(rawText, defaultTS = 'PG', defaultKD = '1.0.1', defaultKJ = 'A', autoMath = true, parseMode = 'auto', optionCount = 5) {
+    if (!rawText || !rawText.trim()) return { text: '', parsedQuestions: [], optionCount };
+
+    const lines = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const parsedQuestions = [];
+
+    if (parseMode === 'enter') {
+        let currentNum = 1;
+        let step = 0; // 0: Question, 1: A, 2: B, 3: C, 4: D, 5: E/KJ
+        let qText = '', optA = '', optB = '', optC = '', optD = '', optE = '', kj = defaultKJ;
+
+        function pushEnterQuestion() {
+            if (!qText.trim()) return;
+
+            let finalQText = qText.trim();
+            let finalA = optA.trim();
+            let finalB = optB.trim();
+            let finalC = optC.trim();
+            let finalD = optD.trim();
+            let finalE = optE.trim();
+
+            if (autoMath) {
+                finalQText = autoConvertMathToLatex(finalQText);
+                finalA = autoConvertMathToLatex(finalA);
+                finalB = autoConvertMathToLatex(finalB);
+                finalC = autoConvertMathToLatex(finalC);
+                finalD = autoConvertMathToLatex(finalD);
+                if (optionCount >= 5) finalE = autoConvertMathToLatex(finalE);
+            }
+
+            const opts = { A: finalA, B: finalB, C: finalC, D: finalD };
+            if (optionCount >= 5) opts.E = finalE;
+
+            parsedQuestions.push({
+                num: currentNum++,
+                ts: defaultTS,
+                kd: defaultKD,
+                kj: (kj || defaultKJ).toUpperCase().trim(),
+                abs: '',
+                questionText: finalQText,
+                options: opts
+            });
+
+            qText = ''; optA = ''; optB = ''; optC = ''; optD = ''; optE = ''; kj = defaultKJ;
+            step = 0;
+        }
+
+        const keyRegex = /^\s*(?:Kunci|KJ|Jawaban|Kunci\s+Jawaban|Answer|Ans)\s*[:=]?\s*([A-Ea-e])/i;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+            if (!trimmed) {
+                if (step >= (optionCount === 4 ? 4 : 5)) {
+                    pushEnterQuestion();
+                }
+                continue;
+            }
+
+            const keyMatch = trimmed.match(keyRegex);
+            if (keyMatch) {
+                kj = keyMatch[1].toUpperCase();
+                pushEnterQuestion();
+                continue;
+            }
+
+            let cleanText = trimmed;
+            cleanText = cleanText.replace(/^(?:Soal|No\.?)?\s*\d+[\.\)\:\-]\s*/i, '');
+            cleanText = cleanText.replace(/^[A-Ea-e][\.\)\:\-]\s*/i, '');
+
+            if (step === 0) {
+                qText = cleanText;
+                step = 1;
+            } else if (step === 1) {
+                optA = cleanText;
+                step = 2;
+            } else if (step === 2) {
+                optB = cleanText;
+                step = 3;
+            } else if (step === 3) {
+                optC = cleanText;
+                step = 4;
+            } else if (step === 4) {
+                optD = cleanText;
+                if (optionCount === 4) {
+                    step = 5;
+                } else {
+                    step = 5; // Will hold option E in 5-option mode
+                }
+            } else if (step === 5) {
+                if (optionCount === 4) {
+                    if (/^[A-Da-d]$/i.test(trimmed)) {
+                        kj = trimmed.toUpperCase();
+                        pushEnterQuestion();
+                    } else if (/^(?:Kunci|KJ)/i.test(trimmed)) {
+                        const m = trimmed.match(/([A-Da-d])/i);
+                        if (m) kj = m[1].toUpperCase();
+                        pushEnterQuestion();
+                    } else {
+                        pushEnterQuestion();
+                        qText = cleanText;
+                        step = 1;
+                    }
+                } else {
+                    if (/^[A-Ea-e]$/i.test(trimmed)) {
+                        kj = trimmed.toUpperCase();
+                        pushEnterQuestion();
+                    } else if (/^(?:Kunci|KJ)/i.test(trimmed)) {
+                        const m = trimmed.match(/([A-Ea-e])/i);
+                        if (m) kj = m[1].toUpperCase();
+                        pushEnterQuestion();
+                    } else {
+                        optE = cleanText;
+                        step = 6;
+                    }
+                }
+            } else if (step === 6) {
+                if (/^[A-Ea-e]$/i.test(trimmed)) {
+                    kj = trimmed.toUpperCase();
+                    pushEnterQuestion();
+                } else if (/^(?:Kunci|KJ)/i.test(trimmed)) {
+                    const m = trimmed.match(/([A-Ea-e])/i);
+                    if (m) kj = m[1].toUpperCase();
+                    pushEnterQuestion();
+                } else {
+                    pushEnterQuestion();
+                    qText = cleanText;
+                    step = 1;
+                }
+            }
+        }
+
+        pushEnterQuestion();
+    } else {
+        // Smart Auto Mode
+        let currentQuestion = null;
+        let currentOptions = {};
+        let currentKey = null;
+        let currentNum = 1;
+
+        function pushQuestion() {
+            if (!currentQuestion || !currentQuestion.text.trim()) return;
+
+            let qText = currentQuestion.text.trim();
+            let optA = currentOptions['A'] || '';
+            let optB = currentOptions['B'] || '';
+            let optC = currentOptions['C'] || '';
+            let optD = currentOptions['D'] || '';
+            let optE = currentOptions['E'] || '';
+
+            if (autoMath) {
+                qText = autoConvertMathToLatex(qText);
+                optA = autoConvertMathToLatex(optA);
+                optB = autoConvertMathToLatex(optB);
+                optC = autoConvertMathToLatex(optC);
+                optD = autoConvertMathToLatex(optD);
+                if (optionCount >= 5) optE = autoConvertMathToLatex(optE);
+            }
+
+            const opts = { A: optA, B: optB, C: optC, D: optD };
+            if (optionCount >= 5) opts.E = optE;
+
+            parsedQuestions.push({
+                num: currentNum,
+                ts: defaultTS,
+                kd: defaultKD,
+                kj: (currentKey || defaultKJ).toUpperCase().trim(),
+                abs: '',
+                questionText: qText,
+                options: opts
+            });
+
+            currentNum++;
+            currentQuestion = null;
+            currentOptions = {};
+            currentKey = null;
+        }
+
+        const qNumRegex = /^(?:Soal|No\.?)?\s*(\d+)[\.\)\:\-\s]\s*(.*)/i;
+        const optRegex = /^\s*[\(\[]?([A-Ea-e])[\.\)\:\-\s\]]\s*(.*)/;
+        const keyRegex = /^\s*(?:Kunci|KJ|Jawaban|Kunci\s+Jawaban|Answer|Ans)\s*[:=]?\s*([A-Ea-e])/i;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+
+            const keyMatch = trimmed.match(keyRegex);
+            if (keyMatch) {
+                currentKey = keyMatch[1].toUpperCase();
+                continue;
+            }
+
+            const qMatch = trimmed.match(qNumRegex);
+            if (qMatch) {
+                pushQuestion();
+                currentQuestion = {
+                    num: parseInt(qMatch[1], 10) || currentNum,
+                    text: qMatch[2] || ''
+                };
+                continue;
+            }
+
+            const optMatch = trimmed.match(optRegex);
+            if (optMatch && currentQuestion) {
+                const letter = optMatch[1].toUpperCase();
+                if (optionCount === 4 && letter === 'E') {
+                    // Ignore option E if 4-option mode is selected
+                } else {
+                    currentOptions[letter] = optMatch[2] || '';
+                }
+                continue;
+            }
+
+            if (currentQuestion) {
+                const numOptions = Object.keys(currentOptions).length;
+                if ((numOptions >= optionCount || currentKey) && !trimmed.match(optRegex) && !trimmed.match(keyRegex)) {
+                    pushQuestion();
+                    currentQuestion = {
+                        num: currentNum,
+                        text: trimmed
+                    };
+                } else if (numOptions === 0) {
+                    currentQuestion.text += (currentQuestion.text ? '\n' : '') + trimmed;
+                } else {
+                    const keys = Object.keys(currentOptions);
+                    const lastKey = keys[keys.length - 1];
+                    currentOptions[lastKey] += (currentOptions[lastKey] ? ' ' : '') + trimmed;
+                }
+            } else {
+                currentQuestion = {
+                    num: 1,
+                    text: trimmed
+                };
+            }
+        }
+
+        pushQuestion();
+    }
+
+    const outputLines = [];
+    for (let i = 0; i < parsedQuestions.length; i++) {
+        const q = parsedQuestions[i];
+        outputLines.push(`TS\t${q.ts}`);
+        outputLines.push(`KD\t${q.kd}`);
+        outputLines.push(`KJ\t${q.kj}`);
+        outputLines.push(`ABS\t`);
+        outputLines.push(`${q.num}.\t${q.questionText}`);
+        outputLines.push(`A\t${q.options.A || ''}`);
+        outputLines.push(`B\t${q.options.B || ''}`);
+        outputLines.push(`C\t${q.options.C || ''}`);
+        outputLines.push(`D\t${q.options.D || ''}`);
+        if (optionCount >= 5) {
+            outputLines.push(`E\t${q.options.E || ''}`);
+        }
+
+        if (i < parsedQuestions.length - 1) {
+            outputLines.push(''); // enter 1x
+        }
+    }
+
+    return {
+        text: outputLines.join('\n'),
+        parsedQuestions,
+        optionCount
+    };
+}
+
+function switchConvertTab(tab) {
+    const btnText = document.getElementById('tab-btn-text');
+    const btnTable = document.getElementById('tab-btn-table');
+    const contentText = document.getElementById('cvt-tab-content-text');
+    const contentTable = document.getElementById('cvt-tab-content-table');
+
+    if (tab === 'text') {
+        btnText?.classList.add('bg-white', 'shadow-sm', 'text-indigo-700');
+        btnText?.classList.remove('text-slate-600');
+        btnTable?.classList.remove('bg-white', 'shadow-sm', 'text-indigo-700');
+        btnTable?.classList.add('text-slate-600');
+        contentText?.classList.remove('hidden');
+        contentTable?.classList.add('hidden');
+    } else {
+        btnTable?.classList.add('bg-white', 'shadow-sm', 'text-indigo-700');
+        btnTable?.classList.remove('text-slate-600');
+        btnText?.classList.remove('bg-white', 'shadow-sm', 'text-indigo-700');
+        btnText?.classList.add('text-slate-600');
+        contentTable?.classList.remove('hidden');
+        contentText?.classList.add('hidden');
+    }
+}
+
+function copyConvertedTextToClipboard() {
+    const outputTextarea = document.getElementById('cvt-output-text');
+    if (!outputTextarea || !outputTextarea.value) {
+        showToast('Belum ada hasil konversi untuk disalin.', 'error');
+        return;
+    }
+
+    navigator.clipboard.writeText(outputTextarea.value).then(() => {
+        showToast('Hasil convert berhasil disalin ke clipboard!', 'success');
+    }).catch(err => {
+        outputTextarea.select();
+        document.execCommand('copy');
+        showToast('Hasil convert disalin ke clipboard!', 'success');
+    });
+}
+
+function downloadConvertedTextFile() {
+    if (!currentConvertedData || !currentConvertedData.text) {
+        showToast('Belum ada data hasil konversi.', 'error');
+        return;
+    }
+
+    const blob = new Blob([currentConvertedData.text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Extraordinary_CBT_Template_${Date.now()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('File template berhasil diunduh.', 'success');
+}
+
+function downloadConvertedWordDoc() {
+    if (!currentConvertedData || !currentConvertedData.parsedQuestions || currentConvertedData.parsedQuestions.length === 0) {
+        showToast('Belum ada data hasil konversi untuk diunduh.', 'error');
+        return;
+    }
+
+    const questions = currentConvertedData.parsedQuestions;
+    const optionCount = currentConvertedData.optionCount || 5;
+
+    const tablesHtml = questions.map(q => `
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 0px; page-break-inside: avoid; border: 1.5pt solid #94a3b8; mso-padding-alt: 4pt 6pt 4pt 6pt;">
+            <tbody>
+                <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">TS</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.ts)}</td>
+                </tr>
+                <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">KD</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.kd)}</td>
+                </tr>
+                <tr style="background-color: #fef08a; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #fde047; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">KJ</td>
+                    <td style="padding: 4pt 6pt; color: #1e293b; font-weight: bold; mso-para-margin: 0cm;">${qbEscapeHtml(q.kj)}</td>
+                </tr>
+                <tr style="background-color: #d1fae5; font-weight: bold; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; text-align: center; background-color: #a7f3d0; color: #064e3b; font-weight: bold; mso-para-margin: 0cm;">ABS</td>
+                    <td style="padding: 4pt 6pt; color: #064e3b; mso-para-margin: 0cm;">${qbEscapeHtml(q.abs || '')}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; vertical-align: top; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">${q.num}.</td>
+                    <td style="padding: 4pt 6pt; font-weight: 600; color: #0f172a; line-height: 1.4; mso-para-margin: 0cm;">${qbEscapeHtml(q.questionText)}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">A</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.A || '')}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">B</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.B || '')}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #e2e8f0;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">C</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.C || '')}</td>
+                </tr>
+                <tr style="background-color: #ffffff; border-bottom: ${optionCount >= 5 ? '1pt solid #e2e8f0' : '1pt solid #cbd5e1'};">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">D</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.D || '')}</td>
+                </tr>
+                ${optionCount >= 5 ? `
+                <tr style="background-color: #ffffff; border-bottom: 1pt solid #cbd5e1;">
+                    <td style="width: 60pt; padding: 4pt 6pt; border-right: 1pt solid #cbd5e1; font-weight: bold; text-align: center; background-color: #f8fafc; color: #334155; mso-para-margin: 0cm;">E</td>
+                    <td style="padding: 4pt 6pt; color: #334155; mso-para-margin: 0cm;">${qbEscapeHtml(q.options.E || '')}</td>
+                </tr>
+                ` : ''}
+            </tbody>
+        </table>
+        <p style="margin: 0 !important; padding: 0 !important; mso-para-margin: 0cm !important; mso-para-margin-top: 0cm !important; mso-para-margin-bottom: 0cm !important; height: 12pt; line-height: 12pt;">&nbsp;</p>
+    `).join('');
+
+    const fullDocHtml = `
+        <html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns:m="http://schemas.microsoft.com/office/2004/12/omml" xmlns="http://www.w3.org/TR/REC-html40">
+        <head>
+            <meta charset="utf-8">
+            <title>Hasil Convert Extraordinary CBT</title>
+            <!--[if gte mso 9]>
+            <xml>
+             <w:WordDocument>
+              <w:View>Print</w:View>
+              <w:Zoom>100</w:Zoom>
+              <w:DoNotOptimizeForBrowser/>
+             </w:WordDocument>
+            </xml>
+            <![endif]-->
+            <style>
+                @page { size: A4; margin: 1.5cm; }
+                body, table, td, p, div, span {
+                    font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
+                    font-size: 10pt;
+                    color: #1e293b;
+                    line-height: 1.35;
+                    margin: 0 !important;
+                    padding: 0;
+                    mso-para-margin: 0cm !important;
+                    mso-para-margin-top: 0cm !important;
+                    mso-para-margin-bottom: 0cm !important;
+                    mso-line-height-rule: exactly;
+                }
+                p {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    mso-para-margin: 0cm !important;
+                    mso-para-margin-top: 0cm !important;
+                    mso-para-margin-bottom: 0cm !important;
+                }
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-bottom: 0px;
+                    page-break-inside: avoid;
+                    border: 1.5pt solid #cbd5e1;
+                    mso-yfti-tbllook: 1184;
+                    mso-padding-alt: 4pt 6pt 4pt 6pt;
+                }
+                td {
+                    border: 1pt solid #cbd5e1;
+                    padding: 4pt 6pt;
+                    font-size: 10pt;
+                    vertical-align: top;
+                    mso-para-margin: 0cm !important;
+                }
+            </style>
+        </head>
+        <body>
+            <h3 style="font-family: Arial, sans-serif; font-size: 14pt; font-weight: bold; color: #0f172a; margin: 0 0 12pt 0 !important; mso-para-margin-bottom: 12pt !important;">Extraordinary CBT Question Template</h3>
+            ${tablesHtml}
+        </body>
+        </html>
+    `;
+
+    const blob = new Blob(['\ufeff' + fullDocHtml], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Hasil_Convert_CBT_Tabel_${Date.now()}.doc`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('File Word Tabel CBT berhasil diunduh.', 'success');
+}
+
+function openImportConvertedToBankModal() {
+    if (!currentConvertedData || !currentConvertedData.parsedQuestions || currentConvertedData.parsedQuestions.length === 0) {
+        showToast('Belum ada hasil konversi soal. Silakan konversi soal terlebih dahulu.', 'error');
+        return;
+    }
+
+    const parsedQuestions = currentConvertedData.parsedQuestions;
+    const allowedSubjects = getTeacherAllowedSubjects();
+    const subjects = appState.subjects || [];
+    const classes = appState.classes || [];
+    let existingGroups = appState.questionBankGroups || [];
+
+    if (appState.role === 'teacher') {
+        const allowedIds = allowedSubjects.map(s => String(s.id));
+        const filtered = existingGroups.filter(bg => allowedIds.includes(String(bg.subjectId)));
+        if (filtered.length > 0) existingGroups = filtered;
+    }
+
+    const modal = document.getElementById('modal-container');
+    if (!modal) return;
+
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">
+            <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
+                <!-- Header -->
+                <div class="p-5 bg-gradient-to-r from-emerald-600 to-teal-700 text-white flex justify-between items-center shrink-0">
+                    <div class="flex items-center space-x-3">
+                        <div class="p-2.5 bg-white/10 rounded-2xl">
+                            <i class="fa-solid fa-file-import text-lg"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-base leading-tight">Import Hasil Convert ke Bank Soal</h3>
+                            <p class="text-xs text-emerald-100 font-medium">Akan mengimpor <span class="font-bold underline">${parsedQuestions.length}</span> butir soal</p>
+                        </div>
+                    </div>
+                    <button type="button" onclick="closeImportBankModal()" class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition cursor-pointer">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+
+                <!-- Form -->
+                <form onsubmit="executeImportConvertedToBank(event)" class="p-6 overflow-y-auto space-y-5 text-xs sm:text-sm">
+                    <!-- Choose Mode -->
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Tujuan Bank Soal</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <label id="lbl-mode-existing" class="flex items-center justify-center space-x-2 p-3 border-2 border-indigo-600 bg-indigo-50/60 rounded-2xl cursor-pointer transition">
+                                <input type="radio" name="import-mode" value="existing" checked onchange="toggleImportBankMode('existing')" class="text-indigo-600 focus:ring-indigo-500 cursor-pointer">
+                                <span class="font-bold text-indigo-950 text-xs">Pilih Bank Soal Ada</span>
+                            </label>
+                            <label id="lbl-mode-new" class="flex items-center justify-center space-x-2 p-3 border-2 border-slate-200 bg-white hover:bg-slate-50 rounded-2xl cursor-pointer transition">
+                                <input type="radio" name="import-mode" value="new" onchange="toggleImportBankMode('new')" class="text-indigo-600 focus:ring-indigo-500 cursor-pointer">
+                                <span class="font-bold text-slate-700 text-xs">+ Buat Kode Soal Baru</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Option 1: Existing Group -->
+                    <div id="section-import-existing" class="space-y-2">
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-600">Pilih Bank Soal / Kode Soal <span class="text-rose-500">*</span></label>
+                        ${existingGroups.length === 0 ? `
+                            <div class="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-800">
+                                Belum ada Bank Soal tersimpan. Silakan pilih <b>"+ Buat Kode Soal Baru"</b> di atas.
+                            </div>
+                        ` : `
+                            <select id="import-bank-code-existing" class="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl font-bold text-xs focus:ring-2 focus:ring-indigo-500 focus:bg-white transition">
+                                ${existingGroups.map(bg => {
+                                    const subj = subjects.find(s => String(s.id) === String(bg.subjectId));
+                                    const cls = classes.find(c => String(c.id) === String(bg.classId));
+                                    return `<option value="${bg.code}">${bg.code} - ${subj?.name || 'Umum'} (Kelas ${cls?.name || 'Semua'})</option>`;
+                                }).join('')}
+                            </select>
+                        `}
+                    </div>
+
+                    <!-- Option 2: New Group Form -->
+                    <div id="section-import-new" class="hidden space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Kode Soal Baru <span class="text-rose-500">*</span></label>
+                            <input type="text" id="import-bank-code-new" value="KODE-SOAL-${(appState.questionBankGroups || []).length + 1}" class="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl font-mono text-xs font-bold focus:ring-2 focus:ring-indigo-500" placeholder="misal: MTK-X-PAS-2026" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Mata Pelajaran <span class="text-rose-500">*</span></label>
+                            <select id="import-bank-mapel" class="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
+                                ${allowedSubjects.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Kelas <span class="text-rose-500">*</span></label>
+                            <select id="import-bank-kelas" class="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
+                                ${(appState.classes || []).map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="flex justify-end items-center space-x-2 pt-3 border-t border-slate-100">
+                        <button type="button" onclick="closeImportBankModal()" class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition cursor-pointer text-xs">
+                            Batal
+                        </button>
+                        <button type="submit" id="btn-submit-import-bank" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-md transition flex items-center space-x-2 cursor-pointer text-xs">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                            <span>Proses Import ke Bank Soal</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+}
+
+function toggleImportBankMode(mode) {
+    const secExisting = document.getElementById('section-import-existing');
+    const secNew = document.getElementById('section-import-new');
+    const lblExisting = document.getElementById('lbl-mode-existing');
+    const lblNew = document.getElementById('lbl-mode-new');
+    const inputCodeNew = document.getElementById('import-bank-code-new');
+
+    if (mode === 'existing') {
+        secExisting?.classList.remove('hidden');
+        secNew?.classList.add('hidden');
+        if (inputCodeNew) inputCodeNew.required = false;
+
+        lblExisting?.classList.add('border-indigo-600', 'bg-indigo-50/60', 'text-indigo-950');
+        lblExisting?.classList.remove('border-slate-200', 'bg-white', 'hover:bg-slate-50');
+
+        lblNew?.classList.remove('border-indigo-600', 'bg-indigo-50/60', 'text-indigo-950');
+        lblNew?.classList.add('border-slate-200', 'bg-white', 'hover:bg-slate-50');
+    } else {
+        secExisting?.classList.add('hidden');
+        secNew?.classList.remove('hidden');
+        if (inputCodeNew) inputCodeNew.required = true;
+
+        lblNew?.classList.add('border-indigo-600', 'bg-indigo-50/60', 'text-indigo-950');
+        lblNew?.classList.remove('border-slate-200', 'bg-white', 'hover:bg-slate-50');
+
+        lblExisting?.classList.remove('border-indigo-600', 'bg-indigo-50/60', 'text-indigo-950');
+        lblExisting?.classList.add('border-slate-200', 'bg-white', 'hover:bg-slate-50');
+    }
+}
+
+function closeImportBankModal() {
+    closeModal();
+}
+
+async function executeImportConvertedToBank(e) {
+    if (e) e.preventDefault();
+
+    if (!currentConvertedData || !currentConvertedData.parsedQuestions || currentConvertedData.parsedQuestions.length === 0) {
+        showToast('Tidak ada data hasil konversi untuk diimpor.', 'error');
+        return;
+    }
+
+    const mode = document.querySelector('input[name="import-mode"]:checked')?.value || 'existing';
+    const parsedQuestions = currentConvertedData.parsedQuestions;
+    const optionCount = currentConvertedData.optionCount || 5;
+
+    let targetCode = '';
+    let targetSubjectId = '';
+    let targetClassId = '';
+
+    if (mode === 'existing') {
+        const codeSelect = document.getElementById('import-bank-code-existing');
+        targetCode = codeSelect?.value || '';
+
+        if (!targetCode) {
+            showToast('Silakan pilih Bank Soal yang sudah ada atau pilih "Buat Kode Soal Baru".', 'error');
+            return;
+        }
+
+        const group = (appState.questionBankGroups || []).find(bg => String(bg.code) === String(targetCode));
+        targetSubjectId = group ? group.subjectId : (appState.subjects[0]?.id || '');
+        targetClassId = group ? group.classId : (appState.classes[0]?.id || '');
+    } else {
+        targetCode = (document.getElementById('import-bank-code-new')?.value || '').trim();
+        targetSubjectId = document.getElementById('import-bank-mapel')?.value || (appState.subjects[0]?.id || '');
+        targetClassId = document.getElementById('import-bank-kelas')?.value || (appState.classes[0]?.id || '');
+
+        if (!targetCode) {
+            showToast('Kode soal baru wajib diisi.', 'error');
+            return;
+        }
+
+        // Create new bank group if not existing
+        let group = (appState.questionBankGroups || []).find(bg => String(bg.code) === String(targetCode));
+        if (!group) {
+            group = { id: 'BG' + Date.now(), code: targetCode, subjectId: targetSubjectId, classId: targetClassId };
+            appState.questionBankGroups.push(group);
+
+            try {
+                await fetch('/api/question-bank-groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(group)
+                });
+            } catch (err) {}
+
+            saveState('questionBankGroups');
+        }
+    }
+
+    // Convert parsed questions to Bank Soal objects
+    const newQuestions = [];
+    parsedQuestions.forEach((q, idx) => {
+        const isEssay = (q.ts || '').toUpperCase().includes('ESY') || (q.ts || '').toUpperCase().includes('ESSAY');
+
+        const opts = [];
+        if (q.options) {
+            if (q.options.A !== undefined) opts.push(q.options.A);
+            if (q.options.B !== undefined) opts.push(q.options.B);
+            if (q.options.C !== undefined) opts.push(q.options.C);
+            if (q.options.D !== undefined) opts.push(q.options.D);
+            if (optionCount >= 5 && q.options.E !== undefined) opts.push(q.options.E);
+        }
+
+        const kjLetter = (q.kj || 'A').toUpperCase().trim();
+        let answerVal = kjLetter;
+        if (q.options && q.options[kjLetter] !== undefined) {
+            answerVal = q.options[kjLetter];
+        }
+
+        const newQObj = {
+            id: 'Q_' + Date.now() + '_' + idx + '_' + Math.random().toString(36).substr(2, 4),
+            code: targetCode,
+            subjectId: targetSubjectId,
+            classId: targetClassId,
+            type: isEssay ? 'essay' : 'mc',
+            question: q.questionText || '',
+            imageUrl: '',
+            options: isEssay ? [] : opts,
+            answer: answerVal,
+            explanation: ''
+        };
+
+        appState.questionBank.push(newQObj);
+        newQuestions.push(newQObj);
+    });
+
+    saveState('questionBank');
+
+    try {
+        await fetch('/api/questions/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ questions: newQuestions })
+        });
+    } catch(err) {}
+
+    closeModal();
+    showToast(`Berhasil mengimpor ${newQuestions.length} butir soal ke Bank Soal (${targetCode})!`, 'success');
+
+    appState.activeBankGroupCode = targetCode;
+    const viewContainer = document.getElementById('view-container');
+    if (viewContainer) {
+        renderQuestionBankModule(viewContainer);
+    }
+}
+
+function extractTextAndImagesFromNode(node) {
+    if (!node) return '';
+    let result = '';
+
+    function walk(child) {
+        if (!child) return;
+        if (child.nodeType === Node.TEXT_NODE) {
+            result += child.textContent;
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+            const tagName = child.tagName.toLowerCase();
+            if (tagName === 'img') {
+                const src = child.getAttribute('src');
+                if (src) {
+                    const alt = child.getAttribute('alt') || '';
+                    result += ` <img src="${src}" alt="${alt}" style="max-width: 100%; height: auto; display: inline-block; margin: 4px 0;" /> `;
+                }
+            } else if (tagName === 'br') {
+                result += '\n';
+            } else if (['p', 'div', 'tr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
+                for (const grandChild of child.childNodes) {
+                    walk(grandChild);
+                }
+                result += '\n';
+            } else {
+                for (const grandChild of child.childNodes) {
+                    walk(grandChild);
+                }
+            }
+        }
+    }
+
+    walk(node);
+    return result;
+}
+
+function parseWordHtmlToText(html) {
+    if (!html) return '';
+
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+
+    const tables = temp.querySelectorAll('table');
+    if (tables.length > 0) {
+        const textParts = [];
+        tables.forEach(table => {
+            const rows = table.querySelectorAll('tr');
+            let qNum = '', qText = '', optA = '', optB = '', optC = '', optD = '', optE = '', kj = '';
+            let isCbtTable = false;
+
+            rows.forEach(row => {
+                const cells = Array.from(row.querySelectorAll('td, th')).map(c => extractTextAndImagesFromNode(c).trim());
+                if (cells.length >= 2) {
+                    const col1 = cells[0].toUpperCase();
+                    const col2 = cells[1];
+
+                    if (['TS', 'KD', 'ABS'].includes(col1)) {
+                        isCbtTable = true;
+                    } else if (col1 === 'KJ') {
+                        isCbtTable = true;
+                        kj = col2;
+                    } else if (/^\d+[\.\)]?$/.test(col1) || col1.endsWith('.')) {
+                        isCbtTable = true;
+                        qNum = col1.replace(/\D/g, '');
+                        qText = col2;
+                    } else if (['A', 'B', 'C', 'D', 'E'].includes(col1)) {
+                        isCbtTable = true;
+                        if (col1 === 'A') optA = col2;
+                        if (col1 === 'B') optB = col2;
+                        if (col1 === 'C') optC = col2;
+                        if (col1 === 'D') optD = col2;
+                        if (col1 === 'E') optE = col2;
+                    }
+                }
+            });
+
+            if (isCbtTable && qText) {
+                let block = `${qNum || '1'}. ${qText}`;
+                if (optA) block += `\nA. ${optA}`;
+                if (optB) block += `\nB. ${optB}`;
+                if (optC) block += `\nC. ${optC}`;
+                if (optD) block += `\nD. ${optD}`;
+                if (optE) block += `\nE. ${optE}`;
+                if (kj) block += `\nKunci: ${kj}`;
+                textParts.push(block);
+            } else {
+                rows.forEach(r => {
+                    const cellTexts = Array.from(r.querySelectorAll('td, th')).map(c => extractTextAndImagesFromNode(c).trim()).join(' | ');
+                    if (cellTexts) textParts.push(cellTexts);
+                });
+            }
+        });
+
+        temp.querySelectorAll('table').forEach(t => t.remove());
+        const otherText = extractTextAndImagesFromNode(temp);
+        if (otherText.trim()) {
+            textParts.unshift(otherText.trim());
+        }
+
+        return textParts.join('\n\n');
+    }
+
+    const fullText = extractTextAndImagesFromNode(temp);
+    return fullText.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function handleConvertWordFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    showToast('Membaca file Word...', 'info');
+
+    const processWithMammoth = (mammothInst) => {
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            const arrayBuffer = evt.target.result;
+            mammothInst.convertToHtml({ arrayBuffer: arrayBuffer })
+                .then(function(result) {
+                    const htmlContent = result.value || '';
+                    const extractedText = parseWordHtmlToText(htmlContent);
+                    const textarea = document.getElementById('cvt-raw-text');
+                    if (textarea) {
+                        textarea.value = extractedText;
+                    }
+                    showToast('Berhasil mengimpor teks dari file Word!', 'success');
+                })
+                .catch(function(err) {
+                    console.warn('Mammoth convert error, falling back to raw text:', err);
+                    const readerText = new FileReader();
+                    readerText.onload = function(txtEvt) {
+                        const textarea = document.getElementById('cvt-raw-text');
+                        if (textarea) textarea.value = txtEvt.target.result;
+                        showToast('Berhasil mengimpor teks file!', 'success');
+                    };
+                    readerText.readAsText(file);
+                });
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    if (window.mammoth) {
+        processWithMammoth(window.mammoth);
+    } else {
+        import('mammoth').then(mod => {
+            window.mammoth = mod.default || mod;
+            processWithMammoth(window.mammoth);
+        }).catch(err => {
+            console.error('Failed to load mammoth:', err);
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                const textarea = document.getElementById('cvt-raw-text');
+                if (textarea) textarea.value = evt.target.result;
+                showToast('Berhasil mengimpor teks file!', 'success');
+            };
+            reader.readAsText(file);
+        });
+    }
+}
+
+// Improved Multi-Format Question Import Modal
+function openQuestionImportModal(code) {
+    const modal = document.getElementById('modal-container');
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
+            <div class="bg-white w-full max-w-xl rounded-3xl shadow-2xl p-6 space-y-5 my-6">
+                <div class="flex justify-between items-center pb-2 border-b">
+                    <h3 class="font-bold flex items-center space-x-2 text-slate-800 text-base">
+                        <i class="fa-solid fa-file-arrow-up text-emerald-600"></i>
+                        <span>Import Soal (Word, Excel, Text)</span>
+                    </h3>
+                    <button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-lg text-slate-400 hover:text-slate-600"></i></button>
+                </div>
+
+                <!-- Template Download Options -->
+                <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2">
+                    <p class="font-bold text-xs text-slate-700"><i class="fa-solid fa-download text-emerald-600 mr-1"></i> Download Template Resmi:</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button type="button" onclick="downloadQuestionImportTemplateWord()" class="py-2.5 px-3 bg-white border border-slate-200 hover:bg-emerald-50 hover:border-emerald-300 text-slate-700 hover:text-emerald-800 rounded-xl font-semibold text-xs flex items-center justify-center space-x-2 shadow-sm transition">
+                            <i class="fa-solid fa-file-word text-blue-600"></i><span>Template Word (.docx/.doc)</span>
+                        </button>
+                        <button type="button" onclick="downloadQuestionImportTemplateExcel()" class="py-2.5 px-3 bg-white border border-slate-200 hover:bg-emerald-50 hover:border-emerald-300 text-slate-700 hover:text-emerald-800 rounded-xl font-semibold text-xs flex items-center justify-center space-x-2 shadow-sm transition">
+                            <i class="fa-solid fa-file-excel text-emerald-600"></i><span>Template Excel (.xlsx)</span>
+                        </button>
+                    </div>
+                    <button type="button" onclick="openTemplateGuideModal()" class="w-full mt-1 py-1.5 text-[11px] text-emerald-700 font-bold hover:underline text-center cursor-pointer">
+                        <i class="fa-solid fa-circle-info mr-1"></i> Lihat Contoh Format Teks & Rumus Matematika
+                    </button>
+                </div>
+
+                <!-- File Drop / Upload -->
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold uppercase text-slate-700">Opsi 1: Upload File (.docx, .doc, .pdf, .html, .htm, .zip, .xlsx, .csv, .txt)</label>
+                    <div class="border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-2xl p-4 text-center transition bg-slate-50/50">
+                        <i class="fa-solid fa-cloud-arrow-up text-2xl text-slate-400 mb-1"></i>
+                        <p class="text-xs text-slate-600 mb-2 font-medium">Pilih file Word, PDF, Web Page (HTML/ZIP), Excel, atau Teks dari komputer Anda</p>
+                        <input type="file" id="question-import-file" accept=".docx, .doc, .pdf, .html, .htm, .zip, .xlsx, .xls, .csv, .txt" onchange="handleQuestionImportFile(event, '${code}')" class="w-full text-xs text-slate-500 file:mr-auto file:mx-auto file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-700 cursor-pointer"/>
+                    </div>
+                </div>
+
+                <!-- Direct Paste Option -->
+                <div class="space-y-2 pt-2 border-t">
+                    <label class="block text-xs font-bold uppercase text-slate-700">Opsi 2: Tempel Teks Soal Langsung (Copy-Paste)</label>
+                    <textarea id="direct-import-textarea" rows="4" class="w-full p-3 bg-slate-50 border rounded-2xl text-xs font-mono" placeholder="1. Soal nomor satu...&#10;A. Pilihan A&#10;B. Pilihan B&#10;Kunci: B&#10;Pembahasan: Penjelasan..."></textarea>
+                    <button type="button" onclick="handleQuestionDirectTextImport('${code}')" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl text-xs shadow transition">
+                        <i class="fa-solid fa-file-import mr-1"></i> Proses Import dari Teks
+                    </button>
+                </div>
+
+                <div class="flex justify-end pt-2 border-t">
+                    <button type="button" onclick="closeModal()" class="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold">Tutup</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function openTemplateGuideModal() {
+    const modal = document.getElementById('modal-container');
+    const guideHtml = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
+            <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-6 space-y-4 my-6">
+                <div class="flex justify-between items-center pb-2 border-b">
+                    <h3 class="font-bold text-slate-800 text-base flex items-center space-x-2">
+                        <i class="fa-solid fa-book-open text-emerald-600"></i>
+                        <span>Panduan Format Import Extraordinary CBT & Rumus Matematika</span>
+                    </h3>
+                    <button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-lg text-slate-400"></i></button>
+                </div>
+                
+                <div class="space-y-3 text-xs text-slate-600 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
+                    <div class="bg-emerald-50 p-3 rounded-2xl border border-emerald-200 text-emerald-900 space-y-1">
+                        <p class="font-bold"><i class="fa-solid fa-bolt text-emerald-600 mr-1"></i> Mode Impor Super Efisien (HTML / ZIP & Smart Auto-Detect):</p>
+                        <p class="text-[11px]"><b>1. Ekspor Word ke Web Page / ZIP:</b> Buka dokumen Word Anda -> Pilih <b>File -> Save As -> Web Page (*.htm; *.html)</b>. Jika ada gambar, zip file HTML bersama folder gambarnya dan upload file <b>.zip</b> atau <b>.html</b> langsung!</p>
+                        <p class="text-[11px]"><b>2. Smart Math Auto-Formatter (Tanpa Tanda $):</b> Sistem kini secara otomatis mengenali ekspresi rumus matematika standar Word/Teks biasa seperti <code class="bg-emerald-100 px-1 rounded font-mono">(-2)^4</code>, <code class="bg-emerald-100 px-1 rounded font-mono">a^8b^3c^4 / a^2b^2c</code>, <code class="bg-emerald-100 px-1 rounded font-mono">3√5</code>, <code class="bg-emerald-100 px-1 rounded font-mono">^2Log 16</code>, <code class="bg-emerald-100 px-1 rounded font-mono">(fog)(x)</code>, dan <code class="bg-emerald-100 px-1 rounded font-mono">f^-1(x)</code> tanpa mengharuskan Anda mengetik tanda <code class="bg-emerald-100 px-1 rounded font-mono">$</code>!</p>
+                    </div>
+
+                    <div class="bg-amber-50 p-3 rounded-2xl border border-amber-200 text-amber-900 space-y-1">
+                        <p class="font-bold"><i class="fa-solid fa-table-cells mr-1"></i> Format Tabel Extraordinary CBT Word:</p>
+                        <p class="text-[11px]">Sistem mengenali tabel <b>Extraordinary CBT by shellrean</b> secara otomatis:</p>
+                        <ul class="list-disc list-inside space-y-0.5 ml-1 font-mono text-[11px]">
+                            <li><code class="bg-amber-100 px-1 rounded font-bold">TS</code>: Tipe Soal (<code class="bg-amber-100 px-1 rounded">PG</code> = Pilihan Ganda, <code class="bg-amber-100 px-1 rounded">ESY</code> = Essay/Uraian)</li>
+                            <li><code class="bg-amber-100 px-1 rounded font-bold">KD</code>: Kode Kompetensi Dasar (misal <code class="bg-amber-100 px-1 rounded">1.0.1</code>)</li>
+                            <li><code class="bg-amber-100 px-1 rounded font-bold">KJ</code>: Kunci Jawaban (<code class="bg-amber-100 px-1 rounded">A</code>, <code class="bg-amber-100 px-1 rounded">B</code>, <code class="bg-amber-100 px-1 rounded">C</code>, <code class="bg-amber-100 px-1 rounded">D</code>, <code class="bg-amber-100 px-1 rounded">E</code> atau teks kunci essay)</li>
+                            <li><code class="bg-amber-100 px-1 rounded font-bold">ABS</code>: Acak/Absolut (Bisa dikosongkan)</li>
+                            <li>Baris Nomor <code class="bg-amber-100 px-1 rounded font-bold">1.</code>, <code class="bg-amber-100 px-1 rounded font-bold">2.</code>: Isi Teks Soal</li>
+                            <li>Baris <code class="bg-amber-100 px-1 rounded font-bold">A</code>, <code class="bg-amber-100 px-1 rounded font-bold">B</code>, <code class="bg-amber-100 px-1 rounded font-bold">C</code>, <code class="bg-amber-100 px-1 rounded font-bold">D</code>, <code class="bg-amber-100 px-1 rounded font-bold">E</code>: Pilihan Jawaban</li>
+                        </ul>
+                    </div>
+
+                    <div class="bg-blue-50 p-3 rounded-2xl border border-blue-200 text-blue-900 space-y-1">
+                        <p class="font-bold"><i class="fa-solid fa-square-root-variable mr-1"></i> Cara Memasukkan Rumus Matematika (Gunakan Simbol $ ... $):</p>
+                        <p class="text-[11px]">Cukup apit rumus menggunakan tanda <code class="bg-blue-100 px-1 py-0.5 rounded font-mono">$...$</code> di Word:</p>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono mt-1">
+                            <div class="bg-white p-2 rounded-xl border border-blue-100">
+                                <b class="text-blue-700">1. Pangkat / Eksponen:</b><br/>
+                                <code class="bg-blue-50 px-1 rounded">$(-2)^4$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$(2x^2y)^0$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$3^2 \\times 81 = 3^n$</code>
+                            </div>
+                            <div class="bg-white p-2 rounded-xl border border-blue-100">
+                                <b class="text-blue-700">2. Pecahan / Pembagian:</b><br/>
+                                <code class="bg-blue-50 px-1 rounded">$\\frac{a^8 b^3 c^4}{a^2 b^2 c}$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$\\frac{6^2 + 8^2}{2^2}$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$\\frac{3-4x}{x+3}$</code>
+                            </div>
+                            <div class="bg-white p-2 rounded-xl border border-blue-100">
+                                <b class="text-blue-700">3. Bentuk Akar:</b><br/>
+                                <code class="bg-blue-50 px-1 rounded">$\\sqrt[3]{5^5}$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$3\\sqrt{5} + 4\\sqrt{5}$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$2\\sqrt{50} + 3\\sqrt{8}$</code>
+                            </div>
+                            <div class="bg-white p-2 rounded-xl border border-blue-100">
+                                <b class="text-blue-700">4. Logaritma & Fungsi:</b><br/>
+                                <code class="bg-blue-50 px-1 rounded">$^2\\log 16$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$(f \\circ g)(x)$</code><br/>
+                                <code class="bg-blue-50 px-1 rounded">$f^{-1}(x) = \\frac{x-2}{5}$</code>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="space-y-1">
+                        <p class="font-bold text-slate-800">Contoh Tabel Extraordinary CBT dengan Rumus Matematika:</p>
+                        <pre class="bg-slate-900 text-emerald-300 p-4 rounded-2xl font-mono text-[11px] overflow-x-auto whitespace-pre-wrap select-all">
+TS  | PG
+KD  | 1.0.1
+KJ  | E
+ABS | 
+1.  | Nilai dari $(-2)^4$ adalah ....
+A   | 4
+B   | -8
+C   | 8
+D   | -16
+E   | 16
+
+TS  | PG
+KD  | 1.0.1
+KJ  | A
+ABS | 
+2.  | Nilai dari $\\frac{a^8 b^3 c^4}{a^2 b^2 c}$ adalah ....
+A   | $a^6 b c^3$
+B   | $a^3 b^2 c^3$
+C   | $a^6 b^4 c^3$
+D   | $a^3 b^2 c^5$
+E   | $a^6 b^3 c^2$
+                        </pre>
+                    </div>
+                </div>
+
+                <div class="flex justify-end space-x-2 pt-2 border-t">
+                    <button type="button" onclick="downloadQuestionImportTemplateWord()" class="px-4 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold cursor-pointer">
+                        <i class="fa-solid fa-file-word mr-1"></i> Unduh Template Word (.doc)
+                    </button>
+                    <button type="button" onclick="closeModal()" class="px-5 py-2 bg-slate-800 text-white rounded-xl text-xs font-semibold">Mengerti</button>
+                </div>
+            </div>
+        </div>
+    `;
+    modal.innerHTML = guideHtml;
+}
+
+function downloadQuestionImportTemplateWord() {
+    const htmlContent = `
+        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+        <head>
+            <meta charset='utf-8'>
+            <title>Extraordinary CBT Template by shellrean</title>
+            <style>
+                body { font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #000; }
+                h3 { font-size: 14pt; font-weight: bold; margin-bottom: 8px; }
+                .perhatian { font-size: 10pt; margin-bottom: 12px; }
+                .tipe-soal { font-size: 10pt; margin-bottom: 16px; }
+                table { width: 100%; border-collapse: collapse; margin-bottom: 20px; page-break-inside: avoid; }
+                td, th { border: 1px solid #000; padding: 5px 8px; font-size: 10pt; vertical-align: top; }
+                .bg-ts { background-color: #FFF2CC; font-weight: bold; width: 60px; }
+                .bg-ts-val { background-color: #FFF2CC; font-weight: bold; }
+                .bg-kj { background-color: #E2EFDA; font-weight: bold; width: 60px; }
+                .bg-kj-val { background-color: #E2EFDA; }
+                .no-col { width: 35px; font-weight: bold; text-align: center; }
+            </style>
+        </head>
+        <body>
+            <h3>Extraordinary CBT Template by shellrean</h3>
+            <div class="perhatian">
+                <b>Perhatian:</b><br/>
+                1. Dilarang membuat table selain format Extraordinary CBT<br/>
+                2. Dilarang menyimpan floating image<br/>
+            </div>
+            <div class="tipe-soal">
+                <b>Tipe soal wajib diisi pada baris [TS]</b><br/>
+                1. PG : Pilihan ganda<br/>
+                2. PGX : Pilihan ganda kompleks<br/>
+                3. ESY : Esay / Uraian<br/>
+                4. SKT : Isian singkat<br/>
+                5. JD : Menjodohkan 1-1<br/>
+                6. JDX : Menjodohkan 1-X<br/>
+                7. URT : Mengurutkan<br/>
+                8. STJ : Setuju tidak setuju<br/>
+                9. BNR : Benar salah<br/>
+            </div>
+            <p style="font-size: 10pt; font-style: italic; margin-bottom: 15px;">Tipe soal pilihan ganda, disini kita mengisi TS dengan PG. Yang harus diperhatikan disini adalah KJ pastikan KJ tersedia pada opsi.</p>
+
+            <!-- Soal 1: Eksponen -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">PG</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">E</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">1.</td><td>Nilai dari $(-2)^4$ adalah ....</td></tr>
+                <tr><td class="no-col">A</td><td>4</td></tr>
+                <tr><td class="no-col">B</td><td>-8</td></tr>
+                <tr><td class="no-col">C</td><td>8</td></tr>
+                <tr><td class="no-col">D</td><td>-16</td></tr>
+                <tr><td class="no-col">E</td><td>16</td></tr>
+            </table>
+
+            <!-- Soal 2: Pecahan Eksponen -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">PG</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">A</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">2.</td><td>Nilai dari $\\frac{a^8 b^3 c^4}{a^2 b^2 c}$ adalah ....</td></tr>
+                <tr><td class="no-col">A</td><td>$a^6 b c^3$</td></tr>
+                <tr><td class="no-col">B</td><td>$a^3 b^2 c^3$</td></tr>
+                <tr><td class="no-col">C</td><td>$a^6 b^4 c^3$</td></tr>
+                <tr><td class="no-col">D</td><td>$a^3 b^2 c^5$</td></tr>
+                <tr><td class="no-col">E</td><td>$a^6 b^3 c^2$</td></tr>
+            </table>
+
+            <!-- Soal 3: Bentuk Akar -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">PG</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">A</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">3.</td><td>Bentuk lain dari $\\sqrt[3]{5^5}$ adalah ....</td></tr>
+                <tr><td class="no-col">A</td><td>$5^{\\frac{5}{3}}$</td></tr>
+                <tr><td class="no-col">B</td><td>$5^{\\frac{3}{5}}$</td></tr>
+                <tr><td class="no-col">C</td><td>$5^{\\frac{3}{3}}$</td></tr>
+                <tr><td class="no-col">D</td><td>$3^{\\frac{3}{5}}$</td></tr>
+                <tr><td class="no-col">E</td><td>$3^{\\frac{5}{3}}$</td></tr>
+            </table>
+
+            <!-- Soal 4: Logaritma -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">PG</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">C</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">4.</td><td>Nilai dari $^5\\log 25 + ^3\\log 27$ adalah ....</td></tr>
+                <tr><td class="no-col">A</td><td>5</td></tr>
+                <tr><td class="no-col">B</td><td>6</td></tr>
+                <tr><td class="no-col">C</td><td>5</td></tr>
+                <tr><td class="no-col">D</td><td>8</td></tr>
+                <tr><td class="no-col">E</td><td>9</td></tr>
+            </table>
+
+            <!-- Soal 5: Fungsi Invers (Uraian / Essay) -->
+            <table>
+                <tr><td class="bg-ts">TS</td><td class="bg-ts-val">ESY</td></tr>
+                <tr><td class="bg-ts">KD</td><td class="bg-ts-val">1.0.1</td></tr>
+                <tr><td class="bg-kj">KJ</td><td class="bg-kj-val">$f^{-1}(x) = \\frac{x-2}{5}$</td></tr>
+                <tr><td class="bg-kj">ABS</td><td class="bg-kj-val"></td></tr>
+                <tr><td class="no-col">5.</td><td>Jika $f(x) = 5x + 2$, tentukan invers dari fungsi $f(x)$!</td></tr>
+            </table>
+        </body>
+        </html>
+    `;
+    const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Extraordinary_CBT_Template_Matematika.doc';
+    a.click();
+    showToast('Template Extraordinary CBT Word Matematika berhasil diunduh!', 'success');
+}
+
+function downloadQuestionImportTemplateExcel() {
+    if (!window.XLSX) {
+        showToast('Library SheetJS belum siap.', 'error');
+        return;
+    }
+
+    const templateData = [
+        ["No", "Soal", "Gambar_URL", "Opsi_A", "Opsi_B", "Opsi_C", "Opsi_D", "Opsi_E", "Kunci_Jawaban", "Jenis_Soal", "Pembahasan"],
+        [1, "Berapakah nilai x dari $3x - 6 = 12$?", "", "x = 4", "x = 6", "x = 8", "x = 10", "x = 12", "B", "PG", "3x = 18 maka x = 6"],
+        [2, "Sebutkan rukun Islam yang pertama!", "", "", "", "", "", "", "Syahadat", "Essay", "Rukun islam pertama adalah syahadat."]
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(templateData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Template_Soal");
+    XLSX.writeFile(wb, "Template_Import_Soal_Madrasah.xlsx");
+    showToast('Template Excel (.xlsx) berhasil diunduh!', 'success');
+}
+
+function autoFormatMathExpressions(str) {
+    if (!str) return '';
+    let s = String(str).trim();
+    if (!s) return '';
+
+    // If string already contains explicit $ or \( or \[
+    if (s.includes('$') || s.includes('\\(') || s.includes('\\[')) {
+        return s;
+    }
+
+    // If string contains raw LaTeX commands (e.g. \frac{a}{b}, \sqrt{x}, \alpha, \times, etc.)
+    if (/\\(frac|sqrt|text|begin|end|alpha|beta|gamma|theta|pi|infty|sum|int|lim|times|div|pm|le|ge|neq|approx|cdot|circ)/i.test(s)) {
+        // Auto-wrap raw LaTeX command in math delimiters $ ... $
+        return `$${s}$`;
+    }
+
+    // Convert Unicode superscripts: x², x³, x⁴, aⁿ
+    s = s.replace(/([a-zA-Z0-9_\)\>]+)[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, function(match, base) {
+        const supMap = {'⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5','⁶':'6','⁷':'7','⁸':'8','⁹':'9'};
+        let exp = match.slice(base.length).split('').map(c => supMap[c] || c).join('');
+        return `$${base}^{${exp}}$`;
+    });
+
+    // Convert Unicode subscripts: x₁, x₂
+    s = s.replace(/([a-zA-Z0-9_\)\>]+)[₀₁₂₃₄₅₆₇₈₉]+/g, function(match, base) {
+        const subMap = {'₀':'0','₁':'1','₂':'2','₃':'3','₄':'4','₅':'5','₆':'6','₇':'7','₈':'8','₉':'9'};
+        let sub = match.slice(base.length).split('').map(c => subMap[c] || c).join('');
+        return `$${base}_{${sub}}$`;
+    });
+
+    // Auto-detect math formulas without '$' and convert them
+    // Exponents: (-2)^4, (2x^2y)^0, 3^2, 3^n, x^2
+    s = s.replace(/(\(?[-+]?\w+\)?)\^(\w+|\(?[-+]?\d+\)?)/g, '$$$1^{$2}$$');
+
+    // Square roots: √5, 3√5, √16, 2√50
+    s = s.replace(/(\d*)\s*√(\w+|\d+)/g, '$$$1\\sqrt{$2}$$');
+
+    // Logarithms: ^2Log 16, ^5Log 25, ^3Log 27
+    s = s.replace(/\^(\d+)\s*(Log|log)\s*(\d+|\w+)/gi, '$$^{$1}\\text{Log } $3$$');
+
+    // Composite & Inverse Functions: (fog)(x), f^-1(x)
+    s = s.replace(/\(fog\)\(([^)]+)\)/gi, '$$(f \\circ g)($1)$$');
+    s = s.replace(/f\^-1\(([^)]+)\)/gi, '$$f^{-1}($1)$$');
+
+    // Fractions: (6^2+8^2)/2^2 or (3-4x)/(x+3)
+    s = s.replace(/(\([^)]+\)|[a-zA-Z0-9^]+)\s*\/\s*(\([^)]+\)|[a-zA-Z0-9^]+)/g, function(m, num, den) {
+        let cleanNum = num.replace(/^\(|\)$/g, '');
+        let cleanDen = den.replace(/^\(|\)$/g, '');
+        return `$\\frac{${cleanNum}}{${cleanDen}}$`;
+    });
+
+    s = s.replace(/\$\$/g, '$');
+    return s;
+}
+
+function cleanAndFormatMathCellContent(cell) {
+    if (!cell) return '';
+
+    let inner = cell.innerHTML ? cell.innerHTML.trim() : '';
+
+    inner = inner.replace(/([a-zA-Z0-9_\)\>]+)\s*<sup>([\s\S]*?)<\/sup>/gi, function(match, base, exp) {
+        const cleanExp = exp.replace(/<[^>]+>/g, '').trim();
+        const cleanBase = base.replace(/<[^>]+>/g, '').trim();
+        return `$${cleanBase}^{${cleanExp}}$`;
+    });
+
+    inner = inner.replace(/<sup>([\s\S]*?)<\/sup>\s*(Log|log)/gi, function(match, exp, log) {
+        const cleanExp = exp.replace(/<[^>]+>/g, '').trim();
+        return `$^${cleanExp}\\text{Log}$`;
+    });
+
+    inner = inner.replace(/<sub>([\s\S]*?)<\/sub>/gi, function(match, sub) {
+        const cleanSub = sub.replace(/<[^>]+>/g, '').trim();
+        return `$_{${cleanSub}}$`;
+    });
+
+    const temp = document.createElement('div');
+    temp.innerHTML = inner;
+
+    // Remove hr and img elements
+    temp.querySelectorAll('hr').forEach(hr => hr.remove());
+    const imgs = temp.querySelectorAll('img');
+    imgs.forEach(img => img.remove());
+
+    let textContent = temp.textContent || temp.innerText || '';
+    textContent = textContent.replace(/^[\-\—\–\―]{2,}$/gm, '').trim();
+
+    let formattedText = autoFormatMathExpressions(textContent);
+
+    return formattedText.trim();
+}
+
+function handleQuestionImportFile(e, code) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const fileName = file.name.toLowerCase();
+
+    if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.csv')) {
+        // Excel Import
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            try {
+                const data = new Uint8Array(evt.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                if (rows.length < 2) {
+                    showToast('File Excel kosong atau format tidak sesuai.', 'error');
+                    return;
+                }
+
+                const group = appState.questionBankGroups.find(bg => String(bg.code) === String(code));
+                let addedCount = 0;
+
+                for (let i = 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    if (!row || row.length === 0 || !row[1]) continue;
+
+                    const qText = autoFormatMathExpressions(String(row[1] || '').trim());
+                    const imgUrl = String(row[2] || '').trim();
+                    const optA = autoFormatMathExpressions(String(row[3] || '').trim());
+                    const optB = autoFormatMathExpressions(String(row[4] || '').trim());
+                    const optC = autoFormatMathExpressions(String(row[5] || '').trim());
+                    const optD = autoFormatMathExpressions(String(row[6] || '').trim());
+                    const optE = autoFormatMathExpressions(String(row[7] || '').trim());
+                    const keyVal = String(row[8] || '').trim();
+                    const kindVal = String(row[9] || '').trim().toLowerCase();
+                    const expVal = autoFormatMathExpressions(String(row[10] || '').trim());
+
+                    let options = [optA, optB, optC, optD, optE].filter(o => o !== '');
+                    const isEssay = kindVal === 'essay' || kindVal === 'esy' || options.length === 0;
+
+                    let answerKey = keyVal;
+                    if (!isEssay) {
+                        const keyUpper = keyVal.toUpperCase();
+                        if (['A', 'B', 'C', 'D', 'E'].includes(keyUpper)) {
+                            const idx = keyUpper.charCodeAt(0) - 65;
+                            if (options[idx]) answerKey = options[idx];
+                        }
+                    }
+
+                    appState.questionBank.push({
+                        id: 'Q_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                        code: code,
+                        subjectId: group ? group.subjectId : (appState.subjects[0]?.id || ''),
+                        classId: group ? group.classId : (appState.classes[0]?.id || ''),
+                        type: isEssay ? 'essay' : 'mc',
+                        question: qText,
+                        imageUrl: imgUrl,
+                        options: isEssay ? [] : (options.length > 0 ? options : ['A', 'B', 'C', 'D', 'E']),
+                        answer: answerKey || (isEssay ? 'Jawaban' : (options[0] || 'A')),
+                        explanation: expVal
+                    });
+                    addedCount++;
+                }
+
+                saveState('questionBank');
+                closeModal();
+                showToast(`Berhasil import ${addedCount} soal dari Excel!`, 'success');
+                renderQuestionBankModule(document.getElementById('view-container'));
+            } catch (err) {
+                console.error('Excel import error:', err);
+                showToast('Gagal membaca file Excel. Pastikan format sesuai template.', 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    } else if (fileName.endsWith('.zip') && window.JSZip) {
+        // ZIP Archive containing HTML & Images
+        const reader = new FileReader();
+        reader.onload = async function(evt) {
+            try {
+                const zip = await window.JSZip.loadAsync(evt.target.result);
+                let htmlFile = null;
+
+                zip.forEach((relativePath, file) => {
+                    if (!file.dir && (relativePath.endsWith('.html') || relativePath.endsWith('.htm'))) {
+                        if (!htmlFile || relativePath.toLowerCase().includes('index') || relativePath.toLowerCase().includes('default')) {
+                            htmlFile = file;
+                        }
+                    }
+                });
+
+                if (!htmlFile) {
+                    showToast('File HTML (.html / .htm) tidak ditemukan di dalam archive ZIP.', 'error');
+                    return;
+                }
+
+                let htmlText = await htmlFile.async('text');
+
+                const imageEntries = [];
+                zip.forEach((relativePath, file) => {
+                    if (!file.dir && /\.(png|jpe?g|gif|webp|svg)$/i.test(relativePath)) {
+                        imageEntries.push({ path: relativePath, file });
+                    }
+                });
+
+                for (const imgEntry of imageEntries) {
+                    const base64Data = await imgEntry.file.async('base64');
+                    const ext = imgEntry.path.split('.').pop().toLowerCase();
+                    const mimeType = ext === 'svg' ? 'image/svg+xml' : (ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
+                    const dataUrl = `data:${mimeType};base64,${base64Data}`;
+
+                    const cleanImgName = imgEntry.path.split('/').pop();
+                    const regex = new RegExp(`(src=["'])([^"']*${cleanImgName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')})(["'])`, 'gi');
+                    htmlText = htmlText.replace(regex, `$1${dataUrl}$3`);
+                }
+
+                parseQuestionsFromTextOrHtml(htmlText, code);
+                showToast('Berhasil membaca file HTML & Gambar dari ZIP!', 'success');
+            } catch (err) {
+                console.error('ZIP import error:', err);
+                showToast('Gagal memproses file ZIP. Pastikan berisi file HTML & folder gambar Word.', 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    } else if (fileName.endsWith('.html') || fileName.endsWith('.htm')) {
+        // Standalone HTML / Web Page Import
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            parseQuestionsFromTextOrHtml(evt.target.result, code);
+        };
+        reader.readAsText(file);
+    } else if (fileName.endsWith('.pdf')) {
+        // PDF Import using PDF.js
+        const reader = new FileReader();
+        reader.onload = async function(evt) {
+            try {
+                if (!window.pdfjsLib) {
+                    showToast('Library PDF.js sedang dimuat, coba beberapa detik lagi.', 'error');
+                    return;
+                }
+                window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js';
+                const pdfData = new Uint8Array(evt.target.result);
+                const pdf = await window.pdfjsLib.getDocument({ data: pdfData }).promise;
+                
+                let fullText = '';
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const textContent = await page.getTextContent();
+                    let lastY;
+                    let text = '';
+                    for (const item of textContent.items) {
+                        if (lastY !== undefined && Math.abs(lastY - item.transform[5]) > 2) {
+                            text += '\n';
+                        } else if (lastY !== undefined && text.length > 0 && !text.endsWith(' ')) {
+                            text += ' ';
+                        }
+                        text += item.str;
+                        lastY = item.transform[5];
+                    }
+                    fullText += text + '\n\n';
+                }
+
+                parseQuestionsFromTextOrHtml(fullText, code);
+                showToast('Berhasil membaca & mengekstrak teks dari file PDF!', 'success');
+            } catch (err) {
+                console.error('PDF import error:', err);
+                showToast('Gagal membaca file PDF. Pastikan file tidak dikunci/password.', 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    } else if (fileName.endsWith('.docx')) {
+        const processDocx = (mammothInstance) => {
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                const arrayBuffer = evt.target.result;
+                mammothInstance.convertToHtml({ arrayBuffer: arrayBuffer })
+                    .then(function(result) {
+                        const htmlContent = result.value;
+                        parseQuestionsFromTextOrHtml(htmlContent, code);
+                    })
+                    .catch(function(err) {
+                        console.warn('Mammoth import failed, falling back to raw text:', err);
+                        const text = new TextDecoder('utf-8').decode(arrayBuffer);
+                        parseQuestionsFromTextOrHtml(text, code);
+                    });
+            };
+            reader.readAsArrayBuffer(file);
+        };
+
+        if (window.mammoth) {
+            processDocx(window.mammoth);
+        } else {
+            import('mammoth').then(mod => {
+                window.mammoth = mod.default || mod;
+                processDocx(window.mammoth);
+            }).catch(err => {
+                console.error("Failed to load mammoth", err);
+                const reader = new FileReader();
+                reader.onload = function(evt) {
+                    parseQuestionsFromTextOrHtml(evt.target.result, code);
+                };
+                reader.readAsText(file);
+            });
+        }
+    } else {
+        // Plain Text or .doc fallback
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            parseQuestionsFromTextOrHtml(evt.target.result, code);
+        };
+        reader.readAsText(file);
+    }
+}
+
+function handleQuestionDirectTextImport(code) {
+    const textarea = document.getElementById('direct-import-textarea');
+    if (!textarea || !textarea.value.trim()) {
+        showToast('Ketik atau tempel teks soal terlebih dahulu.', 'error');
+        return;
+    }
+    parseQuestionsFromTextOrHtml(textarea.value, code);
+}
+
+function parseQuestionsFromTextOrHtml(rawContent, code) {
+    if (!rawContent) return;
+
+    const group = appState.questionBankGroups.find(bg => String(bg.code) === String(code));
+    let questionsToAdd = [];
+
+    // 1. Extraordinary CBT Table Parser (if HTML tables are present from Mammoth / Word HTML)
+    if (/<table[^>]*>/i.test(rawContent)) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = rawContent;
+        const tables = tempDiv.querySelectorAll('table');
+
+        tables.forEach(table => {
+            const trs = Array.from(table.querySelectorAll('tr'));
+            if (trs.length === 0) return;
+
+            let ts = 'PG';
+            let kd = '';
+            let kj = '';
+            let qText = '';
+            let imgUrl = '';
+            let options = [];
+            let exp = '';
+
+            trs.forEach(tr => {
+                const cells = Array.from(tr.querySelectorAll('td, th')).map(c => {
+                    const img = c.querySelector('img');
+                    if (img && img.src && !imgUrl) {
+                        imgUrl = img.src;
+                    }
+                    return cleanAndFormatMathCellContent(c);
+                });
+
+                if (cells.length === 0) return;
+
+                const c0 = (cells[0] || '').trim();
+                const c1 = cells.length > 1 ? (cells[1] || '').trim() : '';
+                const c0Upper = c0.toUpperCase();
+
+                if (c0Upper === 'TS') {
+                    ts = c1.toUpperCase() || 'PG';
+                } else if (c0Upper === 'KD') {
+                    kd = c1;
+                } else if (c0Upper === 'KJ') {
+                    kj = c1;
+                } else if (c0Upper === 'ABS') {
+                    // ABS cell, skip
+                } else if (/^\d+[\.\)]?$/.test(c0) || (/^\d+[\.\)]\s/.test(c0) && !qText)) {
+                    qText = c1 || c0.replace(/^\d+[\.\)]\s*/, '');
+                } else if (/^[A-E][\.\)]?$/i.test(c0)) {
+                    if (c1) options.push(c1);
+                } else if (c0Upper.startsWith('PEMBAHASAN') || c0Upper.startsWith('EXPLANATION')) {
+                    exp = c1 || c0.replace(/^(PEMBAHASAN|EXPLANATION)[:\s]*/i, '');
+                } else if (!qText && c0 && !['TS','KD','KJ','ABS'].includes(c0Upper)) {
+                    qText = c0;
+                }
+            });
+
+            if (qText) {
+                const isEssay = ts.includes('ESY') || ts.includes('ESSAY') || options.length === 0;
+                let answerKey = kj;
+                if (!isEssay && ['A', 'B', 'C', 'D', 'E'].includes(kj.toUpperCase())) {
+                    const idx = kj.toUpperCase().charCodeAt(0) - 65;
+                    if (options[idx]) answerKey = options[idx];
+                }
+
+                questionsToAdd.push({
+                    id: 'Q_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                    code: code,
+                    subjectId: group ? group.subjectId : (appState.subjects[0]?.id || ''),
+                    classId: group ? group.classId : (appState.classes[0]?.id || ''),
+                    type: isEssay ? 'essay' : 'mc',
+                    question: qText,
+                    imageUrl: imgUrl || '',
+                    options: isEssay ? [] : (options.length > 0 ? options : ['A', 'B', 'C', 'D', 'E']),
+                    answer: answerKey || (isEssay ? 'Jawaban' : (options[0] || 'A')),
+                    explanation: exp || ''
+                });
+            }
+        });
+
+        if (questionsToAdd.length > 0) {
+            appState.questionBank.push(...questionsToAdd);
+            saveState('questionBank');
+            closeModal();
+            showToast(`Berhasil mengimpor ${questionsToAdd.length} butir soal Extraordinary CBT!`, 'success');
+            renderQuestionBankModule(document.getElementById('view-container'));
+            return;
+        }
+    }
+
+    // 2. Line-by-Line Fallback Parser (for plain text, Extraordinary CBT text lines, or non-table imports)
+    let processed = rawContent.replace(/<img\s+[^>]*src=["']([^"']+)["'][^>]*>/gi, '\n[Gambar: $1]\n')
+                               .replace(/<br\s*[\/]?>/gi, '\n')
+                               .replace(/<\/p>/gi, '\n')
+                               .replace(/<\/div>/gi, '\n')
+                               .replace(/<\/tr>/gi, '\n')
+                               .replace(/<\/li>/gi, '\n');
+
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = processed;
+    let cleanText = tempDiv.textContent || tempDiv.innerText || processed;
+
+    cleanText = cleanText.replace(/Extraordinary CBT Template by shellrean/gi, '')
+                        .replace(/TEMPLATE IMPORT SOAL MADRASAH/gi, '');
+
+    const lines = cleanText.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+
+    let addedCount = 0;
+    let currentQ = null;
+    let currentOptions = [];
+    let currentAnswer = '';
+    let currentImg = '';
+    let currentExp = '';
+    let currentTS = 'PG';
+
+    const saveCurrent = () => {
+        if (!currentQ || !currentQ.question) return;
+
+        const qTextLower = currentQ.question.toLowerCase();
+        const ansLower = String(currentAnswer || '').toLowerCase();
+        const isEssay = currentTS.includes('ESY') || currentTS.includes('ESSAY') || currentOptions.length === 0 || qTextLower.includes('esay') || qTextLower.includes('essay') || ansLower.includes('esay') || ansLower.includes('essay');
+
+        let answerKey = String(currentAnswer || '').replace(/\s*\((essay|esay)\)/i, '').trim();
+        if (!isEssay) {
+            const keyUpper = String(answerKey || '').toUpperCase();
+            if (['A', 'B', 'C', 'D', 'E'].includes(keyUpper)) {
+                const idx = keyUpper.charCodeAt(0) - 65;
+                if (currentOptions[idx]) answerKey = currentOptions[idx];
+            }
+        }
+
+        const finalQuestionText = autoFormatMathExpressions(currentQ.question.replace(/\s*\((essay|esay)\)/i, '').trim());
+        const finalOptions = isEssay ? [] : (currentOptions.length > 0 ? currentOptions.map(opt => autoFormatMathExpressions(opt)) : ['A', 'B', 'C', 'D', 'E']);
+        const finalExp = autoFormatMathExpressions(currentExp || '');
+
+        appState.questionBank.push({
+            id: 'Q_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+            code: code,
+            subjectId: group ? group.subjectId : (appState.subjects[0]?.id || ''),
+            classId: group ? group.classId : (appState.classes[0]?.id || ''),
+            type: isEssay ? 'essay' : 'mc',
+            question: finalQuestionText,
+            imageUrl: currentImg || '',
+            options: finalOptions,
+            answer: autoFormatMathExpressions(answerKey || (isEssay ? 'Jawaban' : (finalOptions[0] || 'A'))),
+            explanation: finalExp
+        });
+        addedCount++;
+        
+        currentQ = null;
+        currentOptions = [];
+        currentAnswer = '';
+        currentImg = '';
+        currentExp = '';
+        currentTS = 'PG';
+    };
+
+    lines.forEach(line => {
+        const uLine = line.toUpperCase();
+        if (uLine.startsWith('TS')) {
+            const val = line.replace(/^TS[:\s]*/i, '').trim().toUpperCase();
+            if (val) currentTS = val;
+        } else if (uLine.startsWith('KD')) {
+            // KD line, skip or store
+        } else if (uLine.startsWith('KJ')) {
+            currentAnswer = line.replace(/^KJ[:\s]*/i, '').trim();
+        } else if (uLine.startsWith('ABS')) {
+            // ABS line, skip
+        } else if (/^\d+[\.\)]\s?/.test(line)) {
+            saveCurrent();
+            const qText = line.replace(/^\d+[\.\)]\s*/, '');
+            currentQ = { question: qText };
+        } else if (/^\[Gambar:\s*(.*?)\]/i.test(line)) {
+            const match = line.match(/^\[Gambar:\s*(.*?)\]/i);
+            if (match && match[1]) currentImg = match[1].trim();
+        } else if (/^[A-Ea-e][\.\)]\s/.test(line) || (currentQ && /^[A-Ea-e]\s/.test(line))) {
+            const optText = line.replace(/^[A-Ea-e][\.\)]?\s*/, '');
+            currentOptions.push(optText);
+        } else if (currentQ && /^[A-Ea-e]$/.test(line)) {
+            // Option letter on its own line, push an empty option to be filled by the next line
+            currentOptions.push('');
+        } else if (/^(kunci\s*jawaban|kunci|jawaban|ans)[:\s]/i.test(line)) {
+            currentAnswer = line.replace(/^(kunci\s*jawaban|kunci|jawaban|ans)[:\s]*/i, '').trim();
+        } else if (/^(pembahasan|penjelasan|expl)[:\s]/i.test(line)) {
+            currentExp = line.replace(/^(pembahasan|penjelasan|expl)[:\s]*/i, '').trim();
+        } else if (currentQ) {
+            if (currentExp) {
+                currentExp += ' ' + line;
+            } else if (currentOptions.length > 0 && currentOptions[currentOptions.length - 1] === '') {
+                // Fill the empty option that was just a letter on the previous line
+                currentOptions[currentOptions.length - 1] = line;
+            } else if (currentOptions.length > 0) {
+                currentOptions[currentOptions.length - 1] += ' ' + line;
+            } else {
+                currentQ.question += (currentQ.question ? ' ' : '') + line;
+            }
+        } else {
+            if (line.length > 2 && !['TS','KD','KJ','ABS','PERHATIAN'].includes(uLine)) {
+                saveCurrent();
+                currentQ = { question: line };
+            }
+        }
+    });
+    saveCurrent();
+
+    saveState('questionBank');
+    closeModal();
+    showToast(`Berhasil mengimpor ${addedCount} butir soal!`, 'success');
+    renderQuestionBankModule(document.getElementById('view-container'));
+}
+
+// Exports
+window.renderQuestionBankModule = renderQuestionBankModule;
+window.selectQuestionBankGroup = selectQuestionBankGroup;
+window.openQuestionBankGroupModal = openQuestionBankGroupModal;
+window.saveQuestionBankGroup = saveQuestionBankGroup;
+window.deleteQuestionBankGroup = deleteQuestionBankGroup;
+window.deleteIndividualQuestion = deleteIndividualQuestion;
+window.openAIGeneratorModal = openAIGeneratorModal;
+window.executeNonAIGenerator = executeNonAIGenerator;
+window.executeAIGenerator = executeAIGenerator;
+window.generateEnrichmentNonAI = generateEnrichmentNonAI;
+window.downloadWordTemplate = downloadWordTemplate;
+window.openPreviewQuestionBankModal = openPreviewQuestionBankModal;
+window.togglePreviewAnswers = togglePreviewAnswers;
+window.togglePreviewExplanations = togglePreviewExplanations;
+window.printQuestionPaper = printQuestionPaper;
+window.downloadWordFromPreview = downloadWordFromPreview;
+window.openQuestionImportModal = openQuestionImportModal;
+window.openConvertQuestionModal = openConvertQuestionModal;
+window.autoConvertMathToLatex = autoConvertMathToLatex;
+window.loadActiveBankQuestionsToConvert = loadActiveBankQuestionsToConvert;
+window.runQuestionConversion = runQuestionConversion;
+window.parseRawTextToCBTFormat = parseRawTextToCBTFormat;
+window.switchConvertTab = switchConvertTab;
+window.copyConvertedTextToClipboard = copyConvertedTextToClipboard;
+window.downloadConvertedTextFile = downloadConvertedTextFile;
+window.downloadConvertedWordDoc = downloadConvertedWordDoc;
+window.handleConvertWordFileUpload = handleConvertWordFileUpload;
+window.parseWordHtmlToText = parseWordHtmlToText;
+window.downloadQuestionImportTemplate = downloadQuestionImportTemplateWord;
+window.downloadQuestionImportTemplateWord = downloadQuestionImportTemplateWord;
+window.downloadQuestionImportTemplateExcel = downloadQuestionImportTemplateExcel;
+window.handleQuestionImportFile = handleQuestionImportFile;
+window.handleQuestionWordImport = handleQuestionImportFile;
+window.handleQuestionDirectTextImport = handleQuestionDirectTextImport;
+window.openTemplateGuideModal = openTemplateGuideModal;
+window.openAddSingleQuestionModal = openAddSingleQuestionModal;
+window.openEditSingleQuestionModal = openEditSingleQuestionModal;
+window.toggleSingleQTypeOptions = toggleSingleQTypeOptions;
+window.handleSingleQImageUpload = handleSingleQImageUpload;
+window.saveSingleQuestion = saveSingleQuestion;
+window.renderGradesModule = renderGradesModule;
+window.handleGradeClassChange = handleGradeClassChange;
+window.handleGradeSubjectChange = handleGradeSubjectChange;
+window.handleSingleGradeChange = handleSingleGradeChange;
+window.saveCurrentDOMGradesToState = saveCurrentDOMGradesToState;
+window.saveAllMatrixGrades = saveAllMatrixGrades;
+window.openAddGradeColumnModal = openAddGradeColumnModal;
+window.confirmAddGradeColumn = confirmAddGradeColumn;
+window.printGradesMatrix = printGradesMatrix;
+window.exportGradesMatrixExcel = exportGradesMatrixExcel;
+window.renderJournalModule = renderJournalModule;
+window.openJournalModal = openJournalModal;
+window.openEditJournalModal = openEditJournalModal;
+window.saveEditedJournal = saveEditedJournal;
+window.deleteJournal = deleteJournal;
+window.saveJournal = saveJournal;
+window.downloadJournalAsWord = downloadJournalAsWord;
+
+window.openImportConvertedToBankModal = openImportConvertedToBankModal;
+window.toggleImportBankMode = toggleImportBankMode;
+window.closeImportBankModal = closeImportBankModal;
+window.executeImportConvertedToBank = executeImportConvertedToBank;
+
+window.openExportCbtTableFilterModal = openExportCbtTableFilterModal;
+window.toggleCbtNumFilterInput = toggleCbtNumFilterInput;
+window.executeExportCbtTableWord = executeExportCbtTableWord;
+
+// Automatically expose functions and state to window for global inline handlers
+Object.assign(window, {
+  getTeacherAllowedSubjects,
+  renderQuestionBankModule,
+  selectQuestionBankGroup,
+  openQuestionBankGroupModal,
+  saveQuestionBankGroup,
+  deleteQuestionBankGroup,
+  deleteIndividualQuestion,
+  openAIGeneratorModal,
+  executeAIGenerator,
+  downloadWordTemplate,
+  openPreviewQuestionBankModal,
+  togglePreviewAnswers,
+  togglePreviewExplanations,
+  printQuestionPaper,
+  downloadWordFromPreview,
+  openExportCbtTableFilterModal,
+  toggleCbtNumFilterInput,
+  executeExportCbtTableWord,
+  renderGradesModule,
+  handleGradeClassChange,
+  handleGradeSubjectChange,
+  handleSingleGradeChange,
+  saveCurrentDOMGradesToState,
+  saveAllMatrixGrades,
+  openAddGradeColumnModal,
+  confirmAddGradeColumn,
+  printGradesMatrix,
+  exportGradesMatrixExcel,
+  renderJournalModule,
+  openJournalModal,
+  openEditJournalModal,
+  saveEditedJournal,
+  deleteJournal,
+  generateEnrichmentNonAI,
+  generateEnrichmentAI,
+  saveJournal,
+  downloadJournalAsWord,
+  openQuestionImportModal,
+  openConvertQuestionModal,
+  autoConvertMathToLatex,
+  loadActiveBankQuestionsToConvert,
+  runQuestionConversion,
+  parseRawTextToCBTFormat,
+  switchConvertTab,
+  copyConvertedTextToClipboard,
+  downloadConvertedTextFile,
+  downloadConvertedWordDoc,
+  openImportConvertedToBankModal,
+  toggleImportBankMode,
+  closeImportBankModal,
+  executeImportConvertedToBank,
+  handleConvertWordFileUpload,
+  parseWordHtmlToText,
+  downloadQuestionImportTemplate: downloadQuestionImportTemplateWord,
+  downloadQuestionImportTemplateWord,
+  downloadQuestionImportTemplateExcel,
+  handleQuestionImportFile,
+  handleQuestionWordImport: handleQuestionImportFile,
+  handleQuestionDirectTextImport,
+  openTemplateGuideModal,
+  openAddSingleQuestionModal,
+  openEditSingleQuestionModal,
+  toggleSingleQTypeOptions,
+  handleSingleQImageUpload,
+  saveSingleQuestion
+});
+
+, display: false},
                         {left: '\\(', right: '\\)', display: false},
                         {left: '\\[', right: '\\]', display: true}
                     ],
