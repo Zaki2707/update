@@ -14233,7 +14233,7 @@ async function recoverLegacyLessonPlanBundle(req: any, body: any): Promise<any> 
     const alreadyIndexes: number[] = [];
     const legacyIndexes: number[] = [];
     for (let i = 0; i < nextLessonPlans.length; i++) {
-      const item = nextLessonPlans[i];
+      const item: any = nextLessonPlans[i];
       if (!item) continue;
       if (
         String(item?.legacyRecoverySourceId || '') === legacyId &&
