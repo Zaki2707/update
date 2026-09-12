@@ -11154,9 +11154,9 @@ app.post("/api/exam/attempt/start", async (req, res) => {
       session.endsAt = now + (remainingSec * 1000);
       session.startedAt = session.startTime || (now - (durationSec - remainingSec) * 1000);
     }
-    if (Number(session.endsAt) <= now) {
-      return res.status(409).json({ success: false, message: "Waktu ujian sudah habis." });
-    }
+    // CBT_EXPIRED_RESUME_FINALIZE_V2: an existing expired attempt must remain resumable
+    // only long enough for the client to receive remainingTime=0 and finalize it.
+    // Never extend endsAt here; answer writes still reject expired sessions.
     if (!session.answers) session.answers = {};
     if (studentExamAnswers[key]) session.answers = { ...studentExamAnswers[key], ...session.answers };
     session.answeredCount = Object.keys(session.answers).length;
