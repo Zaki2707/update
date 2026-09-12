@@ -5202,6 +5202,9 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     .map(isBosUser ? sanitizeMadrasahAdminView : sanitizeMadrasahMemberView)
     .filter(Boolean);
   const sanitizedSettings = sanitizeSettingsForClient(effectiveSettingsForRequest(req));
+  if (sanitizedSettings && typeof sanitizedSettings === 'object') {
+    sanitizedSettings.livekitConfigured = resolveLiveKitRuntimeConfig().configured;
+  }
 
   res.json({
     success: true,
@@ -12835,6 +12838,24 @@ function sendSignalToSocket(targetWs: any, senderId: string, signal: any): boole
   }
 }
 
+function flushQueuedSignalsToSocket(targetKey: string, targetWs: any) {
+  const box = examSignalingMessages[targetKey];
+  if (!box || !targetWs || targetWs.readyState !== 1) return;
+  const remaining: any = {};
+  for (const [senderId, rawQueue] of Object.entries(box)) {
+    const queue = Array.isArray(rawQueue) ? rawQueue : [];
+    const unsent: any[] = [];
+    for (const item of queue) {
+      if (!sendSignalToSocket(targetWs, String((item as any)?.senderId || senderId), (item as any)?.signal)) {
+        unsent.push(item);
+      }
+    }
+    if (unsent.length > 0) remaining[senderId] = unsent;
+  }
+  if (Object.keys(remaining).length > 0) examSignalingMessages[targetKey] = remaining;
+  else delete examSignalingMessages[targetKey];
+}
+
 function findActiveStaffSocket(tenant: string, staffId: string): any | null {
   const canonicalTenant = canonicalRealtimeTenant(tenant);
   const direct = wsClients.get(signalingStaffKeyForTenant(canonicalTenant, staffId));
@@ -17841,7 +17862,9 @@ app.put("/api/settings", requireAuth, requireRole(['bos', 'superadmin']), async 
   const safeGlobalSettings = sanitizeSettingsMutation(req.body, false);
   appSettings = { ...appSettings, ...safeGlobalSettings };
   await saveData('settings', appSettings);
-  res.json({ success: true, settings: sanitizeSettingsForClient(globalSettingsBase()) });
+  const responseSettings = sanitizeSettingsForClient(globalSettingsBase()) || {};
+  responseSettings.livekitConfigured = resolveLiveKitRuntimeConfig().configured;
+  res.json({ success: true, settings: responseSettings });
 });
 
 // Tenant-scoped account credential export for disaster-recovery backups.
@@ -19395,6 +19418,7 @@ async function startServer() {
             const previous = clients.get(storageKey);
             if (previous && previous !== ws && previous.readyState === 1) try { previous.close(4000, 'Replaced'); } catch (_) {}
             clients.set(storageKey, ws);
+            flushQueuedSignalsToSocket(storageKey, ws);
           } else if (data.type === "signal") {
             if (!user || !storageKey || !publicId) { ws.close(4001, 'Register first'); return; }
             const recipient = String(data.recipientId || ''), role = String(user.role || '').toLowerCase();
