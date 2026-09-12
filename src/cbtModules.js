@@ -5045,6 +5045,7 @@ window.deleteIndividualQuestion = deleteIndividualQuestion;
 window.openAIGeneratorModal = openAIGeneratorModal;
 window.executeNonAIGenerator = executeNonAIGenerator;
 window.executeAIGenerator = executeAIGenerator;
+window.generateEnrichmentNonAI = generateEnrichmentNonAI;
 window.downloadWordTemplate = downloadWordTemplate;
 window.openPreviewQuestionBankModal = openPreviewQuestionBankModal;
 window.togglePreviewAnswers = togglePreviewAnswers;
@@ -5137,6 +5138,7 @@ Object.assign(window, {
   openEditJournalModal,
   saveEditedJournal,
   deleteJournal,
+  generateEnrichmentNonAI,
   generateEnrichmentAI,
   saveJournal,
   downloadJournalAsWord,
