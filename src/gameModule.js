@@ -584,14 +584,14 @@ export function renderGameAdminModule(container) {
                                             <span>${isActive ? 'Aktif' : 'Nonaktif'}</span>
                                         </button>
                                         <span class="text-[11px] font-bold text-slate-400">
-                                            <i class="fa-solid fa-graduation-cap text-indigo-400 mr-1"></i> ${m.classId || 'Semua Kelas'}
+                                            <i class="fa-solid fa-graduation-cap text-indigo-400 mr-1"></i> ${gameEscapeHtml(m.classId || 'Semua Kelas')}
                                         </span>
                                     </div>
                                 </div>
 
                                 <div>
-                                    <h3 class="text-lg font-black text-white leading-tight">${m.title}</h3>
-                                    <p class="text-xs text-slate-300 mt-1 line-clamp-2">${m.description || 'Alur tantangan berurutan bagi siswa.'}</p>
+                                    <h3 class="text-lg font-black text-white leading-tight">${gameEscapeHtml(m.title)}</h3>
+                                    <p class="text-xs text-slate-300 mt-1 line-clamp-2">${gameEscapeHtml(m.description || 'Alur tantangan berurutan bagi siswa.')}</p>
                                 </div>
 
                                 <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 flex items-center justify-between text-xs font-bold text-slate-300">
@@ -681,7 +681,7 @@ export function renderGameAdminModule(container) {
                             <div class="space-y-3 pt-3 border-t border-slate-100 text-xs">
                                 <div class="grid grid-cols-2 gap-2 text-[11px] font-semibold text-slate-500">
                                     <div><i class="fa-solid fa-book text-emerald-500 mr-1"></i> ${gameEscapeHtml(g.subjectId || 'Umum')}</div>
-                                    <div><i class="fa-solid fa-graduation-cap text-indigo-500 mr-1"></i> ${g.classId || 'Semua Kelas'}</div>
+                                    <div><i class="fa-solid fa-graduation-cap text-indigo-500 mr-1"></i> ${gameEscapeHtml(g.classId || 'Semua Kelas')}</div>
                                     <div><i class="fa-solid fa-stopwatch text-amber-500 mr-1"></i> ${g.timeLimit ? g.timeLimit + ' Detik' : 'Tanpa Waktu'}</div>
                                     <div><i class="fa-solid fa-star text-yellow-500 mr-1"></i> +${g.rewardXp || 100} XP</div>
                                 </div>
@@ -758,7 +758,7 @@ window.openCreateGameModeModal = function(existingMode = null) {
                 <form onsubmit="handleSaveGameModeForm(event, '${mode.id}')" class="p-6 space-y-4 text-xs font-medium text-slate-700">
                     <div>
                         <label class="block font-bold text-slate-800 mb-1">Judul Mode Game <span class="text-rose-500">*</span></label>
-                        <input type="text" id="gm-title" value="${mode.title}" required placeholder="Contoh: Petualangan Harta Karun TIK" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500 font-bold">
+                        <input type="text" id="gm-title" value="${gameEscapeHtml(mode.title)}" required placeholder="Contoh: Petualangan Harta Karun TIK" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500 font-bold">
                     </div>
 
                     <div class="grid grid-cols-2 gap-3">
@@ -775,7 +775,7 @@ window.openCreateGameModeModal = function(existingMode = null) {
                             <select id="gm-class" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500">
                                 <option value="Semua Kelas" ${mode.classId === 'Semua Kelas' ? 'selected' : ''}>Semua Kelas</option>
                                 ${(appState.classes || []).map(c => `
-                                    <option value="${c.name || c.id}" ${mode.classId === (c.name || c.id) ? 'selected' : ''}>${c.name || c.id}</option>
+                                    <option value="${gameEscapeAttr(c.name || c.id)}" ${mode.classId === (c.name || c.id) ? 'selected' : ''}>${gameEscapeHtml(c.name || c.id)}</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -802,7 +802,7 @@ window.openCreateGameModeModal = function(existingMode = null) {
 
                     <div>
                         <label class="block font-bold text-slate-800 mb-1">Deskripsi Ringkas</label>
-                        <textarea id="gm-desc" rows="2" placeholder="Selesaikan tantangan berurutan ini..." class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500">${mode.description || ''}</textarea>
+                        <textarea id="gm-desc" rows="2" placeholder="Selesaikan tantangan berurutan ini..." class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500">${gameEscapeHtml(mode.description || '')}</textarea>
                     </div>
 
                     <div class="pt-4 flex items-center justify-end gap-3 border-t border-slate-100">
@@ -922,7 +922,7 @@ window.toggleGameModeStatus = async function(modeId) {
 
     mode.status = mode.status === 'inactive' ? 'active' : 'inactive';
     await saveGameModesToBackend();
-    showToast(`Mode "${mode.title}" sekarang ${mode.status === 'active' ? 'Aktif (Ditampilkan ke Siswa)' : 'Nonaktif (Disembunyikan dari Siswa)'}.`, 'success');
+    showToast(`Mode "${gameEscapeHtml(mode.title)}" sekarang ${mode.status === 'active' ? 'Aktif (Ditampilkan ke Siswa)' : 'Nonaktif (Disembunyikan dari Siswa)'}.`, 'success');
     renderGameAdminModule(document.getElementById('view-container'));
 };
 
@@ -1289,8 +1289,8 @@ export function renderTreasureMapComponent(mode, options = {}) {
 
                                 <!-- Tooltip / Badge Info Card -->
                                 <div class="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 whitespace-nowrap bg-slate-950/95 text-white p-2.5 rounded-xl text-[11px] shadow-2xl border border-amber-500/40 pointer-events-none transition z-40 text-center">
-                                    <strong class="text-amber-400 block font-extrabold">${loc.name || `Lokasi #${idx + 1}`}</strong>
-                                    <span class="text-slate-300 text-[10px] block">Game: ${assignedGame.title}</span>
+                                    <strong class="text-amber-400 block font-extrabold">${gameEscapeHtml(loc.name || `Lokasi #${idx + 1}`)}</strong>
+                                    <span class="text-slate-300 text-[10px] block">Game: ${gameEscapeHtml(assignedGame.title)}</span>
                                     <span class="text-[9px] text-emerald-400 font-bold block mt-0.5">🖱️ Tahan untuk Seret / Klik untuk Atur Game</span>
                                 </div>
                             </div>
@@ -1307,7 +1307,7 @@ export function renderTreasureMapComponent(mode, options = {}) {
                                         <i class="fa-solid fa-circle-check"></i>
                                     </button>
                                     <span class="mt-1 px-2.5 py-0.5 bg-emerald-950 text-emerald-200 font-extrabold text-[10px] rounded-full shadow-lg border border-emerald-500/40 whitespace-nowrap">
-                                        ✓ ${loc.name}
+                                        ✓ ${gameEscapeHtml(loc.name)}
                                     </span>
                                 </div>
                             ` : isUnlocked ? `
@@ -1324,7 +1324,7 @@ export function renderTreasureMapComponent(mode, options = {}) {
                                     </div>
                                     <button type="button" onclick="launchInteractiveGameModal('${assignedGame.id}', ${isPreview}, { modeId: '${mode.id}', locationId: '${loc.id}' })" class="mt-1.5 px-3 py-1 bg-slate-950 text-amber-300 hover:bg-slate-900 font-black text-xs rounded-xl shadow-xl border border-amber-400/60 whitespace-nowrap cursor-pointer transition flex items-center gap-1.5">
                                         <i class="fa-solid fa-play text-amber-400 text-[10px]"></i>
-                                        <span>${loc.name}</span>
+                                        <span>${gameEscapeHtml(loc.name)}</span>
                                     </button>
                                 </div>
                             ` : `
@@ -1334,7 +1334,7 @@ export function renderTreasureMapComponent(mode, options = {}) {
                                         <i class="fa-solid fa-lock"></i>
                                     </div>
                                     <span class="mt-1 px-2 py-0.5 bg-slate-950/90 text-slate-300 font-bold text-[9px] rounded-full border border-slate-700 whitespace-nowrap">
-                                        🔒 ${loc.name}
+                                        🔒 ${gameEscapeHtml(loc.name)}
                                     </span>
                                 </div>
                             `}
@@ -1466,7 +1466,7 @@ window.previewGameMode = function(modeId) {
                             <span class="text-[10px] font-black uppercase tracking-widest bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded-full inline-block">
                                 <i class="fa-solid fa-eye mr-1"></i> Mode Pratinjau Guru (Simulasi Siswa)
                             </span>
-                            <h3 class="text-lg font-black text-white">${mode.title}</h3>
+                            <h3 class="text-lg font-black text-white">${gameEscapeHtml(mode.title)}</h3>
                         </div>
                     </div>
                     <button type="button" onclick="document.getElementById('mode-preview-modal-bg').remove()" class="w-9 h-9 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white transition cursor-pointer">
@@ -1517,7 +1517,7 @@ window.openManageAdventureRoadmapModal = function(modeId) {
                             <span class="text-[10px] font-extrabold text-amber-300 uppercase tracking-widest bg-amber-950/60 px-2.5 py-0.5 rounded-full border border-amber-600/40 inline-block">
                                 Kelola Peta Petualangan Harta Karun
                             </span>
-                            <h3 class="font-black text-xl text-white">${mode.title}</h3>
+                            <h3 class="font-black text-xl text-white">${gameEscapeHtml(mode.title)}</h3>
                             <p class="text-xs text-amber-200">Klik langsung titik pada peta untuk mengatur game edukasi yang dipasang.</p>
                         </div>
                     </div>
@@ -1653,7 +1653,7 @@ window.openManageAdventureRoadmapModal = function(modeId) {
                                                     ${isLast ? '<span class="text-[10px] font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-full">❌ Puncak Harta Karun</span>' : ''}
                                                 </div>
                                                 <h5 class="font-extrabold text-slate-800 text-sm mt-0.5">${loc.name || `Lokasi ${idx + 1}`}</h5>
-                                                <p class="text-xs text-slate-500">Game: <strong class="text-indigo-700 font-bold">${assignedGame.title}</strong> (X: ${loc.x}%, Y: ${loc.y}%)</p>
+                                                <p class="text-xs text-slate-500">Game: <strong class="text-indigo-700 font-bold">${gameEscapeHtml(assignedGame.title)}</strong> (X: ${loc.x}%, Y: ${loc.y}%)</p>
                                             </div>
                                         </div>
 
@@ -1868,7 +1868,7 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
 
                         <div>
                             <label class="block font-bold text-slate-800 mb-1">Nama Titik Lokasi <span class="text-rose-500">*</span></label>
-                            <input type="text" id="loc-name" value="${loc.name}" required placeholder="Contoh: Hutan Kosakata TIK" oninput="if(document.getElementById('game-title')){document.getElementById('game-title').value = 'Game ' + this.value}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 font-bold">
+                            <input type="text" id="loc-name" value="${gameEscapeAttr(loc.name)}" required placeholder="Contoh: Hutan Kosakata TIK" oninput="if(document.getElementById('game-title')){document.getElementById('game-title').value = 'Game ' + this.value}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 font-bold">
                         </div>
 
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1921,7 +1921,7 @@ window.openAddLocationModal = function(modeId, locIndex = null) {
 
                         <div>
                             <label class="block font-bold text-slate-800 mb-1">Deskripsi / Petunjuk Penjelajah</label>
-                            <textarea id="loc-desc" rows="2" placeholder="Petunjuk khusus atau pesan rintangan bagi siswa ketika mengklik lokasi ini..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white">${loc.desc || ''}</textarea>
+                            <textarea id="loc-desc" rows="2" placeholder="Petunjuk khusus atau pesan rintangan bagi siswa ketika mengklik lokasi ini..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white">${gameEscapeHtml(loc.desc || '')}</textarea>
                         </div>
                     </div>
 
@@ -2322,7 +2322,7 @@ window.openManageTowerQuestModal = function(modeId) {
                             <span class="text-[10px] font-extrabold text-indigo-300 uppercase tracking-widest bg-indigo-950 px-2.5 py-0.5 rounded-full border border-indigo-800 inline-block">
                                 Quest Menara Bertingkat
                             </span>
-                            <h3 class="font-black text-xl text-white">${mode.title}</h3>
+                            <h3 class="font-black text-xl text-white">${gameEscapeHtml(mode.title)}</h3>
                             <p class="text-xs text-slate-300">Kelola jumlah lantai quest menara dari paling bawah hingga puncak, beserta warna background tiap lantai.</p>
                         </div>
                     </div>
@@ -2380,8 +2380,8 @@ window.openManageTowerQuestModal = function(modeId) {
                                                             ${flr.bgMode === 'manual' ? '🎨 Manual' : '⚡ Otomatis'}
                                                         </span>
                                                     </div>
-                                                    <h4 class="font-extrabold text-white text-sm mt-1 drop-shadow-sm">${flr.name || `Lantai ${actualIdx + 1}`}</h4>
-                                                    <p class="text-xs text-slate-200 mt-0.5">Game: <span class="font-bold text-amber-300">${assignedGame.title}</span></p>
+                                                    <h4 class="font-extrabold text-white text-sm mt-1 drop-shadow-sm">${gameEscapeHtml(flr.name || `Lantai ${actualIdx + 1}`)}</h4>
+                                                    <p class="text-xs text-slate-200 mt-0.5">Game: <span class="font-bold text-amber-300">${gameEscapeHtml(assignedGame.title)}</span></p>
                                                 </div>
                                             </div>
 
@@ -2527,7 +2527,7 @@ window.openAddFloorModal = function(modeId, floorIndex = null) {
                 <form onsubmit="handleSaveFloorForm(event, '${mode.id}', ${floorIndex})" class="p-6 space-y-4 text-xs font-medium text-slate-300">
                     <div>
                         <label class="block font-bold text-white mb-1">Nama Lantai <span class="text-rose-500">*</span></label>
-                        <input type="text" id="flr-name" value="${flr.name}" required placeholder="Contoh: Lantai 1: Hardware Dasar" class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl focus:bg-slate-950 font-bold text-white">
+                        <input type="text" id="flr-name" value="${gameEscapeAttr(flr.name)}" required placeholder="Contoh: Lantai 1: Hardware Dasar" class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl focus:bg-slate-950 font-bold text-white">
                     </div>
 
                     <div>
@@ -2541,7 +2541,7 @@ window.openAddFloorModal = function(modeId, floorIndex = null) {
 
                     <div>
                         <label class="block font-bold text-white mb-1">Deskripsi Lantai</label>
-                        <textarea id="flr-desc" rows="2" placeholder="Petunjuk khusus lantai ini..." class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white">${flr.desc || ''}</textarea>
+                        <textarea id="flr-desc" rows="2" placeholder="Petunjuk khusus lantai ini..." class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white">${gameEscapeHtml(flr.desc || '')}</textarea>
                     </div>
 
                     <!-- PENGATURAN WARNA BACKGROUND LANTAI -->
@@ -2585,13 +2585,13 @@ window.openAddFloorModal = function(modeId, floorIndex = null) {
                                 <div>
                                     <label class="block text-[10px] font-bold text-slate-400 mb-1">Custom Warna Hex (Solid):</label>
                                     <div class="flex items-center gap-2">
-                                        <input type="color" id="flr-color-picker" value="${flr.bgColor || '#0f172a'}" onchange="updateFloorCustomColor(this.value)" class="w-8 h-8 rounded-lg cursor-pointer bg-transparent border-0 p-0">
-                                        <input type="text" id="flr-color-hex" value="${flr.bgColor || '#0f172a'}" oninput="updateFloorCustomColor(this.value)" class="flex-1 px-2.5 py-1 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white font-mono uppercase">
+                                        <input type="color" id="flr-color-picker" value="${gameEscapeAttr(flr.bgColor || '#0f172a')}" onchange="updateFloorCustomColor(this.value)" class="w-8 h-8 rounded-lg cursor-pointer bg-transparent border-0 p-0">
+                                        <input type="text" id="flr-color-hex" value="${gameEscapeAttr(flr.bgColor || '#0f172a')}" oninput="updateFloorCustomColor(this.value)" class="flex-1 px-2.5 py-1 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white font-mono uppercase">
                                     </div>
                                 </div>
                                 <div>
                                     <label class="block text-[10px] font-bold text-slate-400 mb-1">Custom CSS Gradient:</label>
-                                    <input type="text" id="flr-gradient-val" value="${flr.bgGradient || ''}" placeholder="linear-gradient(...)" oninput="updateFloorCustomGradient(this.value)" class="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white font-mono">
+                                    <input type="text" id="flr-gradient-val" value="${gameEscapeAttr(flr.bgGradient || '')}" placeholder="linear-gradient(...)" oninput="updateFloorCustomGradient(this.value)" class="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white font-mono">
                                 </div>
                             </div>
                         </div>
@@ -3168,10 +3168,10 @@ function renderSpecializedGameEditor(game) {
                                         </div>
                                     </td>
                                     <td class="p-1">
-                                        <input type="text" class="cw-clue w-full px-2 py-1 bg-white border border-slate-200 rounded-lg font-medium text-xs" value="${c.clue || ''}" placeholder="Petunjuk pertanyaan...">
+                                        <input type="text" class="cw-clue w-full px-2 py-1 bg-white border border-slate-200 rounded-lg font-medium text-xs" value="${gameEscapeAttr(c.clue || '')}" placeholder="Petunjuk pertanyaan...">
                                     </td>
                                     <td class="p-1">
-                                        <input type="text" class="cw-answer w-full px-2 py-1 bg-white border border-slate-200 rounded-lg font-extrabold uppercase text-indigo-700 text-xs" value="${c.answer || ''}" placeholder="JAWABAN">
+                                        <input type="text" class="cw-answer w-full px-2 py-1 bg-white border border-slate-200 rounded-lg font-extrabold uppercase text-indigo-700 text-xs" value="${gameEscapeAttr(c.answer || '')}" placeholder="JAWABAN">
                                     </td>
                                     <td class="p-1">
                                         <input type="number" min="5" step="5" class="cw-points w-14 px-1 py-1 bg-white border border-slate-200 rounded-lg font-bold text-amber-700 text-center text-xs" value="${c.points || 20}" title="Poin Kolom">
@@ -3207,7 +3207,7 @@ function renderSpecializedGameEditor(game) {
 
                 <div class="space-y-1 bg-white p-3 rounded-2xl border border-purple-200">
                     <label class="block font-bold text-slate-700 text-xs uppercase">Clue / Petunjuk Utama Game <span class="text-rose-500">*</span></label>
-                    <input type="text" id="edit-content-hint" value="${clue}" placeholder="Misal: Hardware Computer / Perangkat Keras Komputer" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-extrabold text-purple-950 text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none">
+                    <input type="text" id="edit-content-hint" value="${gameEscapeAttr(clue)}" placeholder="Misal: Hardware Computer / Perangkat Keras Komputer" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-extrabold text-purple-950 text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none">
                     <p class="text-[10px] text-slate-500 font-medium mt-1">Siswa akan melihat clue ini untuk menebak kata-kata kunci tersembunyi pada papan huruf.</p>
                 </div>
                 
@@ -3250,9 +3250,9 @@ function renderSpecializedGameEditor(game) {
                 <div id="pairs-inputs-list" class="space-y-2">
                     ${pairs.map((p, idx) => `
                         <div class="flex items-center gap-2 bg-white p-2 border border-slate-200 rounded-xl shadow-2xs">
-                            <input type="text" class="pair-term-input flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-amber-900" placeholder="Istilah / Soal ${idx+1} (misal: CPU)" value="${p.term || ''}">
+                            <input type="text" class="pair-term-input flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-amber-900" placeholder="Istilah / Soal ${idx+1} (misal: CPU)" value="${gameEscapeAttr(p.term || '')}">
                             <span class="text-amber-500 font-extrabold text-sm">&leftrightarrow;</span>
-                            <input type="text" class="pair-match-input flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-medium" placeholder="Definisi / Jawaban (misal: Otak Komputer)" value="${p.match || ''}">
+                            <input type="text" class="pair-match-input flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-medium" placeholder="Definisi / Jawaban (misal: Otak Komputer)" value="${gameEscapeAttr(p.match || '')}">
                             <button type="button" onclick="this.closest('div').remove()" class="p-1.5 text-rose-500 hover:text-rose-700">
                                 <i class="fa-solid fa-trash-can"></i>
                             </button>
@@ -3289,7 +3289,7 @@ function renderSpecializedGameEditor(game) {
                                 <input type="radio" name="labirin-correct-opt" class="labirin-opt-radio w-4 h-4 text-amber-600 focus:ring-amber-500 cursor-pointer" ${opt === currentAnswer || (idx === 0 && !options.includes(currentAnswer)) ? 'checked' : ''}>
                                 <span class="text-[11px] font-black text-amber-950">Kunci Benar</span>
                             </label>
-                            <input type="text" class="labirin-opt-text flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-800" placeholder="Pilihan ${idx+1} (misal: ${idx===0?'CPU':(idx===1?'RAM':'Printer')})" value="${opt || ''}">
+                            <input type="text" class="labirin-opt-text flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-800" placeholder="Pilihan ${idx+1} (misal: ${idx===0?'CPU':(idx===1?'RAM':'Printer')})" value="${gameEscapeAttr(opt || '')}">
                             <button type="button" onclick="this.closest('div').remove()" class="p-1.5 text-rose-500 hover:text-rose-700">
                                 <i class="fa-solid fa-trash-can"></i>
                             </button>
@@ -3365,19 +3365,19 @@ function renderSpecializedGameEditor(game) {
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                             <div>
                                 <span class="font-bold text-slate-600 block mb-1">Clue 1 (1/4 Gambar Terbuka)</span>
-                                <input type="text" id="edit-tg-hint-1" value="${(game.hints && game.hints[0]) || ''}" placeholder="Petunjuk ke-1 (misal: Perangkat keras output)..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium">
+                                <input type="text" id="edit-tg-hint-1" value="${gameEscapeAttr((game.hints && game.hints[0]) || '')}" placeholder="Petunjuk ke-1 (misal: Perangkat keras output)..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium">
                             </div>
                             <div>
                                 <span class="font-bold text-slate-600 block mb-1">Clue 2 (2/4 Gambar Terbuka)</span>
-                                <input type="text" id="edit-tg-hint-2" value="${(game.hints && game.hints[1]) || ''}" placeholder="Petunjuk ke-2 (misal: Menampilkan grafik visual)..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium">
+                                <input type="text" id="edit-tg-hint-2" value="${gameEscapeAttr((game.hints && game.hints[1]) || '')}" placeholder="Petunjuk ke-2 (misal: Menampilkan grafik visual)..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium">
                             </div>
                             <div>
                                 <span class="font-bold text-slate-600 block mb-1">Clue 3 (3/4 Gambar Terbuka)</span>
-                                <input type="text" id="edit-tg-hint-3" value="${(game.hints && game.hints[2]) || ''}" placeholder="Petunjuk ke-3 (misal: Memiliki port HDMI/VGA)..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium">
+                                <input type="text" id="edit-tg-hint-3" value="${gameEscapeAttr((game.hints && game.hints[2]) || '')}" placeholder="Petunjuk ke-3 (misal: Memiliki port HDMI/VGA)..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium">
                             </div>
                             <div>
                                 <span class="font-bold text-slate-600 block mb-1">Clue 4 (4/4 Gambar Terbuka Penuh)</span>
-                                <input type="text" id="edit-tg-hint-4" value="${(game.hints && game.hints[3]) || ''}" placeholder="Petunjuk ke-4 (misal: Berada di atas meja kerja)..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium">
+                                <input type="text" id="edit-tg-hint-4" value="${gameEscapeAttr((game.hints && game.hints[3]) || '')}" placeholder="Petunjuk ke-4 (misal: Berada di atas meja kerja)..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium">
                             </div>
                         </div>
                     </div>
@@ -3446,7 +3446,7 @@ function renderSpecializedGameEditor(game) {
 
                 <div class="space-y-1 sm:col-span-2">
                     <label class="block font-bold text-slate-700">Petunjuk / Clue Tambahan</label>
-                    <input type="text" id="edit-content-hint" value="${(game.hints && game.hints[0]) || ''}" placeholder="Clue bantuan jika siswa kesulitan..." class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-medium">
+                    <input type="text" id="edit-content-hint" value="${gameEscapeAttr((game.hints && game.hints[0]) || '')}" placeholder="Clue bantuan jika siswa kesulitan..." class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-medium">
                 </div>
             </div>
         </div>
@@ -3766,7 +3766,7 @@ export function renderGameStudentModule(container) {
                             <span class="text-[10px] font-extrabold text-indigo-400 uppercase tracking-widest bg-indigo-950 px-2.5 py-1 rounded-full border border-indigo-800">
                                 <i class="fa-solid fa-graduation-cap mr-1"></i> ${currentStudent.className || 'Siswa Madrasah'}
                             </span>
-                            <h2 class="text-xl sm:text-2xl font-black mt-1 text-slate-100">${currentStudent.name || 'Siswa'}</h2>
+                            <h2 class="text-xl sm:text-2xl font-black mt-1 text-slate-100">${gameEscapeHtml(currentStudent.name || 'Siswa')}</h2>
                             
                             <!-- XP Progress Bar -->
                             <div class="mt-2 space-y-1 w-60 sm:w-72">
@@ -3904,15 +3904,15 @@ function renderStudentAdventureTab(games) {
                                 Target: ${mode.classId || 'Semua Kelas'}
                             </span>
                         </div>
-                        <h2 class="text-2xl sm:text-3xl font-black text-white leading-tight">${mode.title}</h2>
-                        <p class="text-xs text-amber-100 max-w-xl mt-1">${mode.description || 'Klik titik lokasi pada peta harta karun untuk menaklukkan tantangan!'}</p>
+                        <h2 class="text-2xl sm:text-3xl font-black text-white leading-tight">${gameEscapeHtml(mode.title)}</h2>
+                        <p class="text-xs text-amber-100 max-w-xl mt-1">${gameEscapeHtml(mode.description || 'Klik titik lokasi pada peta harta karun untuk menaklukkan tantangan!')}</p>
                     </div>
 
                     ${activeModes.length > 1 ? `
                         <div class="bg-amber-950/80 p-3 rounded-2xl border border-amber-600/50 space-y-1 shrink-0 w-full sm:w-auto">
                             <label class="block text-[10px] font-extrabold text-amber-300 uppercase">Pilih Peta Petualangan:</label>
                             <select onchange="window.__studentActiveAdventureModeId=this.value; renderGameStudentModule(document.getElementById('view-container'));" class="w-full px-3 py-1.5 bg-amber-900 text-white font-bold text-xs rounded-xl border border-amber-600 focus:outline-none cursor-pointer">
-                                ${activeModes.map(m => `<option value="${m.id}" ${m.id === mode.id ? 'selected' : ''}>${m.title}</option>`).join('')}
+                                ${activeModes.map(m => `<option value="${m.id}" ${m.id === mode.id ? 'selected' : ''}>${gameEscapeHtml(m.title)}</option>`).join('')}
                             </select>
                         </div>
                     ` : ''}
@@ -3985,7 +3985,7 @@ function renderStudentTowerTab(games, forceModeId = null, isPreview = false) {
                                 Target: ${mode.classId || 'Semua Kelas'}
                             </span>
                         </div>
-                        <h2 class="text-2xl sm:text-3xl font-black text-white leading-tight">${mode.title}</h2>
+                        <h2 class="text-2xl sm:text-3xl font-black text-white leading-tight">${gameEscapeHtml(mode.title)}</h2>
                         <p class="text-xs text-indigo-200 max-w-xl mt-1">${mode.description || 'Panjat lantai demi lantai menara quest!'}</p>
                     </div>
 
@@ -3993,7 +3993,7 @@ function renderStudentTowerTab(games, forceModeId = null, isPreview = false) {
                         <div class="bg-indigo-950/80 p-3 rounded-2xl border border-indigo-800 space-y-1 shrink-0 w-full sm:w-auto">
                             <label class="block text-[10px] font-extrabold text-indigo-300 uppercase">Pilih Menara Quest:</label>
                             <select onchange="window.__studentActiveTowerModeId=this.value; renderGameStudentModule(document.getElementById('view-container'));" class="w-full px-3 py-1.5 bg-slate-900 text-white font-bold text-xs rounded-xl border border-indigo-700 focus:outline-none cursor-pointer">
-                                ${modes.map(m => `<option value="${m.id}" ${m.id === mode.id ? 'selected' : ''}>${m.title}</option>`).join('')}
+                                ${modes.map(m => `<option value="${m.id}" ${m.id === mode.id ? 'selected' : ''}>${gameEscapeHtml(m.title)}</option>`).join('')}
                             </select>
                         </div>
                     ` : ''}
