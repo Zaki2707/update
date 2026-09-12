@@ -11484,36 +11484,6 @@ app.post("/api/exam/attempt/start-questions", async (req, res) => {
   let rawQuestions = getLoadableQuestionsForExamAttempt(matchedExam);
 
   if (!rawQuestions || rawQuestions.length === 0) {
-    const allQuestions = getMemoryKeyValue('questions') || questions || [];
-    const exCode = String(matchedExam.bankCode || matchedExam.groupCode || '').trim().toLowerCase();
-    const exSub = String(matchedExam.subject || matchedExam.subjectId || '').trim().toLowerCase();
-    const exClass = String(matchedExam.class || matchedExam.className || matchedExam.classId || '').trim().toLowerCase();
-    const mId = String(matchedExam.madrasahId || matchedExam.madrasahSlug || '').trim();
-
-    rawQuestions = allQuestions.filter((q: any) => {
-      if (!q) return false;
-      // Match tenant if applicable
-      if (mId && mId !== 'default' && mId !== 'BOSS') {
-        const qmId = String(q.madrasahId || q.madrasahSlug || '').trim();
-        if (qmId && qmId !== mId) return false;
-      }
-      const qCode = String(q.code || q.bankCode || q.groupCode || '').trim().toLowerCase();
-      const qSub = String(q.subjectId || q.subject || '').trim().toLowerCase();
-      const qClass = String(q.classId || q.className || q.class || '').trim().toLowerCase();
-
-      // Check match by bankCode or subject
-      if (exCode && qCode && qCode === exCode) return true;
-      if (exSub && qSub && (qSub === exSub || qSub.includes(exSub) || exSub.includes(qSub))) {
-        if (exClass && qClass && !exClass.includes('all') && !qClass.includes('all')) {
-          return qClass === exClass || exClass.includes(qClass);
-        }
-        return true;
-      }
-      return false;
-    });
-  }
-
-  if (!rawQuestions || rawQuestions.length === 0) {
     return res.status(404).json({
       success: false,
       message: "Tidak ada soal yang tersedia untuk ujian ini. Hubungi guru mata pelajaran atau administrator ujian."
