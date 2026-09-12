@@ -1494,7 +1494,7 @@ function renderGradesModule(container) {
                                 <tbody class="divide-y text-sm">
                                     ${classStudents.map((st, idx) => {
                                         const photoHtml = st.photo 
-                                            ? `<img src="${st.photo}" class="w-10 h-10 rounded-full object-cover border border-emerald-200 shadow-xs mx-auto cursor-pointer hover:scale-110 transition ring-2 ring-emerald-500/20" onclick="showPhotoPopup('${st.photo}', 'Foto Profil - ${st.name}')" referrerPolicy="no-referrer" alt="Foto Profil" title="Klik untuk memperbesar Foto Profil">`
+                                            ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(st.photo) : ''}" class="w-10 h-10 rounded-full object-cover border border-emerald-200 shadow-xs mx-auto cursor-pointer hover:scale-110 transition ring-2 ring-emerald-500/20" onclick="showPhotoPopup('${st.photo}', 'Foto Profil - ${st.name}')" referrerPolicy="no-referrer" alt="Foto Profil" title="Klik untuk memperbesar Foto Profil">`
                                             : `<div class="w-10 h-10 rounded-full bg-emerald-50 text-emerald-700 flex items-center justify-center border border-emerald-200 mx-auto font-bold text-xs shadow-xs" title="Belum ada foto profil">${(st.name || 'S').charAt(0).toUpperCase()}</div>`;
                                         
                                         return `

@@ -69,16 +69,134 @@ function clearPersistedAuthSession() {
     try { localStorage.removeItem('madrasah_active_account'); } catch (_) {}
 }
 
-function isSafeDisplayImageUrl(value) {
-    const raw = String(value || '').trim();
-    if (/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=\r\n]+$/i.test(raw)) return true;
-    if (/^\/api\/photos\/[A-Za-z0-9._-]+$/.test(raw)) return true;
-    try {
-        const url = new URL(raw, window.location.origin);
-        return url.protocol === 'https:' || url.protocol === 'http:';
-    } catch (_) {
-        return false;
+
+function getLessonPlanSubjectReference(plan) {
+    if (!plan || typeof plan !== 'object') return '';
+    const ref = plan.subjectId ?? plan.subject_id ?? plan.subjectCode ?? plan.subject_code ??
+        plan.subjectName ?? plan.subject_name ?? plan.subject ?? plan.mapel ?? '';
+    return typeof ref === 'object' ? (ref.id ?? ref.code ?? ref.name ?? '') : ref;
+}
+
+const lessonPlanChildKeys = ['groups', 'modules', 'lessonPlans', 'plans', 'items', 'documents', 'files', 'children'];
+const lessonPlanContentKeys = [
+    'title', 'name', 'topic', 'judul', 'materi', 'topik', 'identitasModul', 'htmlContent',
+    'extractedContent', 'kegiatanPembelajaran', 'sourceFileName', 'sourceType',
+    'moduleContent', 'modulAjar', 'learningObjectives', 'tujuanPembelajaran'
+];
+
+function hasLessonPlanContent(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    return lessonPlanContentKeys.some(key => value[key] !== undefined && value[key] !== null && String(value[key]).trim() !== '');
+}
+
+function flattenLessonPlanCollection(value, inherited = {}, depth = 0) {
+    if (depth > 12 || value === null || value === undefined) return [];
+    if (Array.isArray(value)) return value.flatMap(entry => flattenLessonPlanCollection(entry, inherited, depth + 1));
+    if (typeof value !== 'object') return [];
+
+    const context = { ...inherited };
+    const subjectRef = getLessonPlanSubjectReference(value);
+    if (context.subjectId === undefined && subjectRef) context.subjectId = subjectRef;
+    ['madrasahId', 'madrasahSlug', 'groupId', 'groupName', 'grade', 'level', 'semester', 'classes', 'targetClasses'].forEach(key => {
+        if (value[key] !== undefined && value[key] !== null && value[key] !== '') context[key] = value[key];
+    });
+
+    const childEntries = lessonPlanChildKeys
+        .filter(key => value[key] !== undefined && value[key] !== null)
+        .map(key => [key, value[key]]);
+
+    // Group/container objects often have a display title of their own. Prefer
+    // their child collection so the group itself is not counted as an extra
+    // lesson plan (for example 2 groups × 18 modules must remain 36).
+    if (childEntries.length === 0 && hasLessonPlanContent(value)) {
+        const item = { ...value };
+        if (item.subjectId === undefined && context.subjectId !== undefined) item.subjectId = context.subjectId;
+        if (item.groupId === undefined && context.groupId !== undefined) item.groupId = context.groupId;
+        if (item.groupName === undefined && context.groupName !== undefined) item.groupName = context.groupName;
+        if (!item.title) item.title = item.judul || item.modulName || item.name || '';
+        if (!item.topic) item.topic = item.materi || item.topik || '';
+        if (!item.classes && item.targetClasses) item.classes = item.targetClasses;
+        if (!item.targetClasses && item.classes) item.targetClasses = item.classes;
+        return [item];
     }
+    if (childEntries.length > 0) {
+        const hasNamedGroupChildren = childEntries.some(([key]) => key !== 'groups' && key !== 'lessonPlans' && key !== 'plans');
+        const groupId = value.groupId ?? value.group_id ?? (hasNamedGroupChildren ? value.id : undefined);
+        const groupName = value.groupName ?? value.group_name ?? (hasNamedGroupChildren ? (value.name || value.title) : undefined);
+        const childContext = {
+            ...context,
+            ...(groupId !== undefined && groupId !== null && groupId !== '' ? { groupId } : {}),
+            ...(groupName !== undefined && groupName !== null && groupName !== '' ? { groupName } : {})
+        };
+        return childEntries.flatMap(([, children]) => flattenLessonPlanCollection(children, childContext, depth + 1));
+    }
+
+    return Object.entries(value)
+        .filter(([, child]) => child && typeof child === 'object')
+        .flatMap(([entryKey, child]) => flattenLessonPlanCollection(
+            child,
+            context.groupId === undefined ? { ...context, groupId: entryKey } : context,
+            depth + 1
+        ));
+}
+
+function normalizeLessonPlanCollection(payload) {
+    const source = Array.isArray(payload)
+        ? payload
+        : (payload && payload.data !== undefined ? payload.data : payload && payload.lessonPlans);
+    if (source === undefined || source === null) return [];
+    const result = [];
+    const seen = new Set();
+    flattenLessonPlanCollection(source).forEach(item => {
+        if (!item || typeof item !== 'object') return;
+        const id = String(item.id || '').trim();
+        const group = String(item.groupId || '').trim().toLowerCase();
+        const signature = [
+            getLessonPlanSubjectReference(item),
+            item.title || item.name || '',
+            item.topic || item.materi || '',
+            item.grade || '',
+            item.semester || '',
+            group
+        ].map(value => String(value).trim().toLowerCase()).join('::');
+        const key = id ? `id::${id}::${group}` : `sig::${signature}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        result.push(item);
+    });
+    return result;
+}
+
+function resolvePhotoUrl(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    if (/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=\\r\\n]+$/i.test(raw)) return raw;
+
+    const withoutMarker = raw.replace(/^PHOTO_REF:/i, '').trim();
+    if (withoutMarker !== raw) {
+        const id = withoutMarker.replace(/^madrasah_photos\//i, '').replace(/[^A-Za-z0-9._-]/g, '_');
+        return id ? `/api/photos/${id}` : '';
+    }
+
+    if (/^\/api\/photos\/[A-Za-z0-9._-]+$/.test(raw)) return raw;
+    if (/^https?:\/\//i.test(raw)) return raw;
+    if (/^\/(?:uploads|attendance_photos|photos)\/[A-Za-z0-9._/-]+$/i.test(raw)) return raw;
+
+    const id = raw.replace(/^madrasah_photos\//i, '');
+    if (/^[A-Za-z0-9._-]{1,180}$/.test(id)) {
+        const normalized = id.replace(/[^A-Za-z0-9._-]/g, '_');
+        return normalized ? `/api/photos/${normalized}` : '';
+    }
+    return '';
+}
+
+function getPhotoHtmlSrc(value) {
+    const resolved = resolvePhotoUrl(value);
+    return resolved ? escapeHtmlAttr(resolved) : '';
+}
+
+function isSafeDisplayImageUrl(value) {
+    return Boolean(resolvePhotoUrl(value));
 }
 
 window.escapeHtml = escapeHtml;
@@ -88,6 +206,10 @@ window.persistCurrentUser = persistCurrentUser;
 window.readPersistedUser = readPersistedUser;
 window.clearPersistedAuthSession = clearPersistedAuthSession;
 window.isSafeDisplayImageUrl = isSafeDisplayImageUrl;
+window.getLessonPlanSubjectReference = getLessonPlanSubjectReference;
+window.normalizeLessonPlanCollection = normalizeLessonPlanCollection;
+window.resolvePhotoUrl = resolvePhotoUrl;
+window.getPhotoHtmlSrc = getPhotoHtmlSrc;
 
 // Monkey patch window.fetch to automatically append current tenant/madrasahId header and query param
 (() => {
@@ -832,7 +954,7 @@ async function syncKeyFromServer(key) {
             else if (key === 'customGradeColumns') newData = resData.customGradeColumns;
             else if (key === 'calendarEvents') newData = resData.calendarEvents;
             else if (key === 'generatedExams') newData = resData.generatedExams;
-            else if (key === 'lessonPlans') newData = Array.isArray(resData.data) ? resData.data : resData.lessonPlans;
+            else if (key === 'lessonPlans') newData = normalizeLessonPlanCollection(resData);
             else if (key === 'grades') newData = resData.grades;
             else if (key === 'lkpdList') newData = resData.lkpdList;
             else if (key === 'settings') newData = resData.settings;
@@ -2759,7 +2881,7 @@ function renderMainDashboard(container) {
                                 <div class="flex items-center justify-between p-3.5 bg-slate-50/60 border border-slate-100 hover:bg-slate-50 transition rounded-2xl">
                                     <div class="flex items-center space-x-3.5">
                                         <div class="w-9 h-9 rounded-xl bg-slate-200 border border-slate-300 flex items-center justify-center font-bold text-slate-600 text-xs">
-                                            ${student.photo ? `<img src="${student.photo}" class="w-full h-full rounded-xl object-cover" referrerPolicy="no-referrer">` : student.name.charAt(0)}
+                                            ${student.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(student.photo) : ''}" class="w-full h-full rounded-xl object-cover" referrerPolicy="no-referrer">` : student.name.charAt(0)}
                                         </div>
                                         <div>
                                             <p class="text-xs font-bold text-slate-800 leading-none">${student.name || '-'}</p>
