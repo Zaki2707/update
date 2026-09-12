@@ -395,6 +395,27 @@ await test('CBT: fresh server attempt discards stale reset cache before loading 
   assert.match(fn, /const cleanedQueue = getPendingOfflineQueue\(\)\.filter/);
 });
 
+await test('CBT: empty or incompatible question packet never starts the timer', () => {
+  const startRouteStart = serverSource.indexOf('app.post("/api/exam/attempt/start"');
+  const startRouteEnd = serverSource.indexOf('\napp.', startRouteStart + 20);
+  const startRoute = serverSource.slice(startRouteStart, startRouteEnd > startRouteStart ? startRouteEnd : undefined);
+  const guardPos = startRoute.indexOf('CBT_LOADABLE_PACKET_GUARD_V2');
+  const sessionCreatePos = startRoute.indexOf('session = {');
+  assert.ok(guardPos >= 0, 'fresh CBT start is missing loadable-question guard');
+  assert.ok(sessionCreatePos > guardPos, 'CBT timer/session is created before question loadability is checked');
+  assert.match(startRoute, /code: 'EXAM_NO_QUESTIONS'/);
+  assert.match(startRoute, /getLoadableQuestionsForExamAttempt\(matchedExam\)/);
+
+  const questionRouteStart = serverSource.indexOf('app.post("/api/exam/attempt/start-questions"');
+  const questionRouteEnd = serverSource.indexOf('\napp.', questionRouteStart + 20);
+  const questionRoute = serverSource.slice(questionRouteStart, questionRouteEnd > questionRouteStart ? questionRouteEnd : undefined);
+  assert.match(questionRoute, /let rawQuestions = getLoadableQuestionsForExamAttempt\(matchedExam\)/);
+
+  const helper = serverFunction('getLoadableQuestionsForExamAttempt');
+  assert.match(helper, /examType === 'pilihan_ganda'/);
+  assert.match(helper, /examType === 'esay_saja'/);
+});
+
 await test('Student master writes are admin-owned and self password may remain unchanged', () => {
   assert.match(serverSource, /app\.post\("\/api\/students", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
   assert.match(serverSource, /app\.put\("\/api\/students\/:id", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
