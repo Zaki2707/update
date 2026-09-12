@@ -126,8 +126,11 @@ await test('OFFLINE: unavailable PostgreSQL does not deadlock dbInitPromise with
 
 function persistenceContext(online: boolean) {
   const events: string[] = [];
-  const memory: Record<string, any> = {};
-  const cache: Record<string, any> = {};
+  const memory: Record<string, any> = { lessonPlans: [{ id: 'committed-plan' }] };
+  const cache: Record<string, any> = { lessonPlans: [{ id: 'committed-plan' }] };
+  const persistedMemorySnapshots = new Map<string, any>([
+    ['lessonPlans', structuredClone(memory.lessonPlans)]
+  ]);
   const context: any = vm.createContext({
     isOnlineMode: online, isRestoring: false, dbInitPromise: null,
     pool: {}, isDbQuotaExceeded: false, db: null, console: quiet,
@@ -138,6 +141,14 @@ function persistenceContext(online: boolean) {
     broadcastStateUpdate: () => events.push('broadcast'),
     scheduleDbWrite: () => events.push('schedule'),
     storeMutationQueue: new KeyedSerialQueue(),
+    persistedMemorySnapshots,
+    rollbackMemoryToPersistedSnapshot: (key: string) => {
+      if (!online || !persistedMemorySnapshots.has(key)) return false;
+      memory[key] = structuredClone(persistedMemorySnapshots.get(key));
+      cache[key] = structuredClone(memory[key]);
+      events.push('rollback');
+      return true;
+    },
   });
   for (const name of ['saveData', 'saveDataBatch', 'updateStoreKeyWithLock']) {
     vm.runInContext(serverFunction(name), context);
@@ -169,7 +180,7 @@ for (const kind of ['single', 'batch', 'locked']) {
   });
 
   await test('ONLINE ' + kind + ': SQL failure rejects and is not broadcast as saved', async () => {
-    const { context, events } = persistenceContext(true);
+    const { context, memory, events } = persistenceContext(true);
     context.writeKeyToPostgresDirect = context.writeBatchToPostgresDirect = async () => {
       throw new Error('fixture SQL failure');
     };
@@ -178,6 +189,8 @@ for (const kind of ['single', 'batch', 'locked']) {
       : context.updateStoreKeyWithLock('lessonPlans', () => []);
     await assert.rejects(work, /fixture SQL failure/);
     assert.ok(!events.includes('broadcast'));
+    assert.ok(events.includes('rollback'), 'Failed ONLINE mutation must restore the last committed memory state');
+    assert.deepEqual(memory.lessonPlans, [{ id: 'committed-plan' }]);
   });
 }
 
@@ -209,6 +222,8 @@ for (const batch of [false, true]) {
         getMemoryKeyValue: () => value, structuredClone,
         dbWriteTimeouts: new Map(), lastDbWriteTimes: new Map(),
         dbWriteQueue: new KeyedSerialQueue(), clearTimeout, setTimeout, console: quiet,
+        persistedMemorySnapshots: new Map(),
+        cloneStateSnapshot: (input: any) => structuredClone(input),
         handleDbError() {}, triggerPoolRecreation() {},
       });
       for (const name of ['verifyOnlineArrayPersistence', 'writeKeyToPostgresDirectUnlocked', 'runWithDbKeyLocks', 'writeBatchToPostgresDirect']) {
