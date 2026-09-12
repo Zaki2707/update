@@ -1,6 +1,19 @@
 var appState = window.appState || {};
 // Modules and API helper script
 
+function moduleEscapeHtml(value) {
+    const raw = String(value ?? '');
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(raw);
+    return raw.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+function moduleEscapeAttr(value) {
+    if (typeof window.escapeHtmlAttr === 'function') return window.escapeHtmlAttr(value);
+    return moduleEscapeHtml(value);
+}
+function moduleInlineArg(value) {
+    return moduleEscapeAttr(JSON.stringify(String(value ?? '')));
+}
+
 let studentAttendanceStream = null;
 
 window.stopCameraStreamTrack = function(stream) {
@@ -236,7 +249,7 @@ function renderStudentProfile(container) {
 
     if (window._studentDashboardView === 'dashboard') {
         const todayStr = new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        const runningText = (appState.settings && appState.settings.runningText) ? appState.settings.runningText : 'Selamat Datang di Portal Sistem Informasi Madrasah Terintegrasi! Tetap Semangat Berprestasi.';
+        const runningText = moduleEscapeHtml((appState.settings && appState.settings.runningText) ? appState.settings.runningText : 'Selamat Datang di Portal Sistem Informasi Madrasah Terintegrasi! Tetap Semangat Berprestasi.');
         
         container.innerHTML = `
             <div class="space-y-6 max-w-4xl mx-auto pb-8">
@@ -248,12 +261,12 @@ function renderStudentProfile(container) {
                             Portal Utama Siswa
                         </span>
                         <h1 class="text-2xl md:text-3xl font-black text-slate-900 tracking-tight mt-1 leading-tight">
-                            Assalamualaikum, <span class="text-blue-700 font-extrabold">${st.name || 'Siswa'}</span>!
+                            Assalamualaikum, <span class="text-blue-700 font-extrabold">${moduleEscapeHtml(st.name || 'Siswa')}</span>!
                         </h1>
                         <p class="text-sm text-slate-600 font-semibold flex flex-wrap items-center gap-2">
-                            <span class="px-2.5 py-0.5 bg-slate-100 text-slate-750 border border-slate-200 rounded-lg text-xs">Kelas: <b class="text-slate-900">${cls ? cls.name : 'Umum'}</b></span>
+                            <span class="px-2.5 py-0.5 bg-slate-100 text-slate-750 border border-slate-200 rounded-lg text-xs">Kelas: <b class="text-slate-900">${moduleEscapeHtml(cls ? cls.name : 'Umum')}</b></span>
                             <span class="text-slate-300">|</span>
-                            <span class="px-2.5 py-0.5 bg-slate-100 text-slate-750 border border-slate-200 rounded-lg text-xs">NIS: <span class="font-mono text-slate-900 font-bold">${st.nis || '-'}</span></span>
+                            <span class="px-2.5 py-0.5 bg-slate-100 text-slate-750 border border-slate-200 rounded-lg text-xs">NIS: <span class="font-mono text-slate-900 font-bold">${moduleEscapeHtml(st.nis || '-')}</span></span>
                         </p>
                     </div>
                     
@@ -345,20 +358,20 @@ function renderStudentProfile(container) {
                             <div class="w-24 h-24 bg-emerald-100 text-emerald-800 rounded-3xl flex items-center justify-center text-4xl font-bold shadow-inner overflow-hidden border-2 border-emerald-500/20">
                                 ${st.photo ? `<img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(st.photo) : ''}" class="w-full h-full object-cover" referrerPolicy="no-referrer">` : `<i class="fa-solid fa-user-graduate"></i>`}
                             </div>
-                            <button type="button" onclick="openStudentPhotoSourceModal('${st.id}')" class="absolute bottom-0 right-0 p-2 bg-emerald-600 text-white rounded-xl cursor-pointer shadow hover:bg-emerald-700 transition" title="Ganti Foto Profil">
+                            <button type="button" onclick="openStudentPhotoSourceModal(${moduleInlineArg(st.id)})" class="absolute bottom-0 right-0 p-2 bg-emerald-600 text-white rounded-xl cursor-pointer shadow hover:bg-emerald-700 transition" title="Ganti Foto Profil">
                                 <i class="fa-solid fa-camera text-xs"></i>
                             </button>
-                            <input type="file" id="student-gallery-input-${st.id}" accept="image/*" class="hidden" onchange="uploadStudentPhoto(event, '${st.id}')">
+                            <input type="file" id="student-gallery-input-${moduleEscapeAttr(st.id)}" accept="image/*" class="hidden" onchange="uploadStudentPhoto(event, ${moduleInlineArg(st.id)})">
                         </div>
                         <div class="text-center sm:text-left flex-1">
                             <span class="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-xs font-semibold">Profil Murid Madrasah</span>
-                            <h1 class="text-xl sm:text-2xl font-bold text-slate-800 mt-1">${st.name || '-'}</h1>
-                            <p class="text-xs text-slate-400 mt-0.5">NIS: ${st.nis || '-'} | Kelas: ${cls ? cls.name : '-'}</p>
+                            <h1 class="text-xl sm:text-2xl font-bold text-slate-800 mt-1">${moduleEscapeHtml(st.name || '-')}</h1>
+                            <p class="text-xs text-slate-400 mt-0.5">NIS: ${moduleEscapeHtml(st.nis || '-')} | Kelas: ${moduleEscapeHtml(cls ? cls.name : '-')}</p>
                         </div>
                     </div>
 
                     <!-- Student profile form -->
-                    <form onsubmit="saveStudentProfileUpdate(event, '${st.id}')" class="space-y-4 text-xs sm:text-sm pt-2">
+                    <form onsubmit="saveStudentProfileUpdate(event, ${moduleInlineArg(st.id)})" class="space-y-4 text-xs sm:text-sm pt-2">
                         <div>
                             <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Nama Lengkap</label>
                             <input type="text" id="prof-name" value="${window.escapeHtmlAttr ? window.escapeHtmlAttr(st.name || '') : ''}" required class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl">
@@ -370,7 +383,7 @@ function renderStudentProfile(container) {
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Username Login</label>
-                                <input type="text" id="prof-user" value="${st.username || 'siswa1'}" required class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl font-mono">
+                                <input type="text" id="prof-user" value="${moduleEscapeAttr(st.username || 'siswa1')}" required class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl font-mono">
                             </div>
                             <div>
                                 <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Password</label>
