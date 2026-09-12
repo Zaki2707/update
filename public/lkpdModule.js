@@ -1284,8 +1284,8 @@ window.openManageLkpdModal = function(lkpdId) {
                                                         ${mk.responseType === 'essay' ? 'Uraian' : 'Isian Singkat'}
                                                     </span>
                                                 </div>
-                                                <h5 class="font-extrabold text-slate-800 text-xs">${mk.question || `Pertanyaan untuk nomor #${num}`}</h5>
-                                                <p class="text-[11px] text-slate-500"><strong class="text-emerald-700">Kunci Guru:</strong> ${mk.answerKey || '-'}</p>
+                                                <h5 class="font-extrabold text-slate-800 text-xs">${lkpdEscapeHtml(mk.question || `Pertanyaan untuk nomor #${num}`)}</h5>
+                                                <p class="text-[11px] text-slate-500"><strong class="text-emerald-700">Kunci Guru:</strong> ${lkpdEscapeHtml(mk.answerKey || '-')}</p>
                                             </div>
                                         </div>
 
@@ -1735,7 +1735,7 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
                                             </span>
                                             <span class="text-[11px] font-bold text-slate-500 bg-slate-100 px-2 rounded border border-slate-200">Bobot: ${mk.points || 25} Poin</span>
                                         </div>
-                                        <p class="text-xs font-bold text-slate-800 leading-snug">${mk.question}</p>
+                                        <p class="text-xs font-bold text-slate-800 leading-snug">${lkpdEscapeHtml(mk.question)}</p>
                                         
                                         <div class="pt-1">
                                             <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Jawaban Anda:</label>
@@ -2220,7 +2220,7 @@ window.openTransparentAnswerModal = function(markerId, number) {
                 </div>
                 
                 <div class="space-y-2">
-                    <p class="text-xs font-extrabold text-slate-800 leading-relaxed">${mk.question}</p>
+                    <p class="text-xs font-extrabold text-slate-800 leading-relaxed">${lkpdEscapeHtml(mk.question)}</p>
                     <div class="pt-2">
                         <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Tulis Jawaban Anda:</label>
                         ${mk.responseType === 'essay' ? `
@@ -2537,7 +2537,7 @@ window.renderLkpdMonitoringSection = function(container, lkpdId) {
                         return `
                             <div class="group relative bg-slate-900 border ${isBlocked ? 'border-rose-500 ring-2 ring-rose-500/20' : isOutOfTab ? 'border-amber-500 animate-pulse' : 'border-slate-800'} rounded-3xl shadow-xl overflow-hidden flex flex-col justify-between hover:scale-[1.01] transition-all duration-300">
                                 <!-- Card Media Body: Video Stream or Image Snapshot (Click to Spotlight HD Livecam) -->
-                                <div onclick="focusStudentLivecam('${st.id}')" title="Klik untuk membuka Spotlight Livecam HD ${st.name}" class="relative w-full aspect-video bg-slate-950 overflow-hidden cursor-pointer group/media">
+                                <div onclick="focusStudentLivecam('${st.id}')" title="Klik untuk membuka Spotlight Livecam HD ${lkpdEscapeAttr(st.name)}" class="relative w-full aspect-video bg-slate-950 overflow-hidden cursor-pointer group/media">
                                     ${isStudentVideo && isOnline ? `
                                         <video id="webrtc-video-${st.id}_${activeLkpd.id}" autoplay playsinline muted class="w-full h-full object-cover"></video>
                                         <div id="webrtc-fallback-${st.id}_${activeLkpd.id}" class="absolute inset-0 flex items-center justify-center bg-slate-950 text-xs text-slate-400">
@@ -2613,7 +2613,7 @@ window.renderLkpdMonitoringSection = function(container, lkpdId) {
 
                                     <div class="flex items-center gap-2">
                                         <!-- Send direct guidance message -->
-                                        <button type="button" onclick="event.stopPropagation(); openSendLkpdMessageModal('${st.id}', '${st.name}', '${activeLkpd.id}')" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[10px] rounded-xl transition flex items-center justify-center gap-1 cursor-pointer">
+                                        <button type="button" onclick="event.stopPropagation(); openSendLkpdMessageModal('${st.id}', decodeURIComponent('${encodeURIComponent(st.name)}'), '${activeLkpd.id}')" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[10px] rounded-xl transition flex items-center justify-center gap-1 cursor-pointer">
                                             <i class="fa-solid fa-comment-dots text-[10px]"></i> <span>Pesan</span>
                                         </button>
 
@@ -3364,7 +3364,7 @@ window.cetakNilaiLkpdEvaluasi = function(classId, lkpdId) {
             <tr style="border-bottom: 1px solid #e5e7eb;">
                 <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center; font-family: monospace;">${idx + 1}</td>
                 <td style="border: 1px solid #d1d5db; padding: 10px; font-weight: 600;">${lkpdEscapeHtml(st.name)}</td>
-                <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center; font-family: monospace;">${st.nis || '-'}</td>
+                <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center; font-family: monospace;">${lkpdEscapeHtml(st.nis || '-')}</td>
                 <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center;">${hasSub ? '✓ Mengumpulkan' : '⏳ Belum Kumpul'}</td>
                 <td style="border: 1px solid #d1d5db; padding: 10px; text-align: center; font-weight: bold; background-color: #ecfdf5; color: #047857;">${scoreVal}</td>
             </tr>
@@ -3376,7 +3376,7 @@ window.cetakNilaiLkpdEvaluasi = function(classId, lkpdId) {
         <html>
         <head>
             <meta charset="utf-8">
-            <title>Laporan_Nilai_LKPD_${lkpd.title.replace(/\s+/g, '_')}</title>
+            <title>Laporan_Nilai_LKPD_${lkpdEscapeHtml(lkpd.title.replace(/\s+/g, '_'))}</title>
             <style>
                 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
                 body {
@@ -3445,7 +3445,7 @@ window.cetakNilaiLkpdEvaluasi = function(classId, lkpdId) {
 
             <div class="meta-box">
                 <div>
-                    <p style="margin: 0 0 4px 0;"><strong>Lembar Kerja:</strong> ${lkpd.title}</p>
+                    <p style="margin: 0 0 4px 0;"><strong>Lembar Kerja:</strong> ${lkpdEscapeHtml(lkpd.title)}</p>
                     <p style="margin: 0;"><strong>Mata Pelajaran:</strong> ${lkpd.subject || 'Mata Pelajaran'}</p>
                 </div>
                 <div style="text-align: right;">
@@ -3837,7 +3837,7 @@ window.downloadLkpdStudentPdf = function(lkpdId, studentId) {
         <html>
         <head>
             <meta charset="utf-8">
-            <title>Hasil_LKPD_${lkpd.title.replace(/\s+/g, '_')}_${sub.studentName.replace(/\s+/g, '_')}</title>
+            <title>Hasil_LKPD_${lkpdEscapeHtml(lkpd.title.replace(/\s+/g, '_'))}_${lkpdEscapeHtml(sub.studentName.replace(/\s+/g, '_'))}</title>
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
             <style>
                 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
