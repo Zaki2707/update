@@ -3,6 +3,8 @@ import path from 'node:path';
 
 const root = process.cwd();
 const publicDir = path.join(root, 'public');
+const distDir = path.join(root, 'dist');
+const auditDir = fs.existsSync(distDir) ? distDir : publicDir;
 
 function walk(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -15,8 +17,8 @@ function walk(dir) {
   return out;
 }
 
-const fontFiles = walk(publicDir).filter((file) => /\.woff2$/i.test(file));
-const cssFiles = walk(publicDir).filter((file) => /\.css$/i.test(file));
+const fontFiles = walk(auditDir).filter((file) => /\.woff2$/i.test(file));
+const cssFiles = walk(auditDir).filter((file) => /\.css$/i.test(file));
 const problems = [];
 const info = [];
 
@@ -57,7 +59,7 @@ for (const cssFile of cssFiles) {
     if (/^(?:https?:|data:|\/\/)/i.test(raw)) continue;
     const clean = raw.split('?')[0].split('#')[0];
     const resolved = clean.startsWith('/')
-      ? path.join(publicDir, clean.replace(/^\/+/, ''))
+      ? path.join(auditDir, clean.replace(/^\/+/, ''))
       : path.resolve(path.dirname(cssFile), clean);
     if (!fs.existsSync(resolved)) {
       problems.push({
