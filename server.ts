@@ -4282,14 +4282,26 @@ function constantTimeStringEqual(left: any, right: any): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function canonicalAuthTenantIdentity(value: any): string {
+  const raw = String(value || 'default').trim();
+  const normalized = raw.toLowerCase();
+  const matched = (madrasahs || []).find((m: any) =>
+    String(m?.id || '').trim() === raw ||
+    String(m?.slug || '').trim().toLowerCase() === normalized
+  );
+  return String(matched?.id || raw).trim() || 'default';
+}
+
 function authRecordMatchesTokenTenant(record: any, tenantId: any): boolean {
-  const target = String(tenantId || 'default').trim();
+  // AUTH_TENANT_ID_SLUG_COMPAT_V2: legacy records may store only madrasahSlug while
+  // newer tokens carry the canonical madrasah id. Treat both references as the same tenant.
+  const target = canonicalAuthTenantIdentity(tenantId);
   const values = [
     String(record?.madrasahId || '').trim(),
     String(record?.madrasahSlug || '').trim()
   ].filter(Boolean);
-  if (values.length === 0) return target === 'default';
-  return values.includes(target);
+  if (values.length === 0) return target === canonicalAuthTenantIdentity('default');
+  return values.some((value) => canonicalAuthTenantIdentity(value) === target);
 }
 
 function validateAuthSessionAgainstCurrentState(session: AuthSession): boolean {
@@ -4317,8 +4329,10 @@ function validateAuthSessionAgainstCurrentState(session: AuthSession): boolean {
       stampMatches(bossPass, 'bos', bossUser, 'default');
   }
 
+  const sessionTenantCanonical = canonicalAuthTenantIdentity(tenantId);
   const sessionMadrasah = (madrasahs || []).find((m: any) =>
-    String(m.id) === tenantId || String(m.slug) === tenantId
+    String(m.id) === sessionTenantCanonical ||
+    String(m.slug || '').toLowerCase() === String(tenantId || '').toLowerCase()
   );
   if (!sessionMadrasah || sessionMadrasah.isActive === false) return false;
 
@@ -6517,10 +6531,14 @@ app.get("/api/token-balance", requireAuth, (req: any, res) => {
   const role = String(authUser?.role || '').toLowerCase().trim();
 
   if (role === 'teacher' || role === 'guru') {
-    const teacher = (teachers || []).find((t: any) =>
-      String(t.id) === String(authUser?.id || '') ||
-      (authUser?.username && String(t.username) === String(authUser.username))
+    const teacherMatches = (teachers || []).filter((t: any) =>
+      String(t.id) === String(authUser?.id || '') &&
+      isItemForCurrentMadrasah(t, req)
     );
+    if (teacherMatches.length > 1) {
+      return res.status(409).json({ success: false, message: "Data guru ambigu pada tenant ini." });
+    }
+    const teacher = teacherMatches[0];
     if (!teacher) return res.status(404).json({ success: false, message: "Data guru tidak ditemukan." });
     return res.json({ success: true, scope: 'teacher', balance: Number(teacher.cbtTokenBalance || 0) });
   }
@@ -9219,7 +9237,9 @@ app.get("/api/attendance", requireAuth, async (req: any, res) => {
   if (role === 'student' || role === 'siswa') {
     list = list.filter((item: any) => String(item.studentId || '') === String(authUser.id));
   } else if (role === 'class_leader' || role === 'ketua_kelas') {
-    const selfStudent = (students || []).find((s: any) => String(s.id) === String(authUser.id));
+    const selfStudent = (students || []).find((s: any) =>
+      String(s.id) === String(authUser.id) && isItemForCurrentMadrasah(s, req)
+    );
     const classId = selfStudent?.classId || selfStudent?.class_id || authUser?.classId || '';
     list = list.filter((item: any) => String(item.classId || '') === String(classId));
   }

@@ -514,6 +514,26 @@ await test('Auth: persisted sessions validate before UI restore and account RAM 
   assert.match(settingsSource, /fallbackAuthenticatedResponses\.some\(item => item && item\.success === true\)/);
 });
 
+await test('Auth: legacy slug-only account records remain valid for canonical tenant tokens', () => {
+  assert.match(serverSource, /AUTH_TENANT_ID_SLUG_COMPAT_V2/);
+  assert.match(serverSource, /function canonicalAuthTenantIdentity/);
+  assert.match(serverSource, /values\.some\(\(value\) => canonicalAuthTenantIdentity\(value\) === target\)/);
+  assert.match(serverSource, /const sessionTenantCanonical = canonicalAuthTenantIdentity\(tenantId\)/);
+});
+
+await test('Tenant isolation: teacher token balance and class leader attendance use current tenant only', () => {
+  const tokenBalanceStart = serverSource.indexOf('app.get("/api/token-balance"');
+  const tokenBalanceEnd = serverSource.indexOf('\nfunction sanitizeMadrasahPublic', tokenBalanceStart);
+  const tokenBalanceRoute = serverSource.slice(tokenBalanceStart, tokenBalanceEnd);
+  assert.match(tokenBalanceRoute, /String\(t\.id\) === String\(authUser\?\.id \|\| ''\) &&\s*isItemForCurrentMadrasah\(t, req\)/);
+  assert.doesNotMatch(tokenBalanceRoute, /String\(t\.username\) === String\(authUser\.username\)/);
+
+  const attendanceStart = serverSource.indexOf('app.get("/api/attendance"');
+  const attendanceEnd = serverSource.indexOf('\napp.post("/api/attendance"', attendanceStart);
+  const attendanceRoute = serverSource.slice(attendanceStart, attendanceEnd);
+  assert.match(attendanceRoute, /String\(s\.id\) === String\(authUser\.id\) && isItemForCurrentMadrasah\(s, req\)/);
+});
+
 await test('Auth: JWT is bound to current credential and active tenant state', () => {
   assert.match(serverSource, /AUTH_SESSION_CREDENTIAL_STAMP_V2/);
   assert.match(serverSource, /function validateAuthSessionAgainstCurrentState/);
