@@ -7274,7 +7274,7 @@ function _executeFocusGameStudentLivecam(studentId) {
                 <div class="p-6 flex flex-col items-center justify-center space-y-4">
                     <div class="w-full max-w-md h-72 rounded-3xl overflow-hidden bg-slate-950 border-2 border-indigo-500/40 shadow-inner flex items-center justify-center relative">
                         ${studentPhoto ? `
-                            <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" class="w-full h-full object-cover">
+                            <img src="${gameSafeImageSrc(studentPhoto)}" class="w-full h-full object-cover">
                         ` : `
                             <div class="text-center p-6 space-y-2">
                                 <i class="fa-solid fa-user-circle text-slate-600 text-6xl"></i>
