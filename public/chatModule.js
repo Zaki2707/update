@@ -27,7 +27,13 @@ function isSafeChatAttachment(att) {
 }
 
 function hasAuthenticatedChatSession() {
-    return Boolean(getChatAuthToken());
+    const currentUser = window.appState?.currentUser;
+    return Boolean(
+        getChatAuthToken() &&
+        currentUser &&
+        currentUser.role &&
+        window.__onlineRuntimeReady === true
+    );
 }
 window.hasAuthenticatedChatSession = hasAuthenticatedChatSession;
 
