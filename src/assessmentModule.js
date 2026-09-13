@@ -43,7 +43,37 @@ window.safeSetStorage = safeSetStorage;
 
 let activeExamSession = null;
 let examTimerInterval = null;
+let examHeartbeatInFlight = false;
+let examHeartbeatNextAt = 0;
+let examHeartbeatBackoffMs = 0;
+let examHeartbeatSessionKey = '';
+const EXAM_HEARTBEAT_BASE_MS = 15000;
+const EXAM_HEARTBEAT_MAX_BACKOFF_MS = 60000;
 window._cbtFinalizing = false;
+
+function getRetryAfterMs(response) {
+    if (!response || !response.headers || typeof response.headers.get !== 'function') return 0;
+    const raw = response.headers.get('Retry-After');
+    if (!raw) return 0;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(120000, seconds * 1000);
+    const at = Date.parse(raw);
+    if (Number.isFinite(at)) return Math.max(0, Math.min(120000, at - Date.now()));
+    return 0;
+}
+
+function scheduleNextExamHeartbeat(failed = false, retryAfterMs = 0) {
+    const jitterMs = Math.floor(Math.random() * 3000);
+    if (failed) {
+        examHeartbeatBackoffMs = examHeartbeatBackoffMs
+            ? Math.min(EXAM_HEARTBEAT_MAX_BACKOFF_MS, examHeartbeatBackoffMs * 2)
+            : 5000;
+        examHeartbeatNextAt = Date.now() + Math.max(retryAfterMs, examHeartbeatBackoffMs) + jitterMs;
+        return;
+    }
+    examHeartbeatBackoffMs = 0;
+    examHeartbeatNextAt = Date.now() + EXAM_HEARTBEAT_BASE_MS + jitterMs;
+}
 
 // CBT_LOGOUT_RUNTIME_ISOLATION_V2: logout must never delete durable recovery data,
 // but no in-memory exam/timer/camera/signaling state may survive into another account.
@@ -86,6 +116,10 @@ window.__resetCbtRuntimeOnLogout = function() {
     }
     window._examWakeLock = null;
     activeExamSession = null;
+    examHeartbeatInFlight = false;
+    examHeartbeatNextAt = 0;
+    examHeartbeatBackoffMs = 0;
+    examHeartbeatSessionKey = '';
     window._cbtFinalizing = false;
 };
 
@@ -477,27 +511,64 @@ function getExamQuestions(ex, studentId = null) {
     return generalQuestions;
 }
 
+let evaluasiSyncInFlight = false;
+let evaluasiSyncBackoffMs = 0;
+let evaluasiNextAllowedAt = 0;
+const EVALUASI_POLL_MS = 30000;
+const EVALUASI_MAX_BACKOFF_MS = 120000;
+
+function scheduleEvaluasiRetry(response = null) {
+    const retryAfterMs = getRetryAfterMs(response);
+    evaluasiSyncBackoffMs = evaluasiSyncBackoffMs
+        ? Math.min(EVALUASI_MAX_BACKOFF_MS, evaluasiSyncBackoffMs * 2)
+        : 15000;
+    evaluasiNextAllowedAt = Date.now() + Math.max(retryAfterMs, evaluasiSyncBackoffMs);
+}
+
 async function syncEvaluasiStateFromServer() {
-    const res = await fetch('/api/exam-monitoring-state', { cache: 'no-store' });
-    const data = await res.json().catch(() => null);
-    if (!res.ok || !data || !data.success) return false;
+    const now = Date.now();
+    if (evaluasiSyncInFlight || now < evaluasiNextAllowedAt) return false;
 
-    // This endpoint returns a complete tenant-scoped snapshot for staff. Replace the maps
-    // instead of merging so sessions removed by server do not survive as stale local cache.
-    appState.activeExamSessions = data.activeExamSessions || {};
-    appState.completedExams = data.completedExams || {};
-    appState.forceFinishedExams = data.forceFinishedExams || {};
-    appState.studentExamGrades = data.studentExamGrades || {};
-    appState.studentExamAnswers = data.studentExamAnswers || {};
-    appState.studentExamQuestions = data.studentExamQuestions || data.studentQuestions || {};
+    evaluasiSyncInFlight = true;
+    try {
+        const res = await fetch('/api/exam-monitoring-state', { cache: 'no-store' });
+        const data = await res.json().catch(() => null);
 
-    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
-    safeSetStorage('madrasah_completed_exams', appState.completedExams);
-    safeSetStorage('madrasah_force_finished_exams', appState.forceFinishedExams);
-    safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
-    safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
-    safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
-    return true;
+        if (!res.ok || !data || !data.success) {
+            if (res.status === 429 || res.status === 503) {
+                scheduleEvaluasiRetry(res);
+            } else {
+                evaluasiNextAllowedAt = Date.now() + EVALUASI_POLL_MS;
+            }
+            return false;
+        }
+
+        evaluasiSyncBackoffMs = 0;
+        evaluasiNextAllowedAt = 0;
+
+        // This endpoint returns a complete tenant-scoped snapshot for staff. Replace the maps
+        // instead of merging so sessions removed by server do not survive as stale local cache.
+        appState.activeExamSessions = data.activeExamSessions || {};
+        appState.completedExams = data.completedExams || {};
+        appState.forceFinishedExams = data.forceFinishedExams || {};
+        appState.studentExamGrades = data.studentExamGrades || {};
+        appState.studentExamAnswers = data.studentExamAnswers || {};
+        appState.studentExamQuestions = data.studentExamQuestions || data.studentQuestions || {};
+
+        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
+        safeSetStorage('madrasah_completed_exams', appState.completedExams);
+        safeSetStorage('madrasah_force_finished_exams', appState.forceFinishedExams);
+        safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
+        safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
+        safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
+        return true;
+    } catch (e) {
+        scheduleEvaluasiRetry();
+        console.warn('Evaluasi snapshot sync gagal:', e);
+        return false;
+    } finally {
+        evaluasiSyncInFlight = false;
+    }
 }
 
 function stopEvaluasiPolling() {
@@ -509,6 +580,8 @@ function stopEvaluasiPolling() {
 
 function startEvaluasiPolling() {
     if (window.__evaluasiPollInterval) return;
+    // Realtime exam events are the primary update path. This full tenant snapshot is
+    // deliberately a slower fallback so an open Evaluasi tab cannot create a request storm.
     window.__evaluasiPollInterval = setInterval(async () => {
         if (document.visibilityState !== 'visible') return;
         if (appState.lastAssessmentSubTab !== 'evaluasi') {
@@ -528,7 +601,7 @@ function startEvaluasiPolling() {
         } catch (e) {
             console.warn('Evaluasi polling sync gagal:', e);
         }
-    }, 10000);
+    }, EVALUASI_POLL_MS);
 }
 
 async function refreshAssessmentStudentsFromServer() {
@@ -4379,9 +4452,24 @@ async function startStudentExam(examId) {
                 timerDisplay.textContent = `${m}:${s}`;
             }
 
-            // Synchronize server-authoritative endsAt timer and lightweight micro-heartbeat every 5 seconds
-            if (activeExamSession.timeLeft % 5 === 0) {
-                // Micro-Heartbeat to keep session alive and sync exact server-authoritative timer
+            // Synchronize the server-authoritative timer with a backpressure-aware heartbeat.
+            // A 15s base cadence plus jitter avoids hundreds of students hitting the service
+            // on the same second. 429/503 responses use exponential backoff instead of retry storms.
+            const heartbeatNow = Date.now();
+            const heartbeatKey = String(st.id) + '_' + String(ex.id);
+            if (examHeartbeatSessionKey !== heartbeatKey) {
+                examHeartbeatSessionKey = heartbeatKey;
+                examHeartbeatBackoffMs = 0;
+                examHeartbeatNextAt = heartbeatNow + 1000 + Math.floor(Math.random() * 3000);
+            }
+
+            if (!examHeartbeatInFlight && heartbeatNow >= examHeartbeatNextAt) {
+                examHeartbeatInFlight = true;
+                const heartbeatController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                const heartbeatTimeout = heartbeatController
+                    ? setTimeout(() => heartbeatController.abort(), 8000)
+                    : null;
+
                 fetch('/api/exam/heartbeat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -4389,77 +4477,92 @@ async function startStudentExam(examId) {
                         studentId: st.id,
                         examId: ex.id,
                         currentIndex: activeExamSession.currentIndex
-                    })
+                    }),
+                    ...(heartbeatController ? { signal: heartbeatController.signal } : {})
                 })
-                    .then(res => res.json())
+                    .then(async res => {
+                        const data = await res.json().catch(() => null);
+                        if (!res.ok || !data || !data.success) {
+                            scheduleNextExamHeartbeat(true, (res.status === 429 || res.status === 503) ? getRetryAfterMs(res) : 0);
+                            return null;
+                        }
+                        scheduleNextExamHeartbeat(false);
+                        return data;
+                    })
                     .then(data => {
-                        if (data.success) {
-                            // Server-authoritative timer synchronization
-                            if (data.remainingTime !== null && data.remainingTime !== undefined) {
-                                const diff = Math.abs(data.remainingTime - activeExamSession.timeLeft);
-                                if (diff > 4) { // Re-align if local clock drifted by > 4s or was modified
-                                    activeExamSession.timeLeft = data.remainingTime;
-                                    if (appState.activeExamSessions && appState.activeExamSessions[st.id + '_' + ex.id]) {
-                                        appState.activeExamSessions[st.id + '_' + ex.id].timeLeft = data.remainingTime;
-                                        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
-                                    }
-                                    const m = Math.floor(activeExamSession.timeLeft / 60);
-                                    const s = String(activeExamSession.timeLeft % 60).padStart(2, '0');
-                                    if (timerDisplay) timerDisplay.textContent = `${m}:${s}`;
+                        if (!data || !activeExamSession) return;
+
+                        // Server-authoritative timer synchronization
+                        if (data.remainingTime !== null && data.remainingTime !== undefined) {
+                            const diff = Math.abs(data.remainingTime - activeExamSession.timeLeft);
+                            if (diff > 4) { // Re-align if local clock drifted by > 4s or was modified
+                                activeExamSession.timeLeft = data.remainingTime;
+                                if (appState.activeExamSessions && appState.activeExamSessions[st.id + '_' + ex.id]) {
+                                    appState.activeExamSessions[st.id + '_' + ex.id].timeLeft = data.remainingTime;
+                                    safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
                                 }
+                                const m = Math.floor(activeExamSession.timeLeft / 60);
+                                const s = String(activeExamSession.timeLeft % 60).padStart(2, '0');
+                                if (timerDisplay) timerDisplay.textContent = `${m}:${s}`;
                             }
+                        }
 
-                            // Check blocked state
-                            const wasBlocked = isStudentBlocked(ex.id, st.id);
-                            if (!appState.blockedStudents) appState.blockedStudents = {};
-                            appState.blockedStudents[st.id + '_' + ex.id] = data.blocked;
-                            safeSetStorage('madrasah_blocked_students', appState.blockedStudents);
+                        // Check blocked state
+                        const wasBlocked = isStudentBlocked(ex.id, st.id);
+                        if (!appState.blockedStudents) appState.blockedStudents = {};
+                        appState.blockedStudents[st.id + '_' + ex.id] = data.blocked;
+                        safeSetStorage('madrasah_blocked_students', appState.blockedStudents);
 
-                            if (data.blocked && !wasBlocked) {
-                                showToast('Ujian diblokir oleh pengawas.', 'error');
-                                renderActiveExamScreen();
-                                return;
-                            } else if (!data.blocked && wasBlocked) {
-                                const modalContainer = document.getElementById('modal-container');
-                                if (modalContainer) modalContainer.innerHTML = '';
-                                const msgOverlay = document.getElementById('exam-message-overlay');
-                                if (msgOverlay) msgOverlay.remove();
-                                const blockModal = document.getElementById('exam-blocked-modal');
-                                if (blockModal) blockModal.remove();
-                                showToast('Akses ujian Anda telah dibuka kembali oleh pengawas.', 'success');
-                                renderActiveExamScreen();
+                        if (data.blocked && !wasBlocked) {
+                            showToast('Ujian diblokir oleh pengawas.', 'error');
+                            renderActiveExamScreen();
+                            return;
+                        } else if (!data.blocked && wasBlocked) {
+                            const modalContainer = document.getElementById('modal-container');
+                            if (modalContainer) modalContainer.innerHTML = '';
+                            const msgOverlay = document.getElementById('exam-message-overlay');
+                            if (msgOverlay) msgOverlay.remove();
+                            const blockModal = document.getElementById('exam-blocked-modal');
+                            if (blockModal) blockModal.remove();
+                            showToast('Akses ujian Anda telah dibuka kembali oleh pengawas.', 'success');
+                            renderActiveExamScreen();
+                        }
+
+                        // Check force finish state
+                        if (data.forceFinished) {
+                            showToast('Ujian diselesaikan oleh pengawas.', 'info');
+                            submitExamFinal();
+                            return;
+                        }
+
+                        // Check broadcast and personal messages
+                        const oldMessages = JSON.parse(localStorage.getItem('madrasah_exam_messages')) || {};
+                        if (!appState.examMessages) appState.examMessages = {};
+
+                        if (data.messageBroadcast) {
+                            const bKey = 'broadcast_' + ex.id;
+                            if (data.messageBroadcast !== oldMessages[bKey]) {
+                                appState.examMessages[bKey] = data.messageBroadcast;
+                                safeSetStorage('madrasah_exam_messages', appState.examMessages);
+                                showExamMessageModal('Pengumuman Ujian', data.messageBroadcast, ex.id, st.id, true);
                             }
-
-                            // Check force finish state
-                            if (data.forceFinished) {
-                                showToast('Ujian diselesaikan oleh pengawas.', 'info');
-                                submitExamFinal();
-                                return;
-                            }
-
-                            // Check broadcast and personal messages
-                            const oldMessages = JSON.parse(localStorage.getItem('madrasah_exam_messages')) || {};
-                            if (!appState.examMessages) appState.examMessages = {};
-                            
-                            if (data.messageBroadcast) {
-                                const bKey = 'broadcast_' + ex.id;
-                                if (data.messageBroadcast !== oldMessages[bKey]) {
-                                    appState.examMessages[bKey] = data.messageBroadcast;
-                                    safeSetStorage('madrasah_exam_messages', appState.examMessages);
-                                    showExamMessageModal('Pengumuman Ujian', data.messageBroadcast, ex.id, st.id, true);
-                                }
-                            }
-                            if (data.messagePersonal) {
-                                const pKey = st.id + '_' + ex.id;
-                                if (data.messagePersonal !== oldMessages[pKey]) {
-                                    appState.examMessages[pKey] = data.messagePersonal;
-                                    safeSetStorage('madrasah_exam_messages', appState.examMessages);
-                                    showExamMessageModal('Pesan dari Pengawas', data.messagePersonal, ex.id, st.id, false);
-                                }
+                        }
+                        if (data.messagePersonal) {
+                            const pKey = st.id + '_' + ex.id;
+                            if (data.messagePersonal !== oldMessages[pKey]) {
+                                appState.examMessages[pKey] = data.messagePersonal;
+                                safeSetStorage('madrasah_exam_messages', appState.examMessages);
+                                showExamMessageModal('Pesan dari Pengawas', data.messagePersonal, ex.id, st.id, false);
                             }
                         }
                     })
-                    .catch(() => {});
+                    .catch(() => {
+                        scheduleNextExamHeartbeat(true);
+                    })
+                    .finally(() => {
+                        if (heartbeatTimeout) clearTimeout(heartbeatTimeout);
+                        examHeartbeatInFlight = false;
+                    });
 
                 if (window.flushPendingOfflineAnswers) {
                     window.flushPendingOfflineAnswers();
