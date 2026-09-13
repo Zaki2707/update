@@ -2327,6 +2327,20 @@ function cloneStateSnapshot(value: any): any {
   }
 }
 
+function updatePersistedDeltaSnapshot(storeName: string, itemKey: string, value: any) {
+  const snapshot = persistedMemorySnapshots.get(storeName);
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    persistedMemorySnapshots.set(storeName, cloneStateSnapshot(getMemoryKeyValue(storeName)));
+    return;
+  }
+
+  // Delta stores are object maps. Updating only the committed key avoids cloning
+  // every student's accumulated CBT state after each answer and never marks a
+  // different, still-pending key as persisted.
+  if (value === null || value === undefined) delete snapshot[itemKey];
+  else snapshot[itemKey] = cloneStateSnapshot(value);
+}
+
 function capturePersistedMemorySnapshots(keys: string[] = persistedSnapshotKeys) {
   if (!isOnlineMode) return;
   for (const key of keys) {
@@ -11378,6 +11392,7 @@ app.post("/api/exam/attempt/start", async (req, res) => {
   const durationSec = durationMin * 60;
   let session = activeExamSessions[key];
   const now = Date.now();
+  let sessionNeedsPersistence = !session;
 
   if (!session) {
     session = {
@@ -11395,6 +11410,18 @@ app.post("/api/exam/attempt/start", async (req, res) => {
       lastSeenAt: now
     };
   } else {
+    const hadEndsAt = Boolean(session.endsAt);
+    const hadStartedAt = Boolean(session.startedAt);
+    const previousTotalQuestions = Number(session.totalQuestions || 0);
+    const sessionAnswers = session.answers && typeof session.answers === 'object' ? session.answers : {};
+    const persistedAnswers = studentExamAnswers[key] && typeof studentExamAnswers[key] === 'object'
+      ? studentExamAnswers[key]
+      : {};
+    const answersNeedRecovery = !session.answers || Object.entries(persistedAnswers).some(([questionId, savedAnswer]) =>
+      !Object.prototype.hasOwnProperty.call(sessionAnswers, questionId) ||
+      JSON.stringify(sessionAnswers[questionId]) !== JSON.stringify(savedAnswer)
+    );
+
     if (!session.endsAt) {
       const remainingSec = session.timeLeft !== undefined ? session.timeLeft : durationSec;
       session.endsAt = now + (remainingSec * 1000);
@@ -11411,10 +11438,17 @@ app.post("/api/exam/attempt/start", async (req, res) => {
     if (Array.isArray(studentExamQuestions[key]) && studentExamQuestions[key].length > 0) {
       session.totalQuestions = studentExamQuestions[key].length;
     }
+    // lastSeenAt/timeLeft are ephemeral and derivable from endsAt. Persist only
+    // structural recovery changes so the client's immediate second /start call
+    // does not consume another Cloud SQL connection for every student.
+    sessionNeedsPersistence = !hadEndsAt || !hadStartedAt || answersNeedRecovery ||
+      previousTotalQuestions !== Number(session.totalQuestions || 0);
   }
 
   activeExamSessions[key] = session;
-  await saveDeltaDb('activeExamSessions', key, session);
+  if (sessionNeedsPersistence) {
+    await saveDeltaDb('activeExamSessions', key, session);
+  }
   broadcastExamEvent({ type: 'exam_started', examId: eId, studentId: sId, answered: session.answeredCount || 0, total: session.totalQuestions || 0, lastSeenAt: now });
 
   res.json({ success: true, session: {
@@ -11806,10 +11840,15 @@ app.post("/api/exam/attempt/start-questions", async (req, res) => {
 
   studentExamMasterQuestions[key] = masterQuestions;
   studentExamQuestions[key] = sanitizedQuestions;
+  const activeSession = activeExamSessions[key];
+  activeSession.totalQuestions = sanitizedQuestions.length;
+  activeSession.answeredCount = Object.keys(studentExamAnswers[key] || activeSession.answers || {}).length;
+  activeExamSessions[key] = activeSession;
 
-  await Promise.all([
-    saveDeltaDb('studentExamMasterQuestions', key, masterQuestions),
-    saveDeltaDb('studentExamQuestions', key, sanitizedQuestions)
+  await saveDeltaBatchDb([
+    { storeName: 'studentExamMasterQuestions', itemKey: key, value: masterQuestions },
+    { storeName: 'studentExamQuestions', itemKey: key, value: sanitizedQuestions },
+    { storeName: 'activeExamSessions', itemKey: key, value: activeSession }
   ]);
 
   res.json({
@@ -11862,9 +11901,9 @@ app.post("/api/exam/attempt/answer", async (req, res) => {
   if (session.endsAt) session.timeLeft = Math.max(0, Math.floor((session.endsAt - now) / 1000));
   activeExamSessions[key] = session;
 
-  await Promise.all([
-    saveDeltaDb('studentExamAnswers', key, studentExamAnswers[key]),
-    saveDeltaDb('activeExamSessions', key, session)
+  await saveDeltaBatchDb([
+    { storeName: 'studentExamAnswers', itemKey: key, value: studentExamAnswers[key] },
+    { storeName: 'activeExamSessions', itemKey: key, value: session }
   ]);
   broadcastExamEvent({ type: "exam_progress", examId: eId, studentId: sId, answered: session.answeredCount, total: session.totalQuestions, currentIndex: session.currentIndex, lastSeenAt: now });
   res.json({ success: true, questionId, answeredCount: session.answeredCount, remainingTime: session.timeLeft });
@@ -12412,32 +12451,37 @@ async function saveDeltaBatchDb(items: DeltaBatchWrite[]) {
 
   const dbKeys = Array.from(deduped.keys());
   await runWithDbKeyLocks(dbKeys, async () => {
-    let client: any = null;
-    let clientError: any = null;
     try {
-      client = await pool.connect();
-      await client.query('BEGIN');
-      for (const [dbKey, item] of deduped.entries()) {
-        if (item.value === null || item.value === undefined) {
-          await client.query('DELETE FROM app_store WHERE key = $1', [dbKey]);
-        } else {
-          await client.query(`
-            INSERT INTO app_store (key, value) VALUES ($1, $2)
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-          `, [dbKey, JSON.stringify(item.value)]);
-        }
-      }
-      await client.query('COMMIT');
+      // Keep a logical batch in one PostgreSQL statement. The previous transaction
+      // still issued one network round-trip per row, which saturated the small
+      // Cloud SQL pool when a class started CBT at the same time.
+      const params: any[] = [];
+      const valueRows = Array.from(deduped.entries()).map(([dbKey, item], index) => {
+        const offset = index * 3;
+        const shouldDelete = item.value === null || item.value === undefined;
+        params.push(dbKey, shouldDelete ? null : JSON.stringify(item.value), shouldDelete);
+        return `($${offset + 1}::text, $${offset + 2}::jsonb, $${offset + 3}::boolean)`;
+      });
+
+      await pool.query(`
+        WITH incoming(key, value, should_delete) AS (
+          VALUES ${valueRows.join(', ')}
+        ), deleted AS (
+          DELETE FROM app_store target
+          USING incoming source
+          WHERE source.should_delete = TRUE AND target.key = source.key
+        )
+        INSERT INTO app_store (key, value)
+        SELECT key, value FROM incoming WHERE should_delete = FALSE
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+      `, params);
+
       for (const item of deduped.values()) {
-        persistedMemorySnapshots.set(item.storeName, cloneStateSnapshot(getMemoryKeyValue(item.storeName)));
+        updatePersistedDeltaSnapshot(item.storeName, item.itemKey, item.value);
       }
     } catch (err) {
-      clientError = err;
-      if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
       if (isOnlineMode) throw err;
       console.error('Atomic delta batch write error:', err);
-    } finally {
-      if (client) { try { client.release(clientError); } catch (_) {} }
     }
   });
 }
@@ -12461,7 +12505,7 @@ async function saveDeltaDb(deltaType: string, itemKey: string, value: any) {
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
           `, [dbKey, JSON.stringify(value)]);
         }
-        persistedMemorySnapshots.set(deltaType, cloneStateSnapshot(getMemoryKeyValue(deltaType)));
+        updatePersistedDeltaSnapshot(deltaType, itemKey, value);
       } catch (e) {
         console.error('Delta write error:', e);
         if (isOnlineMode) throw e;
