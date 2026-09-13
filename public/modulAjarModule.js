@@ -8462,7 +8462,7 @@ window.selectPosterHotspot = function(id, data) {
             <p class="text-xs text-slate-600 mt-1.5 font-medium leading-relaxed">${modulEscapeHtml(data.description)}</p>
             ${data.details ? `
                 <div class="mt-2 pt-2 border-t border-slate-200/50 text-[11px] text-slate-500 font-medium leading-relaxed bg-white/50 p-2 rounded-lg">
-                    💡 <strong>Telaah Lebih Dalam:</strong> ${data.details}
+                    💡 <strong>Telaah Lebih Dalam:</strong> ${modulEscapeHtml(data.details)}
                 </div>
             ` : ''}
         `;

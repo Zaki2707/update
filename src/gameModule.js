@@ -24,6 +24,13 @@ function gameSafeImageSrc(value) {
     const normalized = typeof window.getPhotoHtmlSrc === 'function' ? window.getPhotoHtmlSrc(raw) : raw;
     return gameEscapeAttr(normalized);
 }
+function gameInlineArg(value) {
+    const literal = JSON.stringify(String(value === undefined || value === null ? '' : value))
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026');
+    return gameEscapeAttr(literal);
+}
 
 // --- CONFIRMATION MODAL POPUP HELPER ---
 export function showGameConfirmModal({ title, message, confirmText = 'Ya, Hapus', cancelText = 'Batal', isDanger = true, onConfirm }) {
@@ -4166,8 +4173,8 @@ window.openGameLeaderboardModal = async function() {
                                         ${idx === 0 ? '👑 1' : idx + 1}
                                     </div>
                                     <div>
-                                        <h4 class="font-extrabold text-sm">${r.name}</h4>
-                                        <span class="text-[10px] text-slate-500 font-bold bg-white/80 px-2 py-0.5 rounded-md border border-slate-200 inline-block mt-0.5">${r.className || 'Siswa'} &middot; Lvl ${r.level}</span>
+                                        <h4 class="font-extrabold text-sm">${gameEscapeHtml(r.name)}</h4>
+                                        <span class="text-[10px] text-slate-500 font-bold bg-white/80 px-2 py-0.5 rounded-md border border-slate-200 inline-block mt-0.5">${gameEscapeHtml(r.className || 'Siswa')} &middot; Lvl ${r.level}</span>
                                     </div>
                                 </div>
                                 <div class="text-right">
@@ -6854,7 +6861,7 @@ window.renderGameMonitoringDashboard = async function() {
                     <i class="fa-solid fa-graduation-cap text-indigo-400 text-xs"></i>
                     <select onchange="appState.gameMonitoringClassId = this.value; renderGameMonitoringDashboard();" class="bg-transparent text-xs font-bold text-slate-200 focus:outline-none cursor-pointer">
                         <option value="all" class="bg-slate-900 text-white">🌟 Semua Kelas</option>
-                        ${classes.map(c => `<option value="${c.id || c.name}" ${String(appState.gameMonitoringClassId) === String(c.id || c.name) ? 'selected' : ''} class="bg-slate-900 text-white">${c.name || c.className || c.id}</option>`).join('')}
+                        ${classes.map(c => `<option value="${gameEscapeAttr(c.id || c.name)}" ${String(appState.gameMonitoringClassId) === String(c.id || c.name) ? 'selected' : ''} class="bg-slate-900 text-white">${gameEscapeHtml(c.name || c.className || c.id)}</option>`).join('')}
                     </select>
                 </div>
 
@@ -6863,7 +6870,7 @@ window.renderGameMonitoringDashboard = async function() {
                     <i class="fa-solid fa-gamepad text-emerald-400 text-xs"></i>
                     <select onchange="appState.gameMonitoringGameId = this.value; renderGameMonitoringDashboard();" class="bg-transparent text-xs font-bold text-slate-200 focus:outline-none cursor-pointer">
                         <option value="all" class="bg-slate-900 text-white">🎮 Semua Game</option>
-                        ${games.map(g => `<option value="${g.id}" ${String(appState.gameMonitoringGameId) === String(g.id) ? 'selected' : ''} class="bg-slate-900 text-white">${gameEscapeHtml(g.title)}</option>`).join('')}
+                        ${games.map(g => `<option value="${gameEscapeAttr(g.id)}" ${String(appState.gameMonitoringGameId) === String(g.id) ? 'selected' : ''} class="bg-slate-900 text-white">${gameEscapeHtml(g.title)}</option>`).join('')}
                     </select>
                 </div>
 
@@ -6883,7 +6890,7 @@ window.renderGameMonitoringDashboard = async function() {
             <!-- Search input -->
             <div class="relative min-w-[200px] md:w-64">
                 <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
-                <input type="text" value="${appState.gameMonitoringSearch || ''}" oninput="appState.gameMonitoringSearch = this.value; renderGameMonitoringDashboard();" placeholder="Cari nama atau NIS siswa..." class="w-full pl-8 pr-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                <input type="text" value="${gameEscapeAttr(appState.gameMonitoringSearch || '')}" oninput="appState.gameMonitoringSearch = this.value; renderGameMonitoringDashboard();" placeholder="Cari nama atau NIS siswa..." class="w-full pl-8 pr-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none">
             </div>
         </div>
 
@@ -6921,7 +6928,7 @@ window.renderGameMonitoringDashboard = async function() {
                     const streakCount = Number(st.dailyStreak) || 1;
 
                     return `
-                        <div onclick="focusGameStudentLivecam('${st.id}')" class="relative bg-slate-950 text-white rounded-3xl shadow-xl flex flex-col justify-between overflow-hidden border ${
+                        <div onclick="focusGameStudentLivecam(${gameInlineArg(st.id)})" class="relative bg-slate-950 text-white rounded-3xl shadow-xl flex flex-col justify-between overflow-hidden border ${
                             isPlaying ? 'border-indigo-500/80 ring-2 ring-indigo-500/30 shadow-indigo-950/50' :
                             isCompleted ? 'border-amber-500/80 ring-2 ring-amber-500/20' :
                             isOnlineApp ? 'border-emerald-500/50' : 'border-slate-800'
@@ -6930,10 +6937,10 @@ window.renderGameMonitoringDashboard = async function() {
                             <!-- Background Frame (Photo or Live WebRTC Video) -->
                             <div class="absolute inset-0 z-0 bg-slate-950 overflow-hidden">
                                 ${isVideo ? (isPlaying || isOnlineApp ? `
-                                    <video id="game-webrtc-video-${st.id}" autoplay playsinline muted class="w-full h-full object-cover"></video>
-                                    <div id="game-webrtc-fallback-${st.id}" class="absolute inset-0 flex items-center justify-center pointer-events-none bg-slate-950">
+                                    <video id="game-webrtc-video-${gameEscapeAttr(st.id)}" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                                    <div id="game-webrtc-fallback-${gameEscapeAttr(st.id)}" class="absolute inset-0 flex items-center justify-center pointer-events-none bg-slate-950">
                                         ${studentPhoto ? `
-                                            <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" alt="Foto Absen" class="w-full h-full object-cover opacity-75">
+                                            <img src="${gameSafeImageSrc(studentPhoto)}" alt="Foto Absen" class="w-full h-full object-cover opacity-75">
                                         ` : `
                                             <div class="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-900">
                                                 <i class="fa-solid fa-video text-indigo-400 animate-pulse text-3xl mb-2"></i>
@@ -6951,13 +6958,13 @@ window.renderGameMonitoringDashboard = async function() {
                                     </div>
                                 `) : `
                                     ${studentPhoto ? `
-                                        <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" alt="Foto Siswa" class="w-full h-full object-cover">
+                                        <img src="${gameSafeImageSrc(studentPhoto)}" alt="Foto Siswa" class="w-full h-full object-cover">
                                     ` : `
                                         <div class="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-900">
                                             <div class="w-14 h-14 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center text-slate-300 text-xl font-black uppercase mb-2 shadow">
-                                                ${st.name ? st.name.charAt(0) : '?'}
+                                                ${gameEscapeHtml(st.name ? st.name.charAt(0) : '?')}
                                             </div>
-                                            <span class="text-xs text-slate-300 font-bold">${st.name}</span>
+                                            <span class="text-xs text-slate-300 font-bold">${gameEscapeHtml(st.name)}</span>
                                             <span class="text-[10px] text-slate-500 mt-1 bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700">Foto Absensi Siswa</span>
                                         </div>
                                     `}
@@ -6971,8 +6978,8 @@ window.renderGameMonitoringDashboard = async function() {
                                 <!-- Top Bar: Student Name, NIS, & Online Badges -->
                                 <div class="flex justify-between items-start gap-2">
                                     <div class="bg-slate-950/90 backdrop-blur-md px-3 py-1.5 rounded-2xl border border-white/10 shadow-md max-w-[65%]">
-                                        <span class="text-xs text-white font-black block truncate" title="${st.name}">${st.name}</span>
-                                        <span class="text-[10px] text-slate-400 font-mono block truncate">${st.className || 'Kelas'} &middot; NIS: ${st.nis || '-'}</span>
+                                        <span class="text-xs text-white font-black block truncate" title="${gameEscapeHtml(st.name)}">${gameEscapeHtml(st.name)}</span>
+                                        <span class="text-[10px] text-slate-400 font-mono block truncate">${gameEscapeHtml(st.className || 'Kelas')} &middot; NIS: ${gameEscapeHtml(st.nis || '-')}</span>
                                     </div>
 
                                     <!-- Status Badges -->
@@ -6983,7 +6990,7 @@ window.renderGameMonitoringDashboard = async function() {
                                         </span>
 
                                         <!-- Game Activity Indicator -->
-                                        <span title="${isPlaying ? `Sedang Main: ${sess.gameTitle || 'Game'}` : (isCompleted ? 'Selesai Game' : 'Belum Main Game')}" class="w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md ${
+                                        <span title="${isPlaying ? `Sedang Main: ${gameEscapeAttr(sess.gameTitle || 'Game')}` : (isCompleted ? 'Selesai Game' : 'Belum Main Game')}" class="w-7 h-7 rounded-full flex items-center justify-center text-xs shadow-lg backdrop-blur-md ${
                                             isPlaying ? 'bg-indigo-600 text-white font-bold animate-pulse border border-indigo-400' : 
                                             isCompleted ? 'bg-amber-500 text-slate-950 border border-amber-300' : 
                                             'bg-slate-800/80 text-slate-400 border border-white/10'
@@ -6998,8 +7005,8 @@ window.renderGameMonitoringDashboard = async function() {
                                     ${isPlaying ? `
                                         <div class="inline-block bg-indigo-950/90 border border-indigo-500/50 px-3 py-1.5 rounded-2xl backdrop-blur-md shadow-lg text-left max-w-full">
                                             <span class="text-[9px] font-black uppercase text-indigo-400 tracking-wider block">🕹️ Sedang Mengerjakan:</span>
-                                            <p class="text-xs font-black text-white truncate">${sess.gameTitle || 'Game Edukasi'}</p>
-                                            ${sess.floorName ? `<span class="text-[9px] text-amber-300 font-bold block mt-0.5">${sess.floorName}</span>` : ''}
+                                            <p class="text-xs font-black text-white truncate">${gameEscapeHtml(sess.gameTitle || 'Game Edukasi')}</p>
+                                            ${sess.floorName ? `<span class="text-[9px] text-amber-300 font-bold block mt-0.5">${gameEscapeHtml(sess.floorName)}</span>` : ''}
                                         </div>
                                     ` : (isCompleted ? `
                                         <div class="inline-block bg-amber-950/90 border border-amber-500/50 px-3 py-1.5 rounded-2xl backdrop-blur-md shadow-lg text-center">
@@ -7029,17 +7036,17 @@ window.renderGameMonitoringDashboard = async function() {
                                     <!-- Action Buttons -->
                                     <div class="flex gap-1.5 pt-0.5">
                                         <!-- Send Message Button -->
-                                        <button type="button" title="Kirim Pesan Langsung ke Siswa" onclick="event.stopPropagation(); openSendGameStudentMessageModal('${st.id}', '${st.name.replace(/'/g, "\\'")}')" class="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow flex items-center justify-center cursor-pointer transition">
+                                        <button type="button" title="Kirim Pesan Langsung ke Siswa" onclick="event.stopPropagation(); openSendGameStudentMessageModal(${gameInlineArg(st.id)}, ${gameInlineArg(st.name)})" class="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow flex items-center justify-center cursor-pointer transition">
                                             <i class="fa-solid fa-comment-dots"></i>
                                         </button>
 
                                         <!-- Toggle Video/Photo Button -->
-                                        <button type="button" title="${isVideo ? 'Mode Foto Absen' : 'Mode Video Live'}" onclick="event.stopPropagation(); toggleStudentGameLivecamMode('${st.id}')" class="flex-1 py-1.5 ${isVideo ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'} rounded-xl text-xs font-bold shadow flex items-center justify-center cursor-pointer transition">
+                                        <button type="button" title="${isVideo ? 'Mode Foto Absen' : 'Mode Video Live'}" onclick="event.stopPropagation(); toggleStudentGameLivecamMode(${gameInlineArg(st.id)})" class="flex-1 py-1.5 ${isVideo ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'} rounded-xl text-xs font-bold shadow flex items-center justify-center cursor-pointer transition">
                                             <i class="fa-solid ${isVideo ? 'fa-video' : 'fa-image'}"></i>
                                         </button>
 
                                         <!-- Reset / Kesempatan Ulang Game -->
-                                        <button type="button" title="Reset Sesi Game Siswa" onclick="event.stopPropagation(); confirmResetStudentGameSession('${st.id}', '${st.name.replace(/'/g, "\\'")}')" class="flex-1 py-1.5 bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white rounded-xl text-xs font-bold border border-slate-700 shadow flex items-center justify-center cursor-pointer transition">
+                                        <button type="button" title="Reset Sesi Game Siswa" onclick="event.stopPropagation(); confirmResetStudentGameSession(${gameInlineArg(st.id)}, ${gameInlineArg(st.name)})" class="flex-1 py-1.5 bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white rounded-xl text-xs font-bold border border-slate-700 shadow flex items-center justify-center cursor-pointer transition">
                                             <i class="fa-solid fa-rotate-left"></i>
                                         </button>
                                     </div>
@@ -7255,8 +7262,8 @@ function _executeFocusGameStudentLivecam(studentId) {
                             👤
                         </div>
                         <div>
-                            <h4 class="font-black text-sm text-white">${st.name}</h4>
-                            <p class="text-xs text-slate-400 font-mono">${st.className || 'Kelas'} &middot; NIS: ${st.nis || '-'}</p>
+                            <h4 class="font-black text-sm text-white">${gameEscapeHtml(st.name)}</h4>
+                            <p class="text-xs text-slate-400 font-mono">${gameEscapeHtml(st.className || 'Kelas')} &middot; NIS: ${gameEscapeHtml(st.nis || '-')}</p>
                         </div>
                     </div>
                     <button type="button" onclick="document.getElementById('focus-game-livecam-modal').remove()" class="text-slate-400 hover:text-white p-2 text-lg">
@@ -7267,7 +7274,7 @@ function _executeFocusGameStudentLivecam(studentId) {
                 <div class="p-6 flex flex-col items-center justify-center space-y-4">
                     <div class="w-full max-w-md h-72 rounded-3xl overflow-hidden bg-slate-950 border-2 border-indigo-500/40 shadow-inner flex items-center justify-center relative">
                         ${studentPhoto ? `
-                            <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(studentPhoto) : ''}" class="w-full h-full object-cover">
+                            <img src="${gameSafeImageSrc(studentPhoto)}" class="w-full h-full object-cover">
                         ` : `
                             <div class="text-center p-6 space-y-2">
                                 <i class="fa-solid fa-user-circle text-slate-600 text-6xl"></i>

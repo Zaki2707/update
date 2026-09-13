@@ -726,8 +726,21 @@ await test('Stored assessment, LKPD, game and admin modal data is output-encoded
   assert.match(assessmentSource, /assessmentEscapeHtml\(message\)/);
   assert.match(assessmentSource, /assessmentInlineArg\(examId\)/);
   assert.match(assessmentSource, /assessmentEscapeHtml\(reason\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(studentName\)/);
+  assert.match(assessmentSource, /assessmentEscapeAttr\(defaultTitle\)/);
+  assert.match(assessmentSource, /assessmentEscapeAttr\(defaultSubject\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(ex\.startTime \|\| '07:30'\)/);
   assert.match(lkpdSource, /lkpdEscapeHtml\(reason\)/);
+  assert.match(lkpdSource, /function lkpdInlineArg/);
+  assert.match(lkpdSource, /lkpdEscapeHtml\(lk\.title\)/);
+  assert.match(lkpdSource, /lkpdSafeImageSrc\(lk\.customImage\)/);
+  assert.match(lkpdSource, /lkpdSafeImageSrc\(displayImage\)/);
+  assert.match(lkpdSource, /lkpdEscapeAttr\(window\.appState\.evaluasiLkpdSearchQuery/);
   assert.match(gameSource, /gameSafeImageSrc\(imgUrl\)/);
+  assert.match(gameSource, /function gameInlineArg/);
+  assert.match(gameSource, /gameEscapeHtml\(r\.name\)/);
+  assert.match(gameSource, /gameSafeImageSrc\(studentPhoto\)/);
+  assert.match(gameSource, /gameEscapeAttr\(appState\.gameMonitoringSearch/);
 });
 
 await test('AI poster and PPT fields are encoded before live and exported HTML rendering', () => {
@@ -737,6 +750,7 @@ await test('AI poster and PPT fields are encoded before live and exported HTML r
   assert.match(modulAjarSource, /modulInlineJson\(h\)/);
   assert.match(modulAjarSource, /modulSafePercent\(h\.x\)/);
   assert.match(modulAjarSource, /modulEscapeHtml\(slide\.title\)/);
+  assert.match(modulAjarSource, /modulEscapeHtml\(data\.details\)/);
   assert.match(modulAjarSource, /modulSafeJsonForScript\(slides\)/);
   assert.match(modulAjarSource, /map\(p => `<li>\$\{modulEscapeHtml\(p\)\}<\/li>`\)/);
   assert.doesNotMatch(modulAjarSource, /<img src="\$\{posterData\.imageUrl\}"/);

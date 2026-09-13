@@ -26,6 +26,13 @@ function lkpdSafeImageSrc(value) {
     const normalized = typeof window.getPhotoHtmlSrc === 'function' ? window.getPhotoHtmlSrc(raw) : raw;
     return lkpdEscapeAttr(normalized);
 }
+function lkpdInlineArg(value) {
+    const literal = JSON.stringify(String(value === undefined || value === null ? '' : value))
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026');
+    return lkpdEscapeAttr(literal);
+}
 
 window.getLkpdStorageKey = function() {
     const appState = window.appState || {};
@@ -623,10 +630,10 @@ window.renderLkpdCardsView = function(container) {
                                     <div class="flex items-center justify-between gap-2">
                                         <div class="flex items-center gap-1.5 flex-wrap">
                                             <span class="px-2.5 py-1 bg-indigo-50 text-indigo-700 font-extrabold text-[10px] rounded-xl border border-indigo-200/60">
-                                                <i class="fa-solid fa-book-open mr-1"></i>${lk.subjectName || lk.subjectId || 'Umum'}
+                                                <i class="fa-solid fa-book-open mr-1"></i>${lkpdEscapeHtml(lk.subjectName || lk.subjectId || 'Umum')}
                                             </span>
                                             <span class="px-2.5 py-1 bg-amber-50 text-amber-800 font-extrabold text-[10px] rounded-xl border border-amber-200/60">
-                                                <i class="fa-solid fa-users mr-1"></i>${lk.className || lk.classId || 'Semua Kelas'}
+                                                <i class="fa-solid fa-users mr-1"></i>${lkpdEscapeHtml(lk.className || lk.classId || 'Semua Kelas')}
                                             </span>
                                         </div>
                                         <span class="px-2 py-0.5 bg-emerald-100 text-emerald-800 font-black text-[10px] rounded-full">
@@ -636,14 +643,14 @@ window.renderLkpdCardsView = function(container) {
 
                                     <!-- Title & Description -->
                                     <div>
-                                        <h4 class="font-black text-slate-800 text-base group-hover:text-emerald-700 transition line-clamp-1">${lk.title}</h4>
-                                        <p class="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">${lk.description || 'Lembar kerja interaktif berbasis penanda gambar.'}</p>
+                                        <h4 class="font-black text-slate-800 text-base group-hover:text-emerald-700 transition line-clamp-1">${lkpdEscapeHtml(lk.title)}</h4>
+                                        <p class="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">${lkpdEscapeHtml(lk.description || 'Lembar kerja interaktif berbasis penanda gambar.')}</p>
                                     </div>
 
                                     <!-- Visual Preview Thumbnail -->
-                                    <div class="h-32 rounded-2xl bg-slate-900 overflow-hidden relative border border-slate-200 shadow-inner flex items-center justify-center cursor-pointer" onclick="openManageLkpdModal('${lk.id}')" title="Klik untuk mengelola lembar kerja">
+                                    <div class="h-32 rounded-2xl bg-slate-900 overflow-hidden relative border border-slate-200 shadow-inner flex items-center justify-center cursor-pointer" onclick="openManageLkpdModal(${lkpdInlineArg(lk.id)})" title="Klik untuk mengelola lembar kerja">
                                         ${lk.customImage ? `
-                                            <img src="${lk.customImage}" alt="Custom LKPD" class="w-full h-full object-cover" />
+                                            <img src="${lkpdSafeImageSrc(lk.customImage)}" alt="Custom LKPD" class="w-full h-full object-cover" />
                                         ` : `
                                             <div class="w-full h-full opacity-75 scale-75 transform origin-center">
                                                 <svg viewBox="0 0 1000 650" class="w-full h-full">
@@ -678,26 +685,26 @@ window.renderLkpdCardsView = function(container) {
                                 <!-- Action Buttons Footer -->
                                 <div class="p-4 bg-slate-50/80 border-t border-slate-100 space-y-2">
                                     <div class="grid grid-cols-2 gap-2">
-                                        <button type="button" onclick="openManageLkpdModal('${lk.id}')" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer">
+                                        <button type="button" onclick="openManageLkpdModal(${lkpdInlineArg(lk.id)})" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer">
                                             <i class="fa-solid fa-map-pin text-[11px]"></i> <span>Kelola Titik</span>
                                         </button>
-                                        <button type="button" onclick="openStudentLkpdWorksheetModal('${lk.id}', 'TEACHER_PREVIEW')" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer">
+                                        <button type="button" onclick="openStudentLkpdWorksheetModal(${lkpdInlineArg(lk.id)}, 'TEACHER_PREVIEW')" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer">
                                             <i class="fa-solid fa-eye text-[11px]"></i> <span>Pratinjau Siswa</span>
                                         </button>
                                     </div>
                                     <div class="grid grid-cols-2 gap-2">
-                                        <button type="button" onclick="switchToLkpdMonitoring('${lk.id}')" class="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition flex items-center justify-center gap-1.5 cursor-pointer">
+                                        <button type="button" onclick="switchToLkpdMonitoring(${lkpdInlineArg(lk.id)})" class="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition flex items-center justify-center gap-1.5 cursor-pointer">
                                             <i class="fa-solid fa-desktop text-emerald-600 text-[11px]"></i> <span>Monitoring</span>
                                         </button>
-                                        <button type="button" onclick="switchToLkpdEvaluation('${lk.id}')" class="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition flex items-center justify-center gap-1.5 cursor-pointer">
+                                        <button type="button" onclick="switchToLkpdEvaluation(${lkpdInlineArg(lk.id)})" class="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition flex items-center justify-center gap-1.5 cursor-pointer">
                                             <i class="fa-solid fa-star-half-stroke text-amber-500 text-[11px]"></i> <span>Beri Nilai (${gradedCount}/${submissionsCount})</span>
                                         </button>
                                     </div>
                                     <div class="flex items-center justify-between pt-1">
-                                        <button type="button" onclick="openCreateLkpdModal('${lk.id}')" class="text-slate-400 hover:text-indigo-600 text-xs font-bold transition flex items-center gap-1 cursor-pointer">
+                                        <button type="button" onclick="openCreateLkpdModal(${lkpdInlineArg(lk.id)})" class="text-slate-400 hover:text-indigo-600 text-xs font-bold transition flex items-center gap-1 cursor-pointer">
                                             <i class="fa-solid fa-pen text-[10px]"></i> Edit Info
                                         </button>
-                                        <button type="button" onclick="deleteLkpd('${lk.id}')" class="text-rose-400 hover:text-rose-600 text-xs font-bold transition flex items-center gap-1 cursor-pointer">
+                                        <button type="button" onclick="deleteLkpd(${lkpdInlineArg(lk.id)})" class="text-rose-400 hover:text-rose-600 text-xs font-bold transition flex items-center gap-1 cursor-pointer">
                                             <i class="fa-solid fa-trash-can text-[10px]"></i> Hapus
                                         </button>
                                     </div>
@@ -2537,15 +2544,15 @@ window.renderLkpdMonitoringSection = function(container, lkpdId) {
                         return `
                             <div class="group relative bg-slate-900 border ${isBlocked ? 'border-rose-500 ring-2 ring-rose-500/20' : isOutOfTab ? 'border-amber-500 animate-pulse' : 'border-slate-800'} rounded-3xl shadow-xl overflow-hidden flex flex-col justify-between hover:scale-[1.01] transition-all duration-300">
                                 <!-- Card Media Body: Video Stream or Image Snapshot (Click to Spotlight HD Livecam) -->
-                                <div onclick="focusStudentLivecam('${st.id}')" title="Klik untuk membuka Spotlight Livecam HD ${lkpdEscapeAttr(st.name)}" class="relative w-full aspect-video bg-slate-950 overflow-hidden cursor-pointer group/media">
+                                <div onclick="focusStudentLivecam(${lkpdInlineArg(st.id)})" title="Klik untuk membuka Spotlight Livecam HD ${lkpdEscapeAttr(st.name)}" class="relative w-full aspect-video bg-slate-950 overflow-hidden cursor-pointer group/media">
                                     ${isStudentVideo && isOnline ? `
-                                        <video id="webrtc-video-${st.id}_${activeLkpd.id}" autoplay playsinline muted class="w-full h-full object-cover"></video>
-                                        <div id="webrtc-fallback-${st.id}_${activeLkpd.id}" class="absolute inset-0 flex items-center justify-center bg-slate-950 text-xs text-slate-400">
+                                        <video id="webrtc-video-${lkpdEscapeAttr(st.id)}_${lkpdEscapeAttr(activeLkpd.id)}" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                                        <div id="webrtc-fallback-${lkpdEscapeAttr(st.id)}_${lkpdEscapeAttr(activeLkpd.id)}" class="absolute inset-0 flex items-center justify-center bg-slate-950 text-xs text-slate-400">
                                             <i class="fa-solid fa-spinner fa-spin mr-1.5 text-emerald-400"></i> Menyambungkan Video...
                                         </div>
                                     ` : `
                                         ${displayImage ? `
-                                            <img src="${displayImage}" alt="Live Snapshot" class="w-full h-full object-cover opacity-80" />
+                                            <img src="${lkpdSafeImageSrc(displayImage)}" alt="Live Snapshot" class="w-full h-full object-cover opacity-80" />
                                         ` : `
                                             <div class="absolute inset-0 flex flex-col items-center justify-center text-slate-600 space-y-1">
                                                 <i class="fa-solid fa-user-circle text-4xl"></i>
@@ -2561,7 +2568,7 @@ window.renderLkpdMonitoringSection = function(container, lkpdId) {
                                     <!-- Top Overlay Badges -->
                                     <div class="absolute top-3 left-3 flex flex-wrap gap-1.5 items-center z-10">
                                         <span class="px-2 py-0.5 bg-slate-950/80 backdrop-blur-md text-[9px] font-extrabold rounded-md text-white border border-white/10">
-                                            ${st.name}
+                                            ${lkpdEscapeHtml(st.name)}
                                         </span>
                                         ${isSubmitted ? `
                                             <span class="px-2 py-0.5 bg-emerald-500/90 text-[9px] font-extrabold rounded-md text-white shadow">
@@ -2791,7 +2798,7 @@ window.renderLkpdEvaluationSection = function(container, lkpdId = null) {
                         <span class="text-xs font-black text-slate-500 whitespace-nowrap">Kelas:</span>
                         <select id="eval-lkpd-class-select" onchange="window.handleEvalLkpdClassChanged(this.value)" class="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer">
                             <option value="">-- Semua Kelas --</option>
-                            ${classes.map(c => `<option value="${c.id}" ${selectedClassId === String(c.id) ? 'selected' : ''}>Kelas ${c.name}</option>`).join('')}
+                            ${classes.map(c => `<option value="${lkpdEscapeAttr(c.id)}" ${selectedClassId === String(c.id) ? 'selected' : ''}>Kelas ${lkpdEscapeHtml(c.name)}</option>`).join('')}
                         </select>
                     </div>
 
@@ -2806,7 +2813,7 @@ window.renderLkpdEvaluationSection = function(container, lkpdId = null) {
 
                     <!-- Search Box -->
                     <div class="relative">
-                        <input type="text" id="eval-lkpd-search-input" oninput="window.handleEvalLkpdSearch(this.value)" placeholder="Cari Nama / NIS..." value="${window.appState.evaluasiLkpdSearchQuery || ''}" class="pl-8 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-44">
+                        <input type="text" id="eval-lkpd-search-input" oninput="window.handleEvalLkpdSearch(this.value)" placeholder="Cari Nama / NIS..." value="${lkpdEscapeAttr(window.appState.evaluasiLkpdSearchQuery || '')}" class="pl-8 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-44">
                         <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-[10px]"></i>
                     </div>
                 </div>
@@ -2834,31 +2841,31 @@ window.renderLkpdEvaluationSection = function(container, lkpdId = null) {
                                 <i class="fa-solid fa-rotate"></i><span>Refresh Nilai</span>
                             </button>
                             <!-- Auto Koreksi Non-AI -->
-                            <button id="btn-lkpd-koreksi-non-ai" type="button" onclick="window.runLkpdAutoKoreksiNonAI('${selectedClassId}', '${selectedLkpdId}')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/10 transition cursor-pointer" title="Koreksi Otomatis Menggunakan Kemiripan Kunci Jawaban">
+                            <button id="btn-lkpd-koreksi-non-ai" type="button" onclick="window.runLkpdAutoKoreksiNonAI(${lkpdInlineArg(selectedClassId)}, ${lkpdInlineArg(selectedLkpdId)})" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/10 transition cursor-pointer" title="Koreksi Otomatis Menggunakan Kemiripan Kunci Jawaban">
                                 <i class="fa-solid fa-calculator text-emerald-200"></i><span>Auto Koreksi Non-AI</span>
                             </button>
                             <!-- Auto Koreksi AI -->
-                            <button id="btn-lkpd-koreksi-ai" type="button" onclick="window.runLkpdAutoKoreksiAI('${selectedClassId}', '${selectedLkpdId}')" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/10 transition cursor-pointer" title="Koreksi Otomatis Jawaban Esai Menggunakan AI Gemini">
+                            <button id="btn-lkpd-koreksi-ai" type="button" onclick="window.runLkpdAutoKoreksiAI(${lkpdInlineArg(selectedClassId)}, ${lkpdInlineArg(selectedLkpdId)})" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/10 transition cursor-pointer" title="Koreksi Otomatis Jawaban Esai Menggunakan AI Gemini">
                                 <i class="fa-solid fa-wand-magic-sparkles text-purple-200"></i><span>Auto Koreksi AI</span>
                             </button>
                             <!-- Import ke Nilai Harian -->
-                            <button type="button" onclick="window.openImportLkpdToHarianModal('${selectedClassId}', '${selectedLkpdId}')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-indigo-600/10 transition cursor-pointer" title="Impor nilai evaluasi LKPD ini ke Rekap Nilai Harian">
+                            <button type="button" onclick="window.openImportLkpdToHarianModal(${lkpdInlineArg(selectedClassId)}, ${lkpdInlineArg(selectedLkpdId)})" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-indigo-600/10 transition cursor-pointer" title="Impor nilai evaluasi LKPD ini ke Rekap Nilai Harian">
                                 <i class="fa-solid fa-file-import"></i><span>Import ke Harian</span>
                             </button>
                             <!-- Cetak PDF -->
-                            <button type="button" onclick="window.cetakNilaiLkpdEvaluasi('${selectedClassId}', '${selectedLkpdId}')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/10 transition cursor-pointer">
+                            <button type="button" onclick="window.cetakNilaiLkpdEvaluasi(${lkpdInlineArg(selectedClassId)}, ${lkpdInlineArg(selectedLkpdId)})" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/10 transition cursor-pointer">
                                 <i class="fa-solid fa-file-pdf"></i><span>Cetak PDF</span>
                             </button>
                             <!-- Ekspor Excel -->
-                            <button type="button" onclick="window.exportNilaiExcelLkpdEvaluasi('${selectedClassId}', '${selectedLkpdId}')" class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-teal-600/10 transition cursor-pointer">
+                            <button type="button" onclick="window.exportNilaiExcelLkpdEvaluasi(${lkpdInlineArg(selectedClassId)}, ${lkpdInlineArg(selectedLkpdId)})" class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-teal-600/10 transition cursor-pointer">
                                 <i class="fa-solid fa-file-excel"></i><span>Ekspor Excel (.xlsx)</span>
                             </button>
                             <!-- Download Jawaban -->
-                            <button type="button" onclick="window.openCetakLkpdJawabanModal('${selectedClassId}', '${selectedLkpdId}')" class="px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-slate-700/10 transition cursor-pointer">
+                            <button type="button" onclick="window.openCetakLkpdJawabanModal(${lkpdInlineArg(selectedClassId)}, ${lkpdInlineArg(selectedLkpdId)})" class="px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-slate-700/10 transition cursor-pointer">
                                 <i class="fa-solid fa-download"></i><span>Download Jawaban</span>
                             </button>
                             <!-- Reset Semua Jawaban -->
-                            <button type="button" onclick="window.resetAllLkpdSubmissions('${selectedClassId}', '${selectedLkpdId}')" class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-rose-600/10 transition cursor-pointer" title="Reset Semua Jawaban Siswa LKPD Ini">
+                            <button type="button" onclick="window.resetAllLkpdSubmissions(${lkpdInlineArg(selectedClassId)}, ${lkpdInlineArg(selectedLkpdId)})" class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shadow-rose-600/10 transition cursor-pointer" title="Reset Semua Jawaban Siswa LKPD Ini">
                                 <i class="fa-solid fa-trash-can"></i><span>Reset Semua Jawaban</span>
                             </button>
                         </div>
