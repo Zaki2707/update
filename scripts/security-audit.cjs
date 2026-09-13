@@ -11,6 +11,7 @@ const chatModule = fs.readFileSync('src/chatModule.js', 'utf8');
 const gameModule = fs.readFileSync('src/gameModule.js', 'utf8');
 const cbtModule = fs.readFileSync('src/cbtModules.js', 'utf8');
 const lkpdModule = fs.readFileSync('src/lkpdModule.js', 'utf8');
+const modulAjarModule = fs.readFileSync('src/modulAjarModule.js', 'utf8');
 const gitignore = fs.readFileSync('.gitignore', 'utf8');
 const firestoreRules = fs.readFileSync('firestore.rules', 'utf8');
 let trackedFiles = new Set();
@@ -77,6 +78,11 @@ const checks = [
   ['CBT question and essay output is HTML-escaped', assessment.includes('assessmentEscapeHtml(q.question)') && assessment.includes("assessmentEscapeHtml(sess.answers[q.id] || '')") && assessment.includes('assessmentEscapeHtml(opt)')],
   ['Assessment event and violation HTML sinks are escaped', assessment.includes('assessmentEscapeHtml(ev.title)') && assessment.includes("assessmentEscapeHtml(ev.description || 'Kelompok jadwal ujian')") && assessment.includes("assessmentEscapeHtml(v.studentName || 'Peserta Ujian')") && assessment.includes('assessmentEscapeHtml(v.className)') && assessment.includes("assessmentEscapeHtml(v.reason || 'Keluar Tab / Aplikasi Ujian')") && assessment.includes('assessmentInlineArg(ev.id)')],
   ['Assessment livecam snapshot src is sanitized', (assessment.match(/assessmentSafeImageSrc\(snap\)/g) || []).length >= 3 && !assessment.includes('<img src="${snap}"')],
+  ['Stored admin roster fields are escaped', adminModules.includes('adminEscapeAttr(target.title)') && adminModules.includes('adminEscapeHtml(target.title)') && adminModules.includes('adminInlineArg(target.id)')],
+  ['Stored assessment runtime messages are escaped', assessment.includes('assessmentEscapeHtml(room.name)') && assessment.includes('assessmentEscapeHtml(st.name)') && assessment.includes('assessmentEscapeHtml(title)') && assessment.includes('assessmentEscapeHtml(message)') && assessment.includes('assessmentEscapeHtml(reason)') && assessment.includes('assessmentInlineArg(examId)')],
+  ['LKPD violation overlay escapes reason text', lkpdModule.includes('lkpdEscapeHtml(reason)') && !lkpdModule.includes('<strong>Jenis Pelanggaran:</strong> ${reason}</p>')],
+  ['Game reference image src is sanitized', gameModule.includes('gameSafeImageSrc(imgUrl)') && !gameModule.includes('<img src="${imgUrl}" class="w-full max-h-72')],
+  ['AI poster and PPT output is encoded', modulAjarModule.includes('MODUL_AJAR_OUTPUT_ENCODING_V3') && modulAjarModule.includes('modulEscapeHtml(posterData.title || topic)') && modulAjarModule.includes('modulSafeImageSrc(posterData.imageUrl)') && modulAjarModule.includes('modulInlineJson(h)') && modulAjarModule.includes('modulSafeJsonForScript(slides)') && modulAjarModule.includes('modulEscapeHtml(slide.title)') && !modulAjarModule.includes('<img src="${posterData.imageUrl}"')],
   ['Chat is admin-student only', server.includes('Chat hanya tersedia untuk administrator dan siswa.') && server.includes('const isChatAdmin = adminRoles.has(role)')],
   ['Legacy ChildGuard client integration is retired', server.includes("code: 'CHILDGUARD_RETIRED'") && !server.includes("const studentSyncKeys = new Set(['attendance', 'lkpdList', 'childguardStatus'])")],
   ['Failed online writes restore committed memory', server.includes('persistedMemorySnapshots') && server.includes('rollbackMemoryToPersistedSnapshot(key)')],
@@ -207,6 +213,8 @@ const checks = [
   ['Student LKPD no longer reads global exam monitoring state', !fs.readFileSync('src/lkpdModule.js', 'utf8').includes("const res = await fetch('/api/exam-monitoring-state')")],
   ['LKPD realtime state is tenant namespaced', server.includes('function lkpdStateKey(') && server.includes('function lkpdBroadcastStateKey(') && server.includes('lkpdv1::')],
   ['Teacher generic sync cannot bypass master-data RBAC', server.includes('TEACHER_SYNC_SCOPE_V2') && server.includes('teacherAdminOwnedKeys') && server.includes('questionPayloadAllowedForTeacher')],
+  ['Teacher generic exam sync uses mutation scope', syncStateRoute.includes('TEACHER_SYNC_EXAM_MUTATION_SCOPE_V3') && syncStateRoute.includes('teacherCanMutateExamPayload(req, item)') && syncStateRoute.includes('ujian non-event')],
+  ['Teacher generic LKPD sync is assignment scoped', syncStateRoute.includes('TEACHER_SYNC_LKPD_SCOPE_V3') && syncStateRoute.includes('teacherCanUseLkpdPayload(req, tagNewRecord(clean, req))') && syncStateRoute.includes('Guru hanya dapat menyinkronkan LKPD mata pelajaran yang diampu.')],
   ['Teacher monitoring is assignment scoped', server.includes('TEACHER_MONITOR_SCOPE_V2') && server.includes('monitoringStateKeyAllowedForActor') && server.includes('Guru hanya dapat memonitor ujian mata pelajaran/bank soal yang diampu')],
   ['Student LKPD grading fields are server authoritative', server.includes('LKPD_STUDENT_SUBMISSION_WRITE_SCOPE') && server.includes('scores: existingOwn?.scores || {}') && server.includes('isGraded: existingOwn?.isGraded === true')],
   ['Student stored roles cannot escalate privileges', server.includes('function normalizeStudentStoredRole(') && server.includes('role: normalizeStudentStoredRole(student.role)') && !server.includes('role: student.role || "student"') && !server.includes('role: req.body.role || "student"') && !server.includes('role: req.body.role ?? st.role')],

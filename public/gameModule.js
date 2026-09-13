@@ -6298,7 +6298,7 @@ window.showReferenceImageModal = function(imgUrl) {
                 <button type="button" onclick="document.getElementById('puzzle-reference-modal').remove()" class="text-slate-400 hover:text-slate-700 font-black text-lg cursor-pointer">&times;</button>
             </div>
             <div class="p-2 bg-slate-900 rounded-2xl border border-slate-800">
-                <img src="${imgUrl}" class="w-full max-h-72 object-contain rounded-xl shadow-md">
+                <img src="${gameSafeImageSrc(imgUrl)}" class="w-full max-h-72 object-contain rounded-xl shadow-md">
             </div>
             <p class="text-[10px] font-bold text-slate-500">Susun 9 bagian gambar hingga persis seperti gambar acuan ini.</p>
         </div>

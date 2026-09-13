@@ -1,5 +1,45 @@
 var appState = window.appState || {};
 
+// MODUL_AJAR_OUTPUT_ENCODING_V3: AI/imported text is data, never executable markup.
+function modulEscapeHtml(value) {
+    const raw = String(value === undefined || value === null ? '' : value);
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(raw);
+    return raw.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[ch]));
+}
+function modulEscapeAttr(value) {
+    if (typeof window.escapeHtmlAttr === 'function') return window.escapeHtmlAttr(String(value ?? ''));
+    return modulEscapeHtml(value);
+}
+function modulInlineArg(value) {
+    const literal = JSON.stringify(String(value ?? ''))
+        .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+    return modulEscapeAttr(literal);
+}
+function modulInlineJson(value) {
+    return modulEscapeAttr(JSON.stringify(value ?? null)
+        .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026')
+        .replace(/'/g, '\\u0027'));
+}
+function modulSafeImageSrc(value) {
+    const raw = String(value || '');
+    const normalized = typeof window.getPhotoHtmlSrc === 'function' ? window.getPhotoHtmlSrc(raw) : raw;
+    return modulEscapeAttr(normalized);
+}
+function modulSafePercent(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 50;
+    return Math.max(0, Math.min(100, n));
+}
+function modulSafeIconClass(value) {
+    const tokens = String(value || '').split(/\s+/).filter(token => /^[a-zA-Z0-9_-]+$/.test(token));
+    return modulEscapeAttr(tokens.length ? tokens.join(' ') : 'fa-solid fa-circle');
+}
+function modulSafeJsonForScript(value) {
+    return JSON.stringify(value ?? null)
+        .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026')
+        .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
 window.isSameSubject = function(subA, subB, subjects) {
     if (!subA || !subB) return false;
     const strA = String(subA).trim();
@@ -1375,7 +1415,7 @@ function renderModulAjarModule(container) {
                                                     <button type="button" onclick="deleteLessonPlan('${item.id}')" class="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-100 rounded-lg transition text-[10px]">
                                                         <i class="fa-solid fa-trash-can"></i>
                                                     </button>
-                                                    <button type="button" onclick="window.renderPosterModalViewer(JSON.parse(this.dataset.poster), '${selectedSubject.name.replace(/'/g, "\\'")}', '${item.title.replace(/'/g, "\\'")}')" data-poster="${escapeHtml(item.htmlContent)}" class="px-2.5 py-1 bg-pink-600 hover:bg-pink-700 text-white text-[10px] font-bold rounded-lg transition flex items-center space-x-1 cursor-pointer">
+                                                    <button type="button" onclick="window.renderPosterModalViewer(JSON.parse(this.dataset.poster), ${modulInlineArg(selectedSubject.name)}, ${modulInlineArg(item.title)})" data-poster="${escapeHtml(item.htmlContent)}" class="px-2.5 py-1 bg-pink-600 hover:bg-pink-700 text-white text-[10px] font-bold rounded-lg transition flex items-center space-x-1 cursor-pointer">
                                                         <i class="fa-solid fa-image text-[9px]"></i><span>Buka</span>
                                                     </button>
                                                 </div>
@@ -7765,7 +7805,7 @@ window.openGeneratePosterModal = function(subjectId, defaultTopic = '') {
                     <button type="button" onclick="closeModal()" class="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition"><i class="fa-solid fa-xmark text-lg"></i></button>
                 </div>
 
-                <form id="ai-poster-form" onsubmit="generatePosterInteraktif(event, '${subjectId}', '${subjectName.replace(/'/g, "\\'")}')" class="space-y-4">
+                <form id="ai-poster-form" onsubmit="generatePosterInteraktif(event, ${modulInlineArg(subjectId)}, ${modulInlineArg(subjectName)})" class="space-y-4">
                     <div class="space-y-1.5">
                         <label class="block text-xs font-bold uppercase text-slate-500">Lingkup Modul Ajar Sasaran</label>
                         <select id="ai-poster-scope" class="w-full px-4 py-2.5 bg-pink-50/50 border border-pink-100 rounded-2xl text-xs font-semibold mb-1 cursor-pointer">
@@ -7808,7 +7848,7 @@ window.openGeneratePosterModal = function(subjectId, defaultTopic = '') {
                     <div class="flex items-center justify-between space-x-2 pt-3 border-t border-slate-100 flex-wrap sm:flex-nowrap gap-2">
                         <button type="button" onclick="closeModal()" class="px-4 py-2.5 bg-slate-100 rounded-2xl text-xs font-semibold hover:bg-slate-200 transition">Batal</button>
                         <div class="flex items-center space-x-2">
-                            <button type="button" onclick="generatePosterInteraktifNonAI(event, '${subjectId}', '${subjectName.replace(/'/g, "\\'")}')" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-bold shadow transition flex items-center space-x-1.5 cursor-pointer">
+                            <button type="button" onclick="generatePosterInteraktifNonAI(event, ${modulInlineArg(subjectId)}, ${modulInlineArg(subjectName)})" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-bold shadow transition flex items-center space-x-1.5 cursor-pointer">
                                 <i class="fa-solid fa-file-circle-check"></i><span>Generate Standar (Non-AI)</span>
                             </button>
                             <button type="submit" id="ai-poster-submit-btn" class="px-4 py-2.5 bg-pink-600 text-white rounded-2xl text-xs font-bold hover:bg-pink-700 shadow transition flex items-center space-x-1.5 cursor-pointer">
@@ -7899,8 +7939,8 @@ window.renderPPTViewerModal = function(pptData, subjectName, topic) {
                         </div>
                         <span class="text-slate-600 font-bold">|</span>
                         <div>
-                            <h3 class="font-bold text-sm text-slate-200 line-clamp-1">${pptData.title || topic}</h3>
-                            <p class="text-[11px] text-slate-400">${pptData.subtitle || subjectName}</p>
+                            <h3 class="font-bold text-sm text-slate-200 line-clamp-1">${modulEscapeHtml(pptData.title || topic)}</h3>
+                            <p class="text-[11px] text-slate-400">${modulEscapeHtml(pptData.subtitle || subjectName)}</p>
                         </div>
                     </div>
 
@@ -8130,7 +8170,7 @@ window.updatePPTSlideStage = function() {
             <div class="w-7 h-7 rounded-xl font-extrabold flex items-center justify-center shrink-0 text-xs ${style.cardNum}">
                 ${idx + 1}
             </div>
-            <p class="text-sm leading-relaxed font-semibold ${style.cardText}">${pt}</p>
+            <p class="text-sm leading-relaxed font-semibold ${style.cardText}">${modulEscapeHtml(pt)}</p>
         </div>
     `).join('');
 
@@ -8139,17 +8179,17 @@ window.updatePPTSlideStage = function() {
             <!-- Badge & Type Header -->
             <div class="flex items-center justify-between">
                 <span class="px-3 py-1 rounded-xl text-xs font-bold uppercase tracking-wider ${style.badge}">
-                    ${slide.badge || `Slide ${slide.slideNumber}`}
+                    ${modulEscapeHtml(slide.badge || `Slide ${slide.slideNumber}`)}
                 </span>
                 <span class="text-xs font-mono font-bold ${style.authorText}">
-                    Materi Murni • ${window.currentPPTData.subtitle || 'Media Ajar'}
+                    Materi Murni • ${modulEscapeHtml(window.currentPPTData.subtitle || 'Media Ajar')}
                 </span>
             </div>
 
             <!-- Slide Main Title -->
             <div class="space-y-2">
-                <h1 class="text-2xl sm:text-3xl font-black leading-tight tracking-tight ${style.title}">${slide.title}</h1>
-                ${slide.subtitle ? `<p class="text-sm sm:text-base font-medium ${style.subtitle}">${slide.subtitle}</p>` : ''}
+                <h1 class="text-2xl sm:text-3xl font-black leading-tight tracking-tight ${style.title}">${modulEscapeHtml(slide.title)}</h1>
+                ${slide.subtitle ? `<p class="text-sm sm:text-base font-medium ${style.subtitle}">${modulEscapeHtml(slide.subtitle)}</p>` : ''}
             </div>
 
             <!-- Slide Points List -->
@@ -8163,7 +8203,7 @@ window.updatePPTSlideStage = function() {
                 <i class="fa-solid fa-lightbulb text-base mt-0.5 shrink-0"></i>
                 <div class="space-y-0.5">
                     <span class="text-[11px] font-bold uppercase tracking-wider block ${style.keyTakeawayTitle}">Rangkuman Materi Inti</span>
-                    <p class="text-xs font-medium">${slide.keyTakeaway}</p>
+                    <p class="text-xs font-medium">${modulEscapeHtml(slide.keyTakeaway)}</p>
                 </div>
             </div>
             ` : ''}
@@ -8178,7 +8218,7 @@ window.updatePPTSlideStage = function() {
                     </div>
                     <span class="text-[11px] hover:underline cursor-pointer ${style.interactiveBtn}">Tampilkan Diskusi <i class="fa-solid fa-chevron-down text-[10px] ml-1"></i></span>
                 </div>
-                <p class="text-xs italic font-medium ${style.cardText}">"${slide.interactiveQuestion}"</p>
+                <p class="text-xs italic font-medium ${style.cardText}">"${modulEscapeHtml(slide.interactiveQuestion)}"</p>
                 <div id="ppt-interactive-answer" class="hidden pt-2 border-t border-slate-500/20 text-xs">
                     💡 <strong>Petunjuk Diskusi Guru:</strong> Ajak peserta didik mengutarakan pemikiran kritis atau bertukar ide dengan teman sebangku mengenai sub-bab materi ini.
                 </div>
@@ -8258,8 +8298,8 @@ window.renderPosterModalViewer = function(posterData, subjectName, topic) {
                         </div>
                         <span class="text-white/40 font-bold">|</span>
                         <div>
-                            <h3 class="font-extrabold text-base line-clamp-1 leading-snug">${posterData.title || topic}</h3>
-                            <p class="text-[11px] text-white/80 font-medium">${posterData.subtitle || subjectName}</p>
+                            <h3 class="font-extrabold text-base line-clamp-1 leading-snug">${modulEscapeHtml(posterData.title || topic)}</h3>
+                            <p class="text-[11px] text-white/80 font-medium">${modulEscapeHtml(posterData.subtitle || subjectName)}</p>
                         </div>
                     </div>
                     <div class="flex items-center space-x-2">
@@ -8280,14 +8320,14 @@ window.renderPosterModalViewer = function(posterData, subjectName, topic) {
                     <div class="lg:col-span-7 flex flex-col space-y-4">
                         <div class="rounded-2xl p-4 border border-slate-100 flex flex-col justify-between h-full space-y-4 ${style.canvasBg}">
                             <div>
-                                <h4 class="font-bold text-sm text-slate-800 uppercase tracking-wider">${posterData.illustrationTitle || 'Diagram Konseptual'}</h4>
-                                <p class="text-xs text-slate-500">${posterData.illustrationDescription || 'Arahkan kursor atau klik hotspot pada diagram untuk melihat rahasia detail materi.'}</p>
+                                <h4 class="font-bold text-sm text-slate-800 uppercase tracking-wider">${modulEscapeHtml(posterData.illustrationTitle || 'Diagram Konseptual')}</h4>
+                                <p class="text-xs text-slate-500">${modulEscapeHtml(posterData.illustrationDescription || 'Arahkan kursor atau klik hotspot pada diagram untuk melihat rahasia detail materi.')}</p>
                             </div>
 
                             <!-- Interactive Diagram Container -->
                             <div class="relative w-full aspect-[4/3] rounded-2xl flex items-center justify-center overflow-hidden border border-slate-100 p-8 ${style.illustrationBg}">
                                 ${posterData.imageUrl ? `
-                                    <img src="${posterData.imageUrl}" class="absolute inset-0 w-full h-full object-contain" referrerPolicy="no-referrer" />
+                                    <img src="${modulSafeImageSrc(posterData.imageUrl)}" class="absolute inset-0 w-full h-full object-contain" referrerPolicy="no-referrer" />
                                     <div class="absolute inset-0 bg-slate-900/10 pointer-events-none"></div>
                                 ` : `
                                     <!-- Stylized Techy Central SVG Background to make it look like a physical component schematic diagram -->
@@ -8304,7 +8344,7 @@ window.renderPosterModalViewer = function(posterData, subjectName, topic) {
                                         <div class="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-1">
                                             <i class="fa-solid fa-microchip text-3xl"></i>
                                         </div>
-                                        <h5 class="text-xs font-extrabold text-slate-700 tracking-wide uppercase">${topic}</h5>
+                                        <h5 class="text-xs font-extrabold text-slate-700 tracking-wide uppercase">${modulEscapeHtml(topic)}</h5>
                                         <p class="text-[10px] text-slate-400 font-medium">Sistem Pembelajaran Terpadu</p>
                                     </div>
                                 `}
@@ -8312,9 +8352,9 @@ window.renderPosterModalViewer = function(posterData, subjectName, topic) {
                                 <!-- Hotspot Badges Placement -->
                                 ${(posterData.hotspots || []).map((h, i) => `
                                     <button 
-                                        onclick="selectPosterHotspot('${h.id}', ${JSON.stringify(h).replace(/"/g, '&quot;')})"
+                                        onclick="selectPosterHotspot(${modulInlineArg(h.id)}, ${modulInlineJson(h)})"
                                         class="absolute group z-10 flex items-center justify-center focus:outline-none cursor-pointer"
-                                        style="left: ${h.x}%; top: ${h.y}%;"
+                                        style="left: ${modulSafePercent(h.x)}%; top: ${modulSafePercent(h.y)}%;"
                                     >
                                         <!-- Concentric Pulsing rings -->
                                         <span class="absolute inline-flex h-10 w-10 rounded-full animate-ping opacity-75 ${style.badgePulse}"></span>
@@ -8356,11 +8396,11 @@ window.renderPosterModalViewer = function(posterData, subjectName, topic) {
                                 ${(posterData.corePillars || []).map((cp, idx) => `
                                     <div class="p-4 rounded-2xl transition flex items-start space-x-3.5 ${style.pillarCard}">
                                         <div class="p-2.5 bg-gradient-to-tr from-pink-500 to-indigo-500 text-white rounded-xl shadow-md">
-                                            <i class="${cp.icon || 'fa-solid fa-circle'} text-sm w-4 h-4 text-center flex items-center justify-center"></i>
+                                            <i class="${modulSafeIconClass(cp.icon)} text-sm w-4 h-4 text-center flex items-center justify-center"></i>
                                         </div>
                                         <div class="space-y-1">
-                                            <h5 class="text-sm font-extrabold text-slate-800">${cp.title}</h5>
-                                            <p class="text-xs text-slate-500 leading-relaxed font-medium">${cp.desc}</p>
+                                            <h5 class="text-sm font-extrabold text-slate-800">${modulEscapeHtml(cp.title)}</h5>
+                                            <p class="text-xs text-slate-500 leading-relaxed font-medium">${modulEscapeHtml(cp.desc)}</p>
                                         </div>
                                     </div>
                                 `).join('')}
@@ -8377,7 +8417,7 @@ window.renderPosterModalViewer = function(posterData, subjectName, topic) {
                                 ${(posterData.funFacts || []).map(f => `
                                     <li class="text-xs font-medium leading-relaxed flex items-start space-x-2">
                                         <span class="text-amber-500 font-black shrink-0">•</span>
-                                        <span>${f}</span>
+                                        <span>${modulEscapeHtml(f)}</span>
                                     </li>
                                 `).join('')}
                             </ul>
@@ -8388,7 +8428,7 @@ window.renderPosterModalViewer = function(posterData, subjectName, topic) {
                             <i class="fa-solid fa-graduation-cap text-pink-600 text-base mt-0.5 shrink-0"></i>
                             <div class="space-y-0.5">
                                 <span class="text-[11px] font-bold text-indigo-600 uppercase tracking-wider block">Intisari / Rangkuman Poster</span>
-                                <p class="text-xs text-slate-600 font-semibold italic">"${posterData.summary || 'Visualisasi ini dirancang untuk mendongkrak daya ingat kritis peserta didik.'}"</p>
+                                <p class="text-xs text-slate-600 font-semibold italic">"${modulEscapeHtml(posterData.summary || 'Visualisasi ini dirancang untuk mendongkrak daya ingat kritis peserta didik.')}"</p>
                             </div>
                         </div>
                     </div>
@@ -8416,10 +8456,10 @@ window.selectPosterHotspot = function(id, data) {
         displayPanel.innerHTML = `
             <div class="flex items-center space-x-2 text-pink-600 mb-1">
                 <i class="fa-solid fa-circle-dot text-sm animate-pulse"></i>
-                <span class="text-xs font-black uppercase tracking-wider">${data.label}</span>
+                <span class="text-xs font-black uppercase tracking-wider">${modulEscapeHtml(data.label)}</span>
             </div>
-            <h5 class="text-sm font-extrabold text-slate-900 leading-tight">${data.name}</h5>
-            <p class="text-xs text-slate-600 mt-1.5 font-medium leading-relaxed">${data.description}</p>
+            <h5 class="text-sm font-extrabold text-slate-900 leading-tight">${modulEscapeHtml(data.name)}</h5>
+            <p class="text-xs text-slate-600 mt-1.5 font-medium leading-relaxed">${modulEscapeHtml(data.description)}</p>
             ${data.details ? `
                 <div class="mt-2 pt-2 border-t border-slate-200/50 text-[11px] text-slate-500 font-medium leading-relaxed bg-white/50 p-2 rounded-lg">
                     💡 <strong>Telaah Lebih Dalam:</strong> ${data.details}
@@ -8442,7 +8482,7 @@ window.downloadPPTAsHtml = function() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${ppt.title || 'Presentasi Interaktif'}</title>
+    <title>${modulEscapeHtml(ppt.title || 'Presentasi Interaktif')}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -8454,9 +8494,9 @@ window.downloadPPTAsHtml = function() {
     <div class="px-6 py-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0">
         <div class="flex items-center space-x-3">
             <span class="px-3 py-1 bg-indigo-600 text-white font-extrabold text-xs rounded-xl">PPT INTERAKTIF</span>
-            <h1 class="font-bold text-base text-white">${ppt.title || 'Presentasi Interaktif'}</h1>
+            <h1 class="font-bold text-base text-white">${modulEscapeHtml(ppt.title || 'Presentasi Interaktif')}</h1>
         </div>
-        <div class="text-xs text-slate-400 font-medium">${ppt.author || 'Madrasah Aliyah'}</div>
+        <div class="text-xs text-slate-400 font-medium">${modulEscapeHtml(ppt.author || 'Madrasah Aliyah')}</div>
     </div>
 
     <!-- Main Stage -->
@@ -8470,8 +8510,12 @@ window.downloadPPTAsHtml = function() {
     </div>
 
     <script>
-        const slides = ${JSON.stringify(slides)};
+        const slides = ${modulSafeJsonForScript(slides)};
         let currentIdx = 0;
+        function esc(value) {
+            return String(value === undefined || value === null ? '' : value)
+                .replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[ch]));
+        }
 
         function render() {
             const slide = slides[currentIdx];
@@ -8480,17 +8524,17 @@ window.downloadPPTAsHtml = function() {
             const points = (slide.points || []).map((p, i) => \`
                 <div class="p-4 bg-slate-800 border border-slate-700 rounded-2xl flex items-start space-x-3 mb-3">
                     <span class="w-7 h-7 rounded-xl bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center shrink-0 text-xs border border-indigo-500/30">\${i+1}</span>
-                    <p class="text-sm font-medium text-slate-200">\${p}</p>
+                    <p class="text-sm font-medium text-slate-200">\${esc(p)}</p>
                 </div>
             \`).join('');
 
             document.getElementById('stage').innerHTML = \`
                 <div class="max-w-3xl w-full space-y-6">
-                    <div class="inline-block px-3 py-1 bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 rounded-xl text-xs font-bold uppercase tracking-wider">\${slide.badge || 'Slide ' + (currentIdx+1)}</div>
-                    <h2 class="text-3xl font-black text-white">\${slide.title}</h2>
-                    \${slide.subtitle ? \`<p class="text-indigo-300 font-medium text-sm">\${slide.subtitle}</p>\` : ''}
+                    <div class="inline-block px-3 py-1 bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 rounded-xl text-xs font-bold uppercase tracking-wider">\${esc(slide.badge || 'Slide ' + (currentIdx+1))}</div>
+                    <h2 class="text-3xl font-black text-white">\${esc(slide.title)}</h2>
+                    \${slide.subtitle ? \`<p class="text-indigo-300 font-medium text-sm">\${modulEscapeHtml(slide.subtitle)}</p>\` : ''}
                     <div>\${points}</div>
-                    \${slide.keyTakeaway ? \`<div class="p-4 bg-emerald-950/40 border border-emerald-500/30 rounded-2xl text-xs text-emerald-200 font-medium">💡 \${slide.keyTakeaway}</div>\` : ''}
+                    \${slide.keyTakeaway ? \`<div class="p-4 bg-emerald-950/40 border border-emerald-500/30 rounded-2xl text-xs text-emerald-200 font-medium">💡 \${esc(slide.keyTakeaway)}</div>\` : ''}
                 </div>
             \`;
         }
@@ -8526,23 +8570,23 @@ window.downloadPPTAsDoc = function() {
 
     let docHtml = `
         <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-        <head><meta charset='utf-8'><title>${ppt.title}</title></head>
+        <head><meta charset='utf-8'><title>${modulEscapeHtml(ppt.title)}</title></head>
         <body style="font-family: Arial, sans-serif; padding: 20px;">
-            <h1 style="color: #4f46e5; text-align: center;">${ppt.title}</h1>
-            <p style="text-align: center; font-size: 14px; color: #666;">${ppt.subtitle} | ${ppt.author}</p>
+            <h1 style="color: #4f46e5; text-align: center;">${modulEscapeHtml(ppt.title)}</h1>
+            <p style="text-align: center; font-size: 14px; color: #666;">${modulEscapeHtml(ppt.subtitle)} | ${modulEscapeHtml(ppt.author)}</p>
             <hr style="margin: 20px 0;">
     `;
 
     slides.forEach((s, idx) => {
         docHtml += `
             <div style="margin-bottom: 25px; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px;">
-                <h2 style="color: #1e293b; margin-top: 0;">Slide ${idx + 1}: ${s.title}</h2>
-                ${s.subtitle ? `<p style="color: #6366f1; font-weight: bold;">${s.subtitle}</p>` : ''}
+                <h2 style="color: #1e293b; margin-top: 0;">Slide ${idx + 1}: ${modulEscapeHtml(s.title)}</h2>
+                ${s.subtitle ? `<p style="color: #6366f1; font-weight: bold;">${modulEscapeHtml(s.subtitle)}</p>` : ''}
                 <ul>
-                    ${(s.points || []).map(p => `<li>${p}</li>`).join('')}
+                    ${(s.points || []).map(p => `<li>${modulEscapeHtml(p)}</li>`).join('')}
                 </ul>
-                ${s.keyTakeaway ? `<p style="background: #f0fdf4; border-left: 3px solid #22c55e; padding: 8px; font-size: 12px;"><strong>Key Takeaway:</strong> ${s.keyTakeaway}</p>` : ''}
-                ${s.teacherNote ? `<p style="background: #fffbeb; border-left: 3px solid #f59e0b; padding: 8px; font-size: 12px;"><strong>Catatan Guru:</strong> ${s.teacherNote}</p>` : ''}
+                ${s.keyTakeaway ? `<p style="background: #f0fdf4; border-left: 3px solid #22c55e; padding: 8px; font-size: 12px;"><strong>Key Takeaway:</strong> ${modulEscapeHtml(s.keyTakeaway)}</p>` : ''}
+                ${s.teacherNote ? `<p style="background: #fffbeb; border-left: 3px solid #f59e0b; padding: 8px; font-size: 12px;"><strong>Catatan Guru:</strong> ${modulEscapeHtml(s.teacherNote)}</p>` : ''}
             </div>
         `;
     });

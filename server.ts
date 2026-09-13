@@ -18955,7 +18955,7 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
     if (isTeacherSyncRole && teacherAdminOwnedKeys.has(syncKey)) {
       return res.status(403).json({ success: false, message: 'Master data tersebut hanya dapat diubah administrator melalui endpoint khusus.' });
     }
-    if (isTeacherSyncRole && ['questionBankGroups', 'questionBank', 'questions', 'exams', 'grades'].includes(syncKey) && !Array.isArray(data)) {
+    if (isTeacherSyncRole && ['questionBankGroups', 'questionBank', 'questions', 'exams', 'lkpdList', 'grades'].includes(syncKey) && !Array.isArray(data)) {
       return res.status(400).json({ success: false, message: 'Payload sinkronisasi akademik guru harus berupa array.' });
     }
     if (isTeacherSyncRole && syncKey === 'questionBankGroups') {
@@ -18967,8 +18967,25 @@ app.post("/api/sync-state", requireAuth, async (req, res) => {
       if (denied) return res.status(403).json({ success: false, message: 'Guru hanya dapat menyinkronkan soal mata pelajaran yang diampu.' });
     }
     if (isTeacherSyncRole && syncKey === 'exams') {
-      const denied = data.some((item: any) => !teacherCanUseExamPayload(req, item));
-      if (denied) return res.status(403).json({ success: false, message: 'Guru hanya dapat menyinkronkan ujian mata pelajaran/bank soal yang diampu.' });
+      // TEACHER_SYNC_EXAM_MUTATION_SCOPE_V3: generic sync is a write path, so it
+      // must use the stricter mutation helper. EVENT remains readable but admin-owned.
+      const denied = data.some((item: any) => !teacherCanMutateExamPayload(req, item));
+      if (denied) return res.status(403).json({ success: false, message: 'Guru hanya dapat menyinkronkan ujian non-event pada mata pelajaran/bank soal yang diampu.' });
+    }
+    if (isTeacherSyncRole && syncKey === 'lkpdList') {
+      if (!Array.isArray(data)) {
+        return res.status(400).json({ success: false, message: 'Payload sinkronisasi LKPD guru harus berupa array.' });
+      }
+      // TEACHER_SYNC_LKPD_SCOPE_V3: reject, rather than silently ignore, LKPD
+      // outside the teacher assignment boundary.
+      const denied = data.some((item: any) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return true;
+        const clean = { ...item };
+        delete clean.madrasahId;
+        delete clean.madrasahSlug;
+        return !teacherCanUseLkpdPayload(req, tagNewRecord(clean, req));
+      });
+      if (denied) return res.status(403).json({ success: false, message: 'Guru hanya dapat menyinkronkan LKPD mata pelajaran yang diampu.' });
     }
     if (isTeacherSyncRole && syncKey === 'grades') {
       const denied = data.some((item: any) => !gradePayloadAllowedForTeacher(req, item));

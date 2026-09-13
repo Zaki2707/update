@@ -2167,7 +2167,7 @@ window.triggerLkpdViolation = function(reason) {
                 </div>
                 <h3 class="font-bold text-slate-900 text-lg">Peringatan Pelanggaran Layar LKPD!</h3>
                 <div class="p-3 bg-rose-50 rounded-2xl text-xs text-rose-800 font-semibold space-y-1 text-left border border-rose-200">
-                    <p><i class="fa-solid fa-circle-info mr-1"></i> <strong>Jenis Pelanggaran:</strong> ${reason}</p>
+                    <p><i class="fa-solid fa-circle-info mr-1"></i> <strong>Jenis Pelanggaran:</strong> ${lkpdEscapeHtml(reason)}</p>
                     <p><i class="fa-solid fa-clock-rotate-left mr-1"></i> <strong>Jumlah Pelanggaran:</strong> Pelanggaran ke-${count}</p>
                 </div>
                 <p class="text-xs text-slate-600 leading-relaxed">
