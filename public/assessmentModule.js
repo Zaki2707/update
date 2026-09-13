@@ -752,7 +752,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                             <i class="fa-solid fa-coins"></i>
                         </div>
                         <div>
-                            <span class="text-xs uppercase font-extrabold tracking-wider text-amber-200 block">Saldo Token Ujian Guru (${(appState.currentUser && appState.currentUser.name) || 'Akun Guru'})</span>
+                            <span class="text-xs uppercase font-extrabold tracking-wider text-amber-200 block">Saldo Token Ujian Guru (${assessmentEscapeHtml((appState.currentUser && appState.currentUser.name) || 'Akun Guru')})</span>
                             <div class="flex items-baseline gap-2 mt-0.5">
                                 <span id="token-balance-display-card" class="text-2xl sm:text-3xl font-black text-white">${currentTokens} Token</span>
                                 <span class="text-xs text-amber-100/90 font-medium">tersedia untuk live video monitoring ujian</span>
@@ -3089,7 +3089,7 @@ window.showScheduleNotStartedAlert = function(examId) {
                         <p><span class="font-bold">Mata Pelajaran:</span> ${assessmentEscapeHtml(ex.subject || '-')}</p>
                         <p><span class="font-bold">Judul Ujian:</span> ${assessmentEscapeHtml(ex.title)}</p>
                         <p><span class="font-bold">Tanggal Ujian:</span> ${assessmentEscapeHtml(ex.date || '-')}</p>
-                        <p><span class="font-bold">Waktu Mulai:</span> ${ex.startTime || '07:30'} WIB</p>
+                        <p><span class="font-bold">Waktu Mulai:</span> ${assessmentEscapeHtml(ex.startTime || '07:30')} WIB</p>
                     </div>
                     <p class="text-xs text-slate-400">Silakan kembali saat waktu ujian telah tiba sesuai jadwal di atas.</p>
                     <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-2xl text-xs transition cursor-pointer">Mengerti</button>
@@ -3118,8 +3118,8 @@ window.showScheduleExpiredAlert = function(examId) {
                         <p><span class="font-bold">Mata Pelajaran:</span> ${assessmentEscapeHtml(ex.subject || '-')}</p>
                         <p><span class="font-bold">Judul Ujian:</span> ${assessmentEscapeHtml(ex.title)}</p>
                         <p><span class="font-bold">Tanggal Pelaksanaan:</span> ${assessmentEscapeHtml(ex.date || '-')}</p>
-                        <p><span class="font-bold">Waktu Mulai:</span> ${ex.startTime || '07:30'} WIB</p>
-                        ${ex.endTime ? `<p><span class="font-bold">Batas Waktu Selesai:</span> ${ex.endTime} WIB</p>` : ''}
+                        <p><span class="font-bold">Waktu Mulai:</span> ${assessmentEscapeHtml(ex.startTime || '07:30')} WIB</p>
+                        ${ex.endTime ? `<p><span class="font-bold">Batas Waktu Selesai:</span> ${assessmentEscapeHtml(ex.endTime)} WIB</p>` : ''}
                     </div>
                     <p class="text-xs text-slate-400">Apabila Anda belum mengerjakan, silakan hubungi guru / proktor untuk memperbarui jadwal ujian.</p>
                     <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="w-full py-3 bg-slate-700 hover:bg-slate-800 text-white font-semibold rounded-2xl text-xs transition cursor-pointer">Tutup</button>
@@ -3851,7 +3851,7 @@ window.confirmStartStudentExam = function(examId) {
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <p class="text-xs text-slate-400">Mata Pelajaran</p>
-                                <p class="font-bold text-slate-800">${ex.subject || 'Ujian Madrasah'}</p>
+                                <p class="font-bold text-slate-800">${assessmentEscapeHtml(ex.subject || 'Ujian Madrasah')}</p>
                             </div>
                             <div>
                                 <p class="text-xs text-slate-400">Judul Ujian</p>
@@ -3859,11 +3859,11 @@ window.confirmStartStudentExam = function(examId) {
                             </div>
                             <div>
                                 <p class="text-xs text-slate-400">Jadwal</p>
-                                <p class="font-bold text-slate-800">${ex.date} - ${ex.startTime || '07:30'}</p>
+                                <p class="font-bold text-slate-800">${assessmentEscapeHtml(ex.date || '')} - ${assessmentEscapeHtml(ex.startTime || '07:30')}</p>
                             </div>
                             <div>
                                 <p class="text-xs text-slate-400">Durasi Waktu</p>
-                                <p class="font-bold text-slate-800">${ex.duration} Menit</p>
+                                <p class="font-bold text-slate-800">${assessmentEscapeHtml(ex.duration ?? '')} Menit</p>
                             </div>
                         </div>
                         <div class="bg-rose-50 border border-rose-100 p-4 rounded-2xl text-xs text-rose-700 space-y-1">
@@ -7772,7 +7772,7 @@ function clickKoreksiBelum(studentId, studentName) {
                 </div>
                 <h3 class="font-bold text-slate-800 text-base">Metode Koreksi Esai</h3>
                 <p class="text-xs text-slate-500 leading-relaxed">
-                    Jawaban esai milik <b>${studentName}</b> belum dikoreksi. Silakan pilih metode pengoreksian di bawah ini:
+                    Jawaban esai milik <b>${assessmentEscapeHtml(studentName)}</b> belum dikoreksi. Silakan pilih metode pengoreksian di bawah ini:
                 </p>
                 <div class="flex flex-col gap-2 pt-2">
                     <button type="button" id="single-auto-koreksi-non-ai-btn" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl text-xs shadow-md shadow-emerald-600/10 transition cursor-pointer flex items-center justify-center gap-1.5" title="Mendukung Bahasa Indonesia, Arab (Harakat/Gundul), Inggris & Rumus Matematika">
@@ -8175,7 +8175,7 @@ function openCetakJawabanModal() {
                         <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Metode Cetak</label>
                         <select id="print-scope-select" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500">
                             <option value="ALL">Cetak Seluruh Kelas (${clsStudents.length} Siswa)</option>
-                            ${clsStudents.map(st => `<option value="${st.id}">Cetak Khusus: ${st.name}</option>`).join('')}
+                            ${clsStudents.map(st => `<option value="${assessmentEscapeAttr(st.id)}">Cetak Khusus: ${assessmentEscapeHtml(st.name)}</option>`).join('')}
                         </select>
                     </div>
 
@@ -8853,7 +8853,7 @@ window.openImportToHarianModal = function(classId, examId) {
                 <div class="p-6 space-y-4 text-xs text-slate-700">
                     <div class="bg-indigo-50 border border-indigo-100 p-4 rounded-2xl space-y-2">
                         <div class="flex justify-between items-center text-indigo-900 font-semibold">
-                            <span><i class="fa-solid fa-users mr-1.5 text-indigo-600"></i> Kelas: <b>${cls.name}</b></span>
+                            <span><i class="fa-solid fa-users mr-1.5 text-indigo-600"></i> Kelas: <b>${assessmentEscapeHtml(cls.name)}</b></span>
                             <span class="bg-indigo-200/80 text-indigo-800 px-2.5 py-1 rounded-xl text-[11px] font-bold">${clsStudents.length} Siswa (${gradedCount} Memiliki Nilai)</span>
                         </div>
                         <p class="text-[11px] text-indigo-700">
@@ -8863,13 +8863,13 @@ window.openImportToHarianModal = function(classId, examId) {
 
                     <div>
                         <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Judul Penilaian Harian <span class="text-rose-500">*</span></label>
-                        <input type="text" id="import-harian-title" value="${defaultTitle}" placeholder="Contoh: UH 1 Bahasa Indonesia, PH Bab 2, Assesmen Sumatif 1" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+                        <input type="text" id="import-harian-title" value="${assessmentEscapeAttr(defaultTitle)}" placeholder="Contoh: UH 1 Bahasa Indonesia, PH Bab 2, Assesmen Sumatif 1" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
                         <p class="text-[10px] text-slate-400 mt-1">Judul ini akan menjadi nama kolom pada tabel Rekap Nilai Harian / e-Rapor.</p>
                     </div>
 
                     <div>
                         <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Mata Pelajaran <span class="text-rose-500">*</span></label>
-                        <input type="text" id="import-harian-subject" value="${defaultSubject}" placeholder="Contoh: Bahasa Indonesia, Matematika" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+                        <input type="text" id="import-harian-subject" value="${assessmentEscapeAttr(defaultSubject)}" placeholder="Contoh: Bahasa Indonesia, Matematika" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
                     </div>
                 </div>
 
@@ -8877,7 +8877,7 @@ window.openImportToHarianModal = function(classId, examId) {
                     <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="px-5 py-2.5 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-2xl hover:bg-slate-100 transition cursor-pointer">
                         Batal
                     </button>
-                    <button type="button" onclick="confirmImportEvaluasiToHarian('${classId}', '${examId}')" class="px-5 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-600/20 rounded-2xl transition cursor-pointer flex items-center gap-1.5">
+                    <button type="button" onclick="confirmImportEvaluasiToHarian(${assessmentInlineArg(classId)}, ${assessmentInlineArg(examId)})" class="px-5 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-600/20 rounded-2xl transition cursor-pointer flex items-center gap-1.5">
                         <i class="fa-solid fa-check"></i><span>OK / Impor Nilai</span>
                     </button>
                 </div>
