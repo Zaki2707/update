@@ -66,6 +66,8 @@
   "overrides": {
     "qs": "6.16.0",
     "@xmldom/xmldom": "^0.9.9",
-    "nanoid": "^3.3.19"
+    "nanoid": "^3.3.19",
+    "dompurify": "3.4.13",
+    "esbuild": "$esbuild"
   }
 }
