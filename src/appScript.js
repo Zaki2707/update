@@ -1184,8 +1184,18 @@ function initRealtimeSync() {
         closeSource();
 
         const authToken = getStoredRealtimeAuthToken();
+        const currentUser = appState && appState.currentUser ? appState.currentUser : null;
         if (!authToken) {
             // Logged-out/login page: wait locally. Do NOT hit protected endpoints.
+            rejectedAuthToken = '';
+            scheduleReconnect(1500);
+            return;
+        }
+
+        // A persisted token can exist before initAppSession has validated it against
+        // /api/auth/me. Wait for both runtime readiness and an authenticated in-memory
+        // user so startup cannot race protected realtime endpoints with a stale token.
+        if (window.__onlineRuntimeReady !== true || !currentUser || !currentUser.role) {
             rejectedAuthToken = '';
             scheduleReconnect(1500);
             return;
@@ -1251,10 +1261,12 @@ function initRealtimeSync() {
         };
     }
 
-    // Detect login/logout/token rotation without making any network request while logged out.
+    // Detect login/logout/token rotation without making any protected request
+    // until startup readiness and session restoration are both complete.
     authWatchInterval = setInterval(() => {
         const currentToken = getStoredRealtimeAuthToken();
-        if (!currentToken) {
+        const currentUser = appState && appState.currentUser ? appState.currentUser : null;
+        if (!currentToken || window.__onlineRuntimeReady !== true || !currentUser || !currentUser.role) {
             if (sseSource) closeSource();
             return;
         }
@@ -1281,8 +1293,8 @@ function initRealtimeSync() {
 
 window.initRealtimeSync = initRealtimeSync;
 
-// Start realtime synchronization on load. When logged out this only performs a
-// lightweight local auth check and does not call the protected realtime API.
+// Start realtime synchronization on load. It remains local-only until runtime
+// readiness and the persisted/authenticated session have both been validated.
 setTimeout(initRealtimeSync, 1000);
 
 window.applyLogoShape = function(element, shape) {
