@@ -11,12 +11,12 @@ const ACCOUNT_OFFSET = Math.max(0, Number.parseInt(__ENV.ACCOUNT_OFFSET || '0', 
 const SOAK_MINUTES = Math.max(1, Number.parseFloat(__ENV.SOAK_MINUTES || '15'));
 const SOAK_SECONDS = SOAK_MINUTES * 60;
 const RAMP_SECONDS = Math.max(0, Number.parseFloat(__ENV.RAMP_SECONDS || '20'));
-const HEARTBEAT_SECONDS = Math.max(3, Number.parseFloat(__ENV.HEARTBEAT_SECONDS || '10'));
+const HEARTBEAT_SECONDS = Math.max(5, Number.parseFloat(__ENV.HEARTBEAT_SECONDS || '15'));
 const ANSWER_SECONDS = Math.max(5, Number.parseFloat(__ENV.ANSWER_SECONDS || '30'));
 const SUMMARY_SECONDS = Math.max(15, Number.parseFloat(__ENV.SUMMARY_SECONDS || '60'));
 const RECOVERY_RATE = Math.min(1, Math.max(0, Number.parseFloat(__ENV.RECOVERY_RATE || '0.10')));
 const VIOLATION_RATE = Math.min(1, Math.max(0, Number.parseFloat(__ENV.VIOLATION_RATE || '0')));
-const ACCOUNTS_FILE = String(__ENV.ACCOUNTS_FILE || './accounts.local.json');
+const ACCOUNTS_FILE = String(__ENV.ACCOUNTS_FILE || './accounts.loadtest.local.json');
 
 if (!EXAM_ID) {
   throw new Error('EXAM_ID wajib diisi. Gunakan ID ujian LOAD TEST khusus, jangan ujian sungguhan.');
@@ -201,7 +201,8 @@ export default function () {
 
   const startedAt = Date.now();
   const stopAt = startedAt + (SOAK_SECONDS * 1000);
-  let nextHeartbeatAt = startedAt;
+  let nextHeartbeatAt = startedAt + (1000 + Math.random() * 3000);
+  let heartbeatBackoffSeconds = 0;
   let nextAnswerAt = startedAt + (ANSWER_SECONDS * 1000 * (0.5 + Math.random()));
   let nextSummaryAt = startedAt + (SUMMARY_SECONDS * 1000 * (0.5 + Math.random()));
   let answerIndex = 0;
@@ -225,8 +226,18 @@ export default function () {
       const hbOk = check(hbRes, { 'soak heartbeat 200': (r) => r.status === 200 });
       heartbeatFail.add(!hbOk);
       heartbeatCount.add(1);
-      if (!hbOk) logFailure('heartbeat', hbRes);
-      nextHeartbeatAt = now + (HEARTBEAT_SECONDS * 1000);
+      if (!hbOk) {
+        logFailure('heartbeat', hbRes);
+        if (hbRes.status === 429 || hbRes.status === 503 || hbRes.status === 0) {
+          heartbeatBackoffSeconds = heartbeatBackoffSeconds
+            ? Math.min(60, heartbeatBackoffSeconds * 2)
+            : 5;
+        }
+      } else {
+        heartbeatBackoffSeconds = 0;
+      }
+      const nextHeartbeatSeconds = Math.max(HEARTBEAT_SECONDS, heartbeatBackoffSeconds);
+      nextHeartbeatAt = now + ((nextHeartbeatSeconds + Math.random() * 3) * 1000);
     }
 
     if (answerIndex < questions.length && now >= nextAnswerAt) {
