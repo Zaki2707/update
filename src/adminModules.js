@@ -63,17 +63,17 @@ function renderClassModule(container) {
                         <tbody class="divide-y divide-slate-100 text-sm">
                             ${(appState.classes || []).map(c => {
                                 const teacher = (appState.teachers || []).find(t => String(t.id) === String(c.homeroomTeacherId || c.homeroom_teacher_id));
-                                const teacherName = teacher ? teacher.name : '<span class="text-slate-400 italic text-xs">Belum ditentukan</span>';
+                                const teacherName = teacher ? adminEscapeHtml(teacher.name) : '<span class="text-slate-400 italic text-xs">Belum ditentukan</span>';
                                 return `
                                     <tr class="hover:bg-slate-50/50 transition">
-                                        <td class="p-4 font-mono text-xs font-bold text-emerald-700">${c.id}</td>
-                                        <td class="p-4 font-semibold text-slate-800">${c.name}</td>
-                                        <td class="p-4"><span class="px-2.5 py-1 bg-slate-100 rounded-xl text-xs font-semibold">${c.grade}</span></td>
+                                        <td class="p-4 font-mono text-xs font-bold text-emerald-700">${adminEscapeHtml(c.id)}</td>
+                                        <td class="p-4 font-semibold text-slate-800">${adminEscapeHtml(c.name)}</td>
+                                        <td class="p-4"><span class="px-2.5 py-1 bg-slate-100 rounded-xl text-xs font-semibold">${adminEscapeHtml(c.grade)}</span></td>
                                         <td class="p-4 text-slate-700 font-medium">${teacherName}</td>
                                         ${!isTeacher ? `
                                         <td class="p-4 text-center space-x-2">
-                                            <button type="button" onclick="openClassModal('${c.id}')" class="p-2 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition"><i class="fa-solid fa-pen text-xs"></i></button>
-                                            <button type="button" onclick="deleteClass('${c.id}')" class="p-2 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition"><i class="fa-solid fa-trash text-xs"></i></button>
+                                            <button type="button" onclick="openClassModal(${adminInlineArg(c.id)})" class="p-2 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition"><i class="fa-solid fa-pen text-xs"></i></button>
+                                            <button type="button" onclick="deleteClass(${adminInlineArg(c.id)})" class="p-2 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition"><i class="fa-solid fa-trash text-xs"></i></button>
                                         </td>
                                         ` : ''}
                                     </tr>
@@ -102,8 +102,8 @@ function filterHomeroomTeachers(searchQuery = '') {
                     <span class="text-[10px] uppercase font-bold text-emerald-600 block mb-1">Wali Kelas Terpilih:</span>
                     <div class="flex items-center justify-between">
                         <div>
-                            <span class="font-bold text-slate-800">${currentTeacher.name}</span>
-                            <span class="text-[10px] text-slate-500 font-mono block">NIP: ${currentTeacher.nip || '-'}</span>
+                            <span class="font-bold text-slate-800">${adminEscapeHtml(currentTeacher.name)}</span>
+                            <span class="text-[10px] text-slate-500 font-mono block">NIP: ${adminEscapeHtml(currentTeacher.nip || '-')}</span>
                         </div>
                         <button type="button" onclick="appState.tempSelectedTeacherId = ''; filterHomeroomTeachers('')" class="text-rose-600 hover:text-rose-800 font-semibold text-[10px]">Hapus</button>
                     </div>
@@ -139,10 +139,10 @@ function filterHomeroomTeachers(searchQuery = '') {
             const isChecked = String(t.id) === String(appState.tempSelectedTeacherId);
             return `
                 <label class="flex items-center space-x-2.5 p-2 hover:bg-emerald-50 rounded-xl cursor-pointer text-xs transition">
-                    <input type="radio" name="homeroom-teacher-radio" value="${t.id}" ${isChecked ? 'checked' : ''} onchange="appState.tempSelectedTeacherId = this.value; filterHomeroomTeachers('')" class="text-emerald-600 focus:ring-emerald-500 w-4 h-4">
+                    <input type="radio" name="homeroom-teacher-radio" value="${adminEscapeAttr(t.id)}" ${isChecked ? 'checked' : ''} onchange="appState.tempSelectedTeacherId = this.value; filterHomeroomTeachers('')" class="text-emerald-600 focus:ring-emerald-500 w-4 h-4">
                     <div class="flex-1 text-left">
-                        <span class="font-bold text-slate-800 block">${t.name}</span>
-                        <span class="text-[10px] text-slate-500 font-mono block">NIP: ${t.nip || '-'}</span>
+                        <span class="font-bold text-slate-800 block">${adminEscapeHtml(t.name)}</span>
+                        <span class="text-[10px] text-slate-500 font-mono block">NIP: ${adminEscapeHtml(t.nip || '-')}</span>
                     </div>
                 </label>
             `;
@@ -1544,16 +1544,16 @@ function openStudentModal(id = null) {
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
             <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-3 text-xs sm:text-sm">
                 <div class="flex justify-between items-center"><h3 class="font-bold text-slate-800">${id ? 'Edit Murid' : 'Tambah Murid'}</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-lg"></i></button></div>
-                <form onsubmit="saveStudent(event, '${id || ''}')" class="space-y-3">
-                    <div><label class="block text-xs uppercase text-slate-500 mb-1">NIS</label><input type="text" id="std-nis" value="${item.nis || ''}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
-                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Nama</label><input type="text" id="std-name" value="${item.name || ''}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
+                <form onsubmit="saveStudent(event, ${adminInlineArg(id || '')})" class="space-y-3">
+                    <div><label class="block text-xs uppercase text-slate-500 mb-1">NIS</label><input type="text" id="std-nis" value="${adminEscapeAttr(item.nis || '')}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
+                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Nama</label><input type="text" id="std-name" value="${adminEscapeAttr(item.name || '')}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Kelas</label>
                         <select id="std-class" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl">
-                            ${(appState.classes || []).map(c => `<option value="${c.id}" ${String(item.classId) === String(c.id) ? 'selected' : ''}>${c.name}</option>`).join('')}
+                            ${(appState.classes || []).map(c => `<option value="${adminEscapeAttr(c.id)}" ${String(item.classId) === String(c.id) ? 'selected' : ''}>${adminEscapeHtml(c.name)}</option>`).join('')}
                         </select>
                     </div>
-                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Username</label><input type="text" id="std-user" value="${item.username || ''}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
+                    <div><label class="block text-xs uppercase text-slate-500 mb-1">Username</label><input type="text" id="std-user" value="${adminEscapeAttr(item.username || '')}" required class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
                     <div><label class="block text-xs uppercase text-slate-500 mb-1">Password ${id ? '(opsional)' : '(otomatis jika kosong)'}</label><input type="password" id="std-pass" value="" autocomplete="new-password" placeholder="${id ? 'Kosongkan jika tidak diubah' : 'Kosongkan untuk membuat password aman otomatis'}" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl"></div>
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Peran / Hak Akses Akun</label>
@@ -3528,11 +3528,11 @@ function openEditSavedRosterModal(rosterId) {
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-slate-700 mb-1">Nama Versi Roster</label>
-                    <input type="text" id="roster-edit-title" value="${target.title}" class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-emerald-500" />
+                    <input type="text" id="roster-edit-title" value="${adminEscapeAttr(target.title)}" class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-emerald-500" />
                 </div>
                 <div class="flex justify-end gap-2 pt-2">
                     <button type="button" onclick="closeModal()" class="px-3.5 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-xl cursor-pointer">Batal</button>
-                    <button type="button" onclick="confirmEditSavedRoster('${target.id}')" class="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs cursor-pointer">Simpan</button>
+                    <button type="button" onclick="confirmEditSavedRoster(${adminInlineArg(target.id)})" class="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs cursor-pointer">Simpan</button>
                 </div>
             </div>
         </div>
@@ -3581,12 +3581,12 @@ function openDeleteSavedRosterModal(rosterId) {
                     </button>
                 </div>
                 <div class="text-xs text-slate-600 leading-relaxed space-y-1">
-                    <p>Apakah Anda yakin ingin menghapus versi roster <strong>"${target.title}"</strong>?</p>
+                    <p>Apakah Anda yakin ingin menghapus versi roster <strong>"${adminEscapeHtml(target.title)}"</strong>?</p>
                     <p class="text-[11px] text-slate-400">Tindakan ini tidak dapat dibatalkan.</p>
                 </div>
                 <div class="flex justify-end gap-2 pt-2">
                     <button type="button" onclick="closeModal()" class="px-3.5 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer">Batal</button>
-                    <button type="button" onclick="confirmDeleteSavedRoster('${target.id}')" class="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs cursor-pointer">Hapus Roster</button>
+                    <button type="button" onclick="confirmDeleteSavedRoster(${adminInlineArg(target.id)})" class="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs cursor-pointer">Hapus Roster</button>
                 </div>
             </div>
         </div>
