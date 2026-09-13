@@ -3877,7 +3877,7 @@ window.confirmStartStudentExam = function(examId) {
                     </div>
                     <div class="p-6 bg-slate-50 flex justify-end gap-3 rounded-b-3xl">
                         <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="px-5 py-2.5 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-100 transition">Batal</button>
-                        <button type="button" onclick="document.getElementById('modal-container').innerHTML=''; startStudentExam('${ex.id}');" class="px-5 py-2.5 text-xs font-semibold text-white bg-emerald-600 rounded-xl hover:bg-emerald-700 shadow-sm transition">Mulai Ujian</button>
+                        <button type="button" onclick="document.getElementById('modal-container').innerHTML=''; startStudentExam(${assessmentInlineArg(ex.id)});" class="px-5 py-2.5 text-xs font-semibold text-white bg-emerald-600 rounded-xl hover:bg-emerald-700 shadow-sm transition">Mulai Ujian</button>
                     </div>
                 </div>
             </div>
@@ -3901,10 +3901,10 @@ function showExamMessageModal(title, message, examId = '', studentId = '', isBro
                 <i class="fa-solid fa-bell"></i>
             </div>
             <div>
-                <h3 class="text-2xl font-bold text-white mb-2">${title}</h3>
-                <p class="text-blue-100 text-lg leading-relaxed">${message}</p>
+                <h3 class="text-2xl font-bold text-white mb-2">${assessmentEscapeHtml(title)}</h3>
+                <p class="text-blue-100 text-lg leading-relaxed">${assessmentEscapeHtml(message)}</p>
             </div>
-            <button type="button" onclick="dismissStudentExamMessage('${examId}', '${studentId}', ${Boolean(isBroadcast)}); const el = document.getElementById('exam-message-overlay'); if (el) el.remove();" class="px-8 py-3 bg-white text-blue-700 font-bold rounded-2xl shadow hover:bg-blue-50 transition w-full cursor-pointer">Mengerti</button>
+            <button type="button" onclick="dismissStudentExamMessage(${assessmentInlineArg(examId)}, ${assessmentInlineArg(studentId)}, ${Boolean(isBroadcast)}); const el = document.getElementById('exam-message-overlay'); if (el) el.remove();" class="px-8 py-3 bg-white text-blue-700 font-bold rounded-2xl shadow hover:bg-blue-50 transition w-full cursor-pointer">Mengerti</button>
         </div>
     `;
 }
@@ -4263,7 +4263,7 @@ async function startStudentExam(examId) {
                         </div>
                         <h3 class="font-bold text-slate-900 text-lg">Peringatan Pelanggaran Layar Ujian!</h3>
                         <div class="p-3 bg-rose-50 rounded-2xl text-xs text-rose-800 font-semibold space-y-1 text-left border border-rose-200">
-                            <p><i class="fa-solid fa-circle-info mr-1"></i> <strong>Jenis Pelanggaran:</strong> ${reason}</p>
+                            <p><i class="fa-solid fa-circle-info mr-1"></i> <strong>Jenis Pelanggaran:</strong> ${assessmentEscapeHtml(reason)}</p>
                             <p><i class="fa-solid fa-clock-rotate-left mr-1"></i> <strong>Jumlah Pelanggaran:</strong> Pelanggaran ke-${count}</p>
                         </div>
                         <p class="text-xs text-slate-600 leading-relaxed">
@@ -5625,7 +5625,7 @@ function openBroadcastMessageModal(examId) {
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
             <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-4">
                 <div class="flex justify-between items-center"><h3 class="font-bold text-slate-800">Kirim Pesan ke Semua Peserta Ujian</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>
-                <form onsubmit="sendBroadcastExamMessage(event, '${examId}')" class="space-y-3 text-xs sm:text-sm">
+                <form onsubmit="sendBroadcastExamMessage(event, ${assessmentInlineArg(examId)})" class="space-y-3 text-xs sm:text-sm">
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Isi Pesan Broadcast</label>
                         <textarea id="exam-broadcast-text" required rows="3" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" placeholder="Contoh: Sisa waktu ujian tinggal 10 menit lagi!"></textarea>
@@ -6041,7 +6041,7 @@ function showTokenDeductionConfirmModal(message, onConfirm) {
                     <i class="fa-solid fa-coins"></i>
                 </div>
                 <h3 class="font-bold text-slate-800 text-base">Konfirmasi Akses Video Live</h3>
-                <p class="text-xs text-slate-500 leading-relaxed">${message}</p>
+                <p class="text-xs text-slate-500 leading-relaxed">${assessmentEscapeHtml(message)}</p>
                 <div class="flex space-x-3 pt-2">
                     <button type="button" onclick="closeModal()" class="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-2xl text-xs transition cursor-pointer">
                         Batal
