@@ -4507,10 +4507,7 @@ function toggleCustomLoginBgColor(val) {
     }
 }
 
-function saveLoginCustomization(e) {
-    if (e) e.preventDefault();
-    if (!appState.settings) appState.settings = {};
-
+function readLoginCustomizationForm() {
     const logoPos = document.getElementById('login-set-logo-pos')?.value || 'center';
     const logoSize = document.getElementById('login-set-logo-size')?.value || 'medium';
     const logoShape = document.getElementById('login-set-logo-shape')?.value || 'rounded-2xl';
@@ -4527,7 +4524,7 @@ function saveLoginCustomization(e) {
     const panelTitle = document.getElementById('login-set-panel-title')?.value || '';
     const panelDesc = document.getElementById('login-set-panel-desc')?.value || '';
 
-    appState.settings.loginConfig = {
+    return {
         logoPosition: logoPos,
         logoSize: logoSize,
         logoShape: logoShape,
@@ -4544,6 +4541,13 @@ function saveLoginCustomization(e) {
         panelTitle: panelTitle,
         panelDesc: panelDesc
     };
+}
+
+function saveLoginCustomization(e) {
+    if (e) e.preventDefault();
+    if (!appState.settings) appState.settings = {};
+
+    appState.settings.loginConfig = readLoginCustomizationForm();
 
     saveState('settings');
 
@@ -4556,16 +4560,75 @@ function saveLoginCustomization(e) {
     }
 }
 
+function closeLoginPageCustomizationPreview() {
+    document.getElementById('login-customization-preview')?.remove();
+    document.body.classList.remove('overflow-hidden');
+}
+
 function previewLoginPageCustomization() {
-    saveLoginCustomization(null);
-    showToast('Membuka pratinjau halaman login...', 'info');
-    setTimeout(() => {
-        const mainApp = document.getElementById('main-app');
-        const loginContainer = document.getElementById('login-container');
-        if (mainApp) mainApp.classList.add('hidden');
-        if (loginContainer) loginContainer.classList.remove('hidden');
+    const loginContainer = document.getElementById('login-container');
+    if (!loginContainer) {
+        showToast('Pratinjau halaman login tidak tersedia.', 'error');
+        return;
+    }
+
+    closeLoginPageCustomizationPreview();
+
+    // PREVIEW_SESSION_ISOLATION_V1: render the unsaved draft into a detached,
+    // inert copy. Never hide the authenticated app, persist settings, clear the
+    // current user, or expose a live login form from the admin session.
+    if (!appState.settings) appState.settings = {};
+    const hadSavedConfig = Object.prototype.hasOwnProperty.call(appState.settings, 'loginConfig');
+    const savedConfig = appState.settings.loginConfig;
+    let previewSurface;
+    try {
+        appState.settings.loginConfig = readLoginCustomizationForm();
         if (window.applyLoginCustomization) window.applyLoginCustomization();
-    }, 200);
+        previewSurface = loginContainer.cloneNode(true);
+    } finally {
+        if (hadSavedConfig) appState.settings.loginConfig = savedConfig;
+        else delete appState.settings.loginConfig;
+        if (window.applyLoginCustomization) window.applyLoginCustomization();
+    }
+
+    previewSurface.id = 'login-customization-preview-surface';
+    previewSurface.classList.remove('hidden');
+    previewSurface.setAttribute('inert', '');
+    previewSurface.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    previewSurface.querySelectorAll('form').forEach(form => {
+        form.removeAttribute('onsubmit');
+        form.reset();
+    });
+    previewSurface.querySelectorAll('input, button, select, textarea, a').forEach(el => {
+        el.setAttribute('tabindex', '-1');
+        el.removeAttribute('onclick');
+        if ('disabled' in el) el.disabled = true;
+    });
+
+    const overlay = document.createElement('div');
+    overlay.id = 'login-customization-preview';
+    overlay.className = 'fixed inset-0 z-[200] overflow-y-auto bg-slate-950/80 p-3 sm:p-6';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Pratinjau halaman login');
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'sticky top-0 z-20 mb-3 flex items-center justify-between gap-3 rounded-2xl bg-amber-400 px-4 py-3 text-slate-950 shadow-xl';
+    const label = document.createElement('strong');
+    label.className = 'text-xs sm:text-sm';
+    label.textContent = 'PRATINJAU HALAMAN LOGIN — perubahan belum disimpan';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800';
+    closeButton.textContent = 'Tutup Pratinjau';
+    closeButton.addEventListener('click', closeLoginPageCustomizationPreview);
+    toolbar.append(label, closeButton);
+
+    overlay.append(toolbar, previewSurface);
+    document.body.appendChild(overlay);
+    document.body.classList.add('overflow-hidden');
+    closeButton.focus();
+    showToast('Pratinjau dibuka tanpa mengubah sesi atau menyimpan pengaturan.', 'info');
 }
 
 async function runSmartPhotoCleanup() {
@@ -4706,6 +4769,7 @@ window.renderSettingModule = renderSettingModule;
 window.saveLoginCustomization = saveLoginCustomization;
 window.toggleCustomLoginBgColor = toggleCustomLoginBgColor;
 window.previewLoginPageCustomization = previewLoginPageCustomization;
+window.closeLoginPageCustomizationPreview = closeLoginPageCustomizationPreview;
 window.saveSettings = saveSettings;
 window.loadSchoolLocationSettings = loadSchoolLocationSettings;
 window.useCurrentSchoolLocation = useCurrentSchoolLocation;
@@ -4766,6 +4830,7 @@ Object.assign(window, {
   saveLoginCustomization,
   toggleCustomLoginBgColor,
   previewLoginPageCustomization,
+  closeLoginPageCustomizationPreview,
   searchUserAccounts,
   openEditRoleModal,
   saveUserRole,

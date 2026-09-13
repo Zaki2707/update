@@ -1618,9 +1618,10 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
     if (!lkpd) return;
 
     const currentUser = window.appState.currentUser || { id: 'ST1', name: 'Muhammad Al Fatih', nis: '1001' };
-    const isTeacherPreview = studentId === 'TEACHER_PREVIEW' || 
-        window.appState?.activeAccount === 'ADMIN' || 
-        (currentUser && (currentUser.role === 'GURU' || currentUser.role === 'ADMIN' || currentUser.nip));
+    const currentRole = String(currentUser.role || window.appState?.role || '').toLowerCase().trim();
+    const isTeacherPreview = studentId === 'TEACHER_PREVIEW' ||
+        String(window.appState?.activeAccount || '').toUpperCase() === 'ADMIN' ||
+        ['teacher', 'guru', 'admin', 'administrator'].includes(currentRole);
 
     window.isTeacherPreviewMode = isTeacherPreview;
 
@@ -1818,16 +1819,29 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
     `;
 
     document.getElementById('student-lkpd-modal-bg')?.remove();
-    
-    // Hide standard navigation
-    const sidebar = document.getElementById('sidebar');
-    const header = document.querySelector('header');
-    if (sidebar) sidebar.style.display = 'none';
-    if (header) header.style.display = 'none';
 
-    const container = document.getElementById('view-container');
-    if (container) {
-        container.innerHTML = modalHtml;
+    if (isTeacherPreview) {
+        // LKPD_PREVIEW_SESSION_ISOLATION_V1: keep the authenticated route and
+        // navigation mounted underneath an isolated preview overlay. Closing
+        // the preview therefore cannot rebuild the app as another account.
+        const previewOverlay = document.createElement('div');
+        previewOverlay.id = 'student-lkpd-modal-bg';
+        previewOverlay.className = 'fixed inset-0 z-[200] overflow-y-auto bg-slate-100 p-3 sm:p-6';
+        previewOverlay.setAttribute('role', 'dialog');
+        previewOverlay.setAttribute('aria-modal', 'true');
+        previewOverlay.setAttribute('aria-label', 'Pratinjau LKPD siswa');
+        previewOverlay.innerHTML = modalHtml;
+        document.body.appendChild(previewOverlay);
+        document.body.classList.add('overflow-hidden');
+    } else {
+        // A real student worksheet remains a focused full-page route.
+        const sidebar = document.getElementById('sidebar');
+        const header = document.querySelector('header');
+        if (sidebar) sidebar.style.display = 'none';
+        if (header) header.style.display = 'none';
+
+        const container = document.getElementById('view-container');
+        if (container) container.innerHTML = modalHtml;
     }
 
     // Record active session
@@ -2010,7 +2024,7 @@ window.openStudentLkpdWorksheetModal = function(lkpdId, studentId = null) {
 
 window.closeStudentLkpdWorksheetModal = function() {
     const appState = window.appState || {};
-    const isPreview = window.isTeacherPreviewMode || window.activeLkpdSession?.isPreview || (window.appState && window.appState.activeAccount === 'ADMIN');
+    const isPreview = window.isTeacherPreviewMode === true || window.activeLkpdSession?.isPreview === true;
 
     // Stop camera stream
     if (window.__studentLkpdWebcamStream) {
@@ -2048,15 +2062,21 @@ window.closeStudentLkpdWorksheetModal = function() {
     window.__latestLkpdFrame = null;
     window.isTeacherPreviewMode = false;
 
-    try {
-        localStorage.removeItem('madrasah_active_lkpd_session');
-        if (localStorage.getItem('madrasah_last_route') === 'lkpd_worksheet') {
-            localStorage.removeItem('madrasah_last_route');
-        }
-    } catch(e) {}
+    if (!isPreview) {
+        try {
+            localStorage.removeItem('madrasah_active_lkpd_session');
+            if (localStorage.getItem('madrasah_last_route') === 'lkpd_worksheet') {
+                localStorage.removeItem('madrasah_last_route');
+            }
+        } catch(e) {}
+    }
 
     document.getElementById('student-lkpd-modal-bg')?.remove();
-    
+    document.body.classList.remove('overflow-hidden');
+
+    // Preview never replaced the underlying route or hid its navigation.
+    if (isPreview) return;
+
     // Restore navigation
     const sidebar = document.getElementById('sidebar');
     const header = document.querySelector('header');
@@ -2064,7 +2084,7 @@ window.closeStudentLkpdWorksheetModal = function() {
     if (header) header.style.display = '';
     
     // Route back based on account role
-    if (isPreview || window.appState?.activeAccount === 'ADMIN') {
+    if (window.appState?.activeAccount === 'ADMIN') {
         if (typeof window.renderAssessmentModule === 'function') {
             window.renderAssessmentModule(document.getElementById('view-container'), 'lkpd');
         } else if (typeof window.renderLkpdCardsView === 'function') {

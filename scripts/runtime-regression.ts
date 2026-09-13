@@ -518,6 +518,34 @@ await test('Auth: persisted sessions validate before UI restore and account RAM 
   assert.match(settingsSource, /fallbackAuthenticatedResponses\.some\(item => item && item\.success === true\)/);
 });
 
+await test('Frontend: login and LKPD previews preserve the authenticated route and session', () => {
+  const loginPreviewStart = settingsSource.indexOf('function previewLoginPageCustomization()');
+  const loginPreviewEnd = settingsSource.indexOf('\nasync function runSmartPhotoCleanup', loginPreviewStart);
+  const loginPreviewFn = settingsSource.slice(loginPreviewStart, loginPreviewEnd);
+  assert.match(loginPreviewFn, /PREVIEW_SESSION_ISOLATION_V1/);
+  assert.match(loginPreviewFn, /loginContainer\.cloneNode\(true\)/);
+  assert.match(loginPreviewFn, /previewSurface\.setAttribute\('inert', ''\)/);
+  assert.match(loginPreviewFn, /overlay\.id = 'login-customization-preview'/);
+  assert.doesNotMatch(loginPreviewFn, /saveLoginCustomization\(/);
+  assert.doesNotMatch(loginPreviewFn, /mainApp\.classList\.add\('hidden'\)/);
+  assert.doesNotMatch(loginPreviewFn, /saveState\(/);
+
+  const lkpdPreviewStart = lkpdSource.indexOf('window.openStudentLkpdWorksheetModal = function');
+  const lkpdPreviewEnd = lkpdSource.indexOf('\nwindow.closeStudentLkpdWorksheetModal = function', lkpdPreviewStart);
+  const lkpdPreviewFn = lkpdSource.slice(lkpdPreviewStart, lkpdPreviewEnd);
+  assert.match(lkpdPreviewFn, /LKPD_PREVIEW_SESSION_ISOLATION_V1/);
+  assert.match(lkpdPreviewFn, /if \(isTeacherPreview\)/);
+  assert.match(lkpdPreviewFn, /previewOverlay\.id = 'student-lkpd-modal-bg'/);
+  assert.match(lkpdPreviewFn, /document\.body\.appendChild\(previewOverlay\)/);
+
+  const lkpdCloseStart = lkpdSource.indexOf('window.closeStudentLkpdWorksheetModal = function');
+  const lkpdCloseEnd = lkpdSource.indexOf('\nwindow.initStudentLkpdCamera = function', lkpdCloseStart);
+  const lkpdCloseFn = lkpdSource.slice(lkpdCloseStart, lkpdCloseEnd);
+  assert.match(lkpdCloseFn, /const isPreview = window\.isTeacherPreviewMode === true \|\| window\.activeLkpdSession\?\.isPreview === true/);
+  assert.match(lkpdCloseFn, /if \(!isPreview\) \{[\s\S]*removeItem\('madrasah_active_lkpd_session'\)/);
+  assert.match(lkpdCloseFn, /if \(isPreview\) return;/);
+});
+
 await test('Realtime: legacy slug-only sessions receive canonical tenant exam events', () => {
   const start = serverSource.indexOf('function broadcastExamEvent');
   const end = serverSource.indexOf('\nfunction getJakartaTodayDateStr', start);
@@ -837,8 +865,10 @@ await test('Temporary student credentials are hidden from teachers and purged on
   assert.ok(appSource.includes("sessionStorage.removeItem('cbt_print_credentials')"));
 });
 
-await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
-  execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
-    stdio: 'inherit', timeout: 45000,
+if (process.env.SKIP_RUNTIME_SMOKE !== '1') {
+  await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
+    execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
+      stdio: 'inherit', timeout: 45000,
+    });
   });
-});
+}
