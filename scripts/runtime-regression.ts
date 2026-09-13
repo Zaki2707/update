@@ -18,6 +18,9 @@ const cbtModulesSource = fs.readFileSync('src/cbtModules.js', 'utf8');
 const appSource = fs.readFileSync('src/appScript.js', 'utf8');
 const settingsSource = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
 const assessmentSource = fs.readFileSync('src/assessmentModule.js', 'utf8');
+const lkpdSource = fs.readFileSync('src/lkpdModule.js', 'utf8');
+const gameSource = fs.readFileSync('src/gameModule.js', 'utf8');
+const modulAjarSource = fs.readFileSync('src/modulAjarModule.js', 'utf8');
 const ast = ts.createSourceFile('server.ts', source, ts.ScriptTarget.ES2022, true);
 const quiet = { log() {}, warn() {}, error() {} };
 const transpile = (text: string) => ts.transpileModule(text, {
@@ -701,6 +704,43 @@ await test('Assessment: teachers cannot mutate EVENT containers but can still re
   assert.match(routes, /teacherCanMutateExamPayload\(req, item\)/);
   assert.match(routes, /teacherCanMutateExamPayload\(req, req\.body\)/);
   assert.match(routes, /teacherCanMutateExamPayload\(req, resolved\.item\)/);
+});
+
+await test('Teacher generic sync cannot mutate EVENT or out-of-scope LKPD records', () => {
+  const start = serverSource.indexOf('app.post("/api/sync-state"');
+  const end = serverSource.indexOf('// Real-time Event Stream', start);
+  const route = serverSource.slice(start, end > start ? end : undefined);
+  assert.match(route, /TEACHER_SYNC_EXAM_MUTATION_SCOPE_V3/);
+  assert.match(route, /teacherCanMutateExamPayload\(req, item\)/);
+  assert.match(route, /TEACHER_SYNC_LKPD_SCOPE_V3/);
+  assert.match(route, /teacherCanUseLkpdPayload\(req, tagNewRecord\(clean, req\)\)/);
+  assert.match(route, /Guru hanya dapat menyinkronkan LKPD mata pelajaran yang diampu/);
+});
+
+await test('Stored assessment, LKPD, game and admin modal data is output-encoded', () => {
+  assert.match(adminModulesSource, /adminEscapeAttr\(target\.title\)/);
+  assert.match(adminModulesSource, /adminInlineArg\(target\.id\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(room\.name\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(st\.name\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(title\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(message\)/);
+  assert.match(assessmentSource, /assessmentInlineArg\(examId\)/);
+  assert.match(assessmentSource, /assessmentEscapeHtml\(reason\)/);
+  assert.match(lkpdSource, /lkpdEscapeHtml\(reason\)/);
+  assert.match(gameSource, /gameSafeImageSrc\(imgUrl\)/);
+});
+
+await test('AI poster and PPT fields are encoded before live and exported HTML rendering', () => {
+  assert.match(modulAjarSource, /MODUL_AJAR_OUTPUT_ENCODING_V3/);
+  assert.match(modulAjarSource, /modulEscapeHtml\(posterData\.title \|\| topic\)/);
+  assert.match(modulAjarSource, /modulSafeImageSrc\(posterData\.imageUrl\)/);
+  assert.match(modulAjarSource, /modulInlineJson\(h\)/);
+  assert.match(modulAjarSource, /modulSafePercent\(h\.x\)/);
+  assert.match(modulAjarSource, /modulEscapeHtml\(slide\.title\)/);
+  assert.match(modulAjarSource, /modulSafeJsonForScript\(slides\)/);
+  assert.match(modulAjarSource, /map\(p => `<li>\$\{modulEscapeHtml\(p\)\}<\/li>`\)/);
+  assert.doesNotMatch(modulAjarSource, /<img src="\$\{posterData\.imageUrl\}"/);
+  assert.doesNotMatch(modulAjarSource, /<h5 class="text-sm font-extrabold text-slate-900 leading-tight">\$\{data\.name\}<\/h5>/);
 });
 
 await test('Auth: legacy slug-only account records remain valid for canonical tenant tokens', () => {
