@@ -1713,8 +1713,63 @@ async function waitForServerRuntimeReady(maxWaitMs = 45000) {
 
 window.waitForServerRuntimeReady = waitForServerRuntimeReady;
 
+async function loadInitialRuntimeSettings() {
+    try {
+        const res = await fetch('/api/settings');
+        const data = await res.json().catch(() => null);
+        if (data && data.success && data.settings) {
+            appState.settings = { ...appState.settings, ...data.settings };
+            appState.isOfflineMode = !!data.isOfflineMode;
+            window.isOfflineMode = !!data.isOfflineMode;
+            if (!window.isOfflineMode) purgeOnlineServerAuthoritativeCaches();
+            return true;
+        }
+    } catch (e) {
+        console.warn('Gagal fetch settings awal:', e);
+    }
+    return false;
+}
+
+function showLoggedOutShellImmediately() {
+    appState.currentUser = null;
+    appState.role = null;
+    resetAccountScopedRuntimeState();
+
+    try { applyTheme(); } catch(e) {}
+    updateSchoolLogoUI();
+    try { applyLoginCustomization(); } catch(e) {}
+
+    const loginContainer = document.getElementById('login-container');
+    const mainApp = document.getElementById('main-app');
+    if (loginContainer) loginContainer.classList.remove('hidden');
+    if (mainApp) mainApp.classList.add('hidden');
+}
+
 async function initAppSession() {
     console.log('MEMERIKSA SESI LOGIN...');
+
+    // A fresh browser/window may still have the local profile but no sessionStorage JWT.
+    // Do not hold the login screen behind Cloud SQL hydration when there is no session
+    // that can be restored. Show the logged-out shell immediately and warm readiness
+    // in the background; handleLogin still gates authentication on runtime readiness.
+    let savedUserData = readPersistedUser(true);
+    if (!savedUserData || !savedUserData.role) {
+        showLoggedOutShellImmediately();
+
+        waitForServerRuntimeReady(45000).then(async (runtimeReady) => {
+            if (!runtimeReady) {
+                console.warn('Runtime online belum siap; login tetap tersedia dan readiness akan dicoba lagi.');
+                setTimeout(initAppSession, 5000);
+                return;
+            }
+            await loadInitialRuntimeSettings();
+            try { applyTheme(); } catch(e) {}
+            updateSchoolLogoUI();
+            try { applyLoginCustomization(); } catch(e) {}
+        }).catch(() => {});
+
+        return;
+    }
 
     const runtimeReady = await waitForServerRuntimeReady(45000);
     if (!runtimeReady) {
@@ -1724,20 +1779,7 @@ async function initAppSession() {
     }
 
     // Load settings FIRST so we can accurately detect offline mode before session restoration.
-    try {
-        const res = await fetch('/api/settings');
-        const data = await res.json();
-        if (data && data.success && data.settings) {
-            appState.settings = { ...appState.settings, ...data.settings };
-            appState.isOfflineMode = !!data.isOfflineMode;
-            window.isOfflineMode = !!data.isOfflineMode;
-            if (!window.isOfflineMode) purgeOnlineServerAuthoritativeCaches();
-        }
-    } catch(e) {
-        console.warn('Gagal fetch settings awal:', e);
-    }
-
-    let savedUserData = readPersistedUser(true);
+    await loadInitialRuntimeSettings();
     if (savedUserData && savedUserData.role === 'bos' && (appState.isOfflineMode || window.isOfflineMode)) {
         console.warn('Sesi BOS dinonaktifkan dalam mode offline demi keamanan.');
         clearPersistedAuthSession();
@@ -1783,9 +1825,7 @@ async function initAppSession() {
     try { applyLoginCustomization(); } catch(e) {}
 
     if (!savedUserData || !savedUserData.role) {
-        appState.currentUser = null;
-        appState.role = null;
-        resetAccountScopedRuntimeState();
+        showLoggedOutShellImmediately();
         return;
     }
 
