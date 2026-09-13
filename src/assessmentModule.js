@@ -2575,13 +2575,13 @@ function renderExamModalForm(editId = null, eventId = null) {
             <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-6 space-y-4 my-8 max-h-none sm:max-h-none overflow-visible">
                 <div class="flex justify-between items-center shrink-0"><h3 class="font-bold text-slate-800">${ex ? 'Edit Jadwal Ujian CBT' : 'Buat Jadwal Ujian CBT'}</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>
                 <form onsubmit="saveExam(event)" class="space-y-3 text-xs sm:text-sm">
-                    <input type="hidden" id="ex-edit-id" value="${editId || ''}">
+                    <input type="hidden" id="ex-edit-id" value="${assessmentEscapeAttr(editId || '')}">
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Pilih Event Ujian</label>
                         <select id="ex-event-id" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
                             ${(appState.exams || []).filter(e => e.recordType === 'EVENT').map(ev => {
                                 const isSel = (eventId && String(eventId) === String(ev.id)) || (ex && String(ex.eventId) === String(ev.id)) || (!eventId && !ex && ev.id === 'EV_HARIAN');
-                                return `<option value="${ev.id}" ${isSel ? 'selected' : ''}>${assessmentEscapeHtml(ev.title)}</option>`;
+                                return `<option value="${assessmentEscapeAttr(ev.id)}" ${isSel ? 'selected' : ''}>${assessmentEscapeHtml(ev.title)}</option>`;
                             }).join('')}
                         </select>
                     </div>
@@ -2590,7 +2590,7 @@ function renderExamModalForm(editId = null, eventId = null) {
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Mata Pelajaran</label>
                         <select id="ex-subject" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" required>
-                            ${subjects.map(s => `<option value="${s.name}" ${ex && ex.subject === s.name ? 'selected' : ''}>${assessmentEscapeHtml(s.name)}</option>`).join('')}
+                            ${subjects.map(s => `<option value="${assessmentEscapeAttr(s.name)}" ${ex && ex.subject === s.name ? 'selected' : ''}>${assessmentEscapeHtml(s.name)}</option>`).join('')}
                         </select>
                     </div>
 
@@ -2600,7 +2600,7 @@ function renderExamModalForm(editId = null, eventId = null) {
                             <select id="ex-class-dropdown" onchange="addExamClass(this.value)" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl text-xs sm:text-sm cursor-pointer focus:ring-2 focus:ring-emerald-500">
                                 <option value="">-- Pilih Kelas untuk Ditambahkan --</option>
                                 <option value="ALL">Semua Kelas / Semua Tingkat</option>
-                                ${classes.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+                                ${classes.map(c => `<option value="${assessmentEscapeAttr(c.id)}">${assessmentEscapeHtml(c.name)}</option>`).join('')}
                             </select>
                         </div>
                         <div id="ex-selected-classes-container" class="flex flex-wrap gap-2 p-3 bg-slate-50 rounded-2xl border min-h-[48px] items-center">
@@ -3776,7 +3776,7 @@ async function renderStudentCBTList(container, isRefresh = false) {
             <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                     <h1 class="text-xl sm:text-2xl font-bold text-slate-800">CBT / Ujian Online & LKPD Murid</h1>
-                    <p class="text-xs text-slate-400 mt-0.5">Daftar ujian dan LKPD aktif yang siap dikerjakan untuk kelas: <span class="font-bold text-emerald-600">${stClassName || stClassId || 'Semua Kelas'}</span></p>
+                    <p class="text-xs text-slate-400 mt-0.5">Daftar ujian dan LKPD aktif yang siap dikerjakan untuk kelas: <span class="font-bold text-emerald-600">${assessmentEscapeHtml(stClassName || stClassId || 'Semua Kelas')}</span></p>
                 </div>
                 <button type="button" onclick="renderStudentCBTList(document.getElementById('view-container'))" class="self-start sm:self-auto px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-2xl transition flex items-center gap-2 cursor-pointer">
                     <i class="fa-solid fa-rotate mr-1"></i> Refresh Jadwal
@@ -5367,7 +5367,7 @@ function openManageRoomModal(roomId) {
             <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-6 space-y-5 my-8 max-h-[90vh] overflow-y-auto">
                 <div class="flex justify-between items-center">
                     <div>
-                        <h3 class="font-bold text-slate-800 text-lg">Kelola Anggota: ${room.name}</h3>
+                        <h3 class="font-bold text-slate-800 text-lg">Kelola Anggota: ${assessmentEscapeHtml(room.name)}</h3>
                         <p class="text-xs text-slate-400">Tambah anggota manual atau import via Excel / CSV template</p>
                     </div>
                     <button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark text-lg"></i></button>
@@ -5379,9 +5379,9 @@ function openManageRoomModal(roomId) {
                         <div class="flex gap-2">
                             <select id="room-select-student" class="flex-1 px-3 py-2 bg-white border rounded-xl text-xs">
                                 <option value="">-- Pilih Siswa --</option>
-                                ${students.map(st => `<option value="${st.id}">${st.name} (${st.nis || 'Tanpa NIS'})</option>`).join('')}
+                                ${students.map(st => `<option value="${assessmentEscapeAttr(st.id)}">${assessmentEscapeHtml(st.name)} (${assessmentEscapeHtml(st.nis || 'Tanpa NIS')})</option>`).join('')}
                             </select>
-                            <button type="button" onclick="addStudentToRoom('${room.id}')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold">Tambah</button>
+                            <button type="button" onclick="addStudentToRoom(${assessmentInlineArg(room.id)})" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold">Tambah</button>
                         </div>
                     </div>
                     <div class="space-y-2">
@@ -5591,8 +5591,8 @@ function openSendMessageModal(examId, studentId) {
     modal.innerHTML = `
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
             <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-4">
-                <div class="flex justify-between items-center"><h3 class="font-bold text-slate-800">Kirim Pesan ke ${st.name}</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>
-                <form onsubmit="sendStudentExamMessage(event, '${examId}', '${studentId}')" class="space-y-3 text-xs sm:text-sm">
+                <div class="flex justify-between items-center"><h3 class="font-bold text-slate-800">Kirim Pesan ke ${assessmentEscapeHtml(st.name)}</h3><button type="button" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>
+                <form onsubmit="sendStudentExamMessage(event, ${assessmentInlineArg(examId)}, ${assessmentInlineArg(studentId)})" class="space-y-3 text-xs sm:text-sm">
                     <div>
                         <label class="block text-xs uppercase text-slate-500 mb-1">Isi Pesan Peringatan / Instruksi</label>
                         <textarea id="exam-msg-text" required rows="3" class="w-full px-4 py-2.5 bg-slate-50 border rounded-2xl" placeholder="Contoh: Jangan melihat ke samping atau mencontek!"></textarea>
