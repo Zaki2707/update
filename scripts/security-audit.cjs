@@ -1,19 +1,25 @@
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 
-const server = fs.readFileSync('server.ts', 'utf8');
-const app = fs.readFileSync('src/appScript.js', 'utf8');
-const assessment = fs.readFileSync('src/assessmentModule.js', 'utf8');
-const modules = fs.readFileSync('src/modulesScript.js', 'utf8');
-const adminModules = fs.readFileSync('src/adminModules.js', 'utf8');
-const settingsModule = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
-const chatModule = fs.readFileSync('src/chatModule.js', 'utf8');
-const gameModule = fs.readFileSync('src/gameModule.js', 'utf8');
-const cbtModule = fs.readFileSync('src/cbtModules.js', 'utf8');
-const lkpdModule = fs.readFileSync('src/lkpdModule.js', 'utf8');
-const modulAjarModule = fs.readFileSync('src/modulAjarModule.js', 'utf8');
-const gitignore = fs.readFileSync('.gitignore', 'utf8');
-const firestoreRules = fs.readFileSync('firestore.rules', 'utf8');
+// Keep textual assertions independent of the checkout's newline convention.
+// GitHub Actions checks out LF files, while local Windows clones commonly use
+// CRLF; without normalization, multiline security assertions become false
+// negatives on Windows even when the implementation is unchanged.
+const readText = (path) => fs.readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+
+const server = readText('server.ts');
+const app = readText('src/appScript.js');
+const assessment = readText('src/assessmentModule.js');
+const modules = readText('src/modulesScript.js');
+const adminModules = readText('src/adminModules.js');
+const settingsModule = readText('src/settingsAndMisc.js');
+const chatModule = readText('src/chatModule.js');
+const gameModule = readText('src/gameModule.js');
+const cbtModule = readText('src/cbtModules.js');
+const lkpdModule = readText('src/lkpdModule.js');
+const modulAjarModule = readText('src/modulAjarModule.js');
+const gitignore = readText('.gitignore');
+const firestoreRules = readText('firestore.rules');
 let trackedFiles = new Set();
 try {
   trackedFiles = new Set(execFileSync('git', ['ls-files'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim().split(/\r?\n/).filter(Boolean));
@@ -164,7 +170,7 @@ const checks = [
   ['Question bank persistence is read-back verified', server.includes('function verifyOnlineArrayPersistence(') && server.includes('PERSISTENCE_VERIFY_FAILED') && server.includes("key === 'questions' || key === 'questionBankGroups'")],
   ['Question bank routes require authenticated staff', server.includes('app.get("/api/question-bank-groups", requireAuth, requireRole') && server.includes('app.post("/api/questions/batch", requireAuth, requireRole') && server.includes('app.put("/api/questions/:id", requireAuth, requireRole')],
   ['Replace-list sync is retained only for roster-like state', server.includes("schedules = mergeTenantListData(schedules, data, req)") && server.includes("savedRosters = mergeTenantListData(savedRosters, data, req)") && server.includes("timeSlots = mergeTenantListData(timeSlots, data, req)")],
-  ['Frontend CRUD deletes use explicit API routes', assessment.includes("/api/rooms/") && fs.readFileSync('src/cbtModules.js', 'utf8').includes("/api/journals/") && fs.readFileSync('src/calendarModule.js', 'utf8').includes("/api/calendar-events/") && fs.readFileSync('src/modulAjarModule.js', 'utf8').includes("/api/generated-exams/")],
+  ['Frontend CRUD deletes use explicit API routes', assessment.includes("/api/rooms/") && readText('src/cbtModules.js').includes("/api/journals/") && readText('src/calendarModule.js').includes("/api/calendar-events/") && readText('src/modulAjarModule.js').includes("/api/generated-exams/")],
   ['Student exam/LKPD lists are class scoped', server.includes('function studentCanAccessExam(') && server.includes('filteredExams = selfStudent') && server.includes('studentCanAccessExam(selfStudent, exam)') && server.includes('filteredLkpds = selfStudent') && server.includes('studentCanAccessLkpd(selfStudent, lkpd)') && server.includes('list = ownStudent ? list.filter((exam: any) => studentCanAccessExam(ownStudent, exam)) : []')],
   ['Student exam state is class authorized', server.includes('const stateContext = getExamAttemptContext(req, authUser, sId, eId)') && server.includes('summaryIsStudent || studentCanAccessExam(summaryStudent.student, ex)') && server.includes("studentRoles.includes(role) && !studentCanAccessExam(student, exam)")],
   ['Student LKPD merge only accepts own submissions', server.includes('LKPD_STUDENT_SUBMISSION_WRITE_SCOPE') && server.includes("String(sub?.studentId || '') === String(authenticatedUser.id)") && server.includes('scores: existingOwn?.scores || {}') && server.includes('isGraded: existingOwn?.isGraded === true')],
@@ -174,8 +180,8 @@ const checks = [
   ['Randomized CBT auto-correction uses per-student master packet', server.includes('async function getAutoGradeAttempt') && server.includes('studentExamMasterQuestions[key]') && server.includes('attempt.essayQuestions')],
   ['Teacher writes are identity/admin scoped', server.includes('TEACHER_SELF_UPDATE_SCOPE') && server.includes('Guru hanya dapat mengubah profil sendiri.') && server.includes('app.post("/api/teachers", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])') && server.includes('app.delete("/api/teachers/:id", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])')],
   ['Subject mutations are admin scoped and rename-safe', server.includes('SUBJECT_RENAME_CASCADE') && server.includes('app.put("/api/subjects/:id", requireAuth, requireRole([\'admin\', \'bos\', \'superadmin\'])')],
-  ['Question bank empty state cannot refetch forever', fs.readFileSync('src/cbtModules.js', 'utf8').includes('QUESTION_BANK_LOAD_GUARD')],
-  ['Import groups use server-authoritative tenant state', fs.readFileSync('src/modulAjarModule.js', 'utf8').includes('IMPORT_GROUP_SERVER_AUTHORITATIVE') && !fs.readFileSync('src/modulAjarModule.js', 'utf8').includes("localStorage.setItem('madrasah_import_groups'")],
+  ['Question bank empty state cannot refetch forever', readText('src/cbtModules.js').includes('QUESTION_BANK_LOAD_GUARD')],
+  ['Import groups use server-authoritative tenant state', readText('src/modulAjarModule.js').includes('IMPORT_GROUP_SERVER_AUTHORITATIVE') && !readText('src/modulAjarModule.js').includes("localStorage.setItem('madrasah_import_groups'")],
   ['Online restore is add-only and conflict-safe', server.includes("mode: 'online-add-only-v1'") && server.includes('nonDestructive: true') && server.includes('buildOnlineSafeRestorePlan')],
   ['Recovery capability remains strict v2', server.includes("capability: 'master-recovery-missing-only-v2'")],
   ['Only one canonical game submit route exists', gameSubmitRouteCount === 1],
@@ -212,8 +218,8 @@ const checks = [
   ['CBT realtime endpoints validate attempt context and payload bounds', (server.match(/const context = getExamAttemptContext\(req, authUser, sId, eId\);/g) || []).length >= 5 && server.includes('Jawaban terlalu besar. Maksimal 64 KB per soal.') && server.includes('Format frame livecam tidak valid.')],
   ['Violation reason is stored as bounded plain text', server.includes('VIOLATION_PLAIN_TEXT_V3') && server.includes(".replace(/[\\u0000-\\u001F\\u007F]/g, ' ')") && server.includes(".slice(0, 500) || 'Keluar Tab / Split Screen'")],
   ['Exam monitor resolves tenant-safe exam identity', server.includes('const resolvedExam = resolveTenantItemIndexById(examSource, eId, req)') && server.includes('ID ujian ambigu lintas tenant. Pilih tenant target secara eksplisit.')],
-  ['Student LKPD monitoring uses a dedicated identity-scoped endpoint', server.includes('LKPD_STUDENT_STATE_V1') && server.includes('app.post("/api/lkpd/student-state"') && fs.readFileSync('src/lkpdModule.js', 'utf8').includes("fetch('/api/lkpd/student-state'")],
-  ['Student LKPD no longer reads global exam monitoring state', !fs.readFileSync('src/lkpdModule.js', 'utf8').includes("const res = await fetch('/api/exam-monitoring-state')")],
+  ['Student LKPD monitoring uses a dedicated identity-scoped endpoint', server.includes('LKPD_STUDENT_STATE_V1') && server.includes('app.post("/api/lkpd/student-state"') && lkpdModule.includes("fetch('/api/lkpd/student-state'")],
+  ['Student LKPD no longer reads global exam monitoring state', !lkpdModule.includes("const res = await fetch('/api/exam-monitoring-state')")],
   ['LKPD realtime state is tenant namespaced', server.includes('function lkpdStateKey(') && server.includes('function lkpdBroadcastStateKey(') && server.includes('lkpdv1::')],
   ['Teacher generic sync cannot bypass master-data RBAC', server.includes('TEACHER_SYNC_SCOPE_V2') && server.includes('teacherAdminOwnedKeys') && server.includes('questionPayloadAllowedForTeacher')],
   ['Teacher generic exam sync uses mutation scope', syncStateRoute.includes('TEACHER_SYNC_EXAM_MUTATION_SCOPE_V3') && syncStateRoute.includes('teacherCanMutateExamPayload(req, item)') && syncStateRoute.includes('ujian non-event')],
@@ -221,11 +227,11 @@ const checks = [
   ['Teacher monitoring is assignment scoped', server.includes('TEACHER_MONITOR_SCOPE_V2') && server.includes('monitoringStateKeyAllowedForActor') && server.includes('Guru hanya dapat memonitor ujian mata pelajaran/bank soal yang diampu')],
   ['Student LKPD grading fields are server authoritative', server.includes('LKPD_STUDENT_SUBMISSION_WRITE_SCOPE') && server.includes('scores: existingOwn?.scores || {}') && server.includes('isGraded: existingOwn?.isGraded === true')],
   ['Student stored roles cannot escalate privileges', server.includes('function normalizeStudentStoredRole(') && server.includes('role: normalizeStudentStoredRole(student.role)') && !server.includes('role: student.role || "student"') && !server.includes('role: req.body.role || "student"') && !server.includes('role: req.body.role ?? st.role')],
-  ['LKPD heartbeat uses lightweight realtime events', server.includes('LKPD_REALTIME_EVENT_V2') && fs.readFileSync('src/lkpdModule.js', 'utf8').includes('LKPD_REALTIME_CLIENT_V2') && !fs.readFileSync('src/appScript.js', 'utf8').includes('/api/sync-state?key=lkpdList')],
+  ['LKPD heartbeat uses lightweight realtime events', server.includes('LKPD_REALTIME_EVENT_V2') && lkpdModule.includes('LKPD_REALTIME_CLIENT_V2') && !app.includes('/api/sync-state?key=lkpdList')],
   ['LKPD legacy delta migration is atomic', server.includes('async function saveDeltaBatchDb') && server.includes("await client.query('BEGIN')") && server.includes("await client.query('COMMIT')")],
   ['LKPD legacy keys resolve exact student/LKPD pair', server.includes('parsed.studentId === String(studentId)') && server.includes('parsed.lkpdId === String(lkpdId)')],
-  ['LKPD deletion is explicit and server authoritative', server.includes('app.delete("/api/lkpds/:id", requireAuth, requireRole') && fs.readFileSync('src/lkpdModule.js', 'utf8').includes("fetch('/api/lkpds/' + encodeURIComponent(lkpdId), { method: 'DELETE' })")],
-  ['LKPD realtime close and freshness are bounded', server.includes('active,\n    answeredCount: Number(session?.answeredCount || 0)') && fs.readFileSync('src/lkpdModule.js', 'utf8').includes('payload.active === false') && (fs.readFileSync('src/lkpdModule.js', 'utf8').match(/Date\.now\(\) - lastSeenAt < 30000/g) || []).length >= 2],
+  ['LKPD deletion is explicit and server authoritative', server.includes('app.delete("/api/lkpds/:id", requireAuth, requireRole') && lkpdModule.includes("fetch('/api/lkpds/' + encodeURIComponent(lkpdId), { method: 'DELETE' })")],
+  ['LKPD realtime close and freshness are bounded', server.includes('active,\n    answeredCount: Number(session?.answeredCount || 0)') && lkpdModule.includes('payload.active === false') && (lkpdModule.match(/Date\.now\(\) - lastSeenAt < 30000/g) || []).length >= 2],
   ['AI and document generation routes are staff-only', aiRoutesAreStaffOnly],
   ['Auto-correction resolves exam and LKPD inside tenant', server.includes('ID ujian ambigu lintas tenant. Pilih madrasah target terlebih dahulu.') && server.includes('ID LKPD ambigu lintas tenant. Pilih madrasah target terlebih dahulu.') && server.includes('canonicalRealtimeTenant(st?.madrasahId || st?.madrasahSlug || \'default\') === examTenant') && server.includes('canonicalRealtimeTenant(s?.madrasahId || s?.madrasahSlug || \'default\') === lkpdTenant')],
   ['LKPD auto-correction uses authoritative in-memory state', !server.includes('const store = readLocalStore();\n    let lkpdList = store.lkpdList || [];') && server.includes("await saveData('lkpdList', lkpdList);")],
