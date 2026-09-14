@@ -4414,7 +4414,7 @@ function validateAuthSessionAgainstCurrentState(session: AuthSession): boolean {
     String(m.id) === sessionTenantCanonical ||
     String(m.slug || '').toLowerCase() === String(tenantId || '').toLowerCase()
   );
-  if (!sessionMadrasah || sessionMadrasah.isActive === false) return false;
+  // OFFLINE_TENANT_STATUS_BYPASS_V1: BOSS account status is a cloud/online control.\n  // A local APP_MODE=offline installation must remain usable even when the last\n  // synchronized madrasah record is marked inactive by BOSS.\n  if (!sessionMadrasah || (isOnlineMode && sessionMadrasah.isActive === false)) return false;
 
   if (role === 'admin' || role === 'administrator') {
     const targetMadrasah = sessionMadrasah;
@@ -6489,7 +6489,7 @@ app.post("/api/login", async (req, res) => {
     verifyPassword(p, String(m.adminPass))
   );
   if (foundMadrasah) {
-    if (foundMadrasah.isActive === false) {
+    if (isOnlineMode && foundMadrasah.isActive === false) {
       return res.status(403).json({ success: false, message: "Akses diblokir: Akun madrasah ini dinonaktifkan oleh Super Admin (Bos). Hubungi administrator platform." });
     }
     const adminUserObj = {
@@ -6535,7 +6535,7 @@ app.post("/api/login", async (req, res) => {
       madrasahs.find(m => m.id === "default" || m.slug === "default") ||
       madrasahs[0];
 
-    if (defaultM && defaultM.isActive === false) {
+    if (isOnlineMode && defaultM && defaultM.isActive === false) {
       return res.status(403).json({
         success: false,
         message: "Akses diblokir: Akun madrasah ini belum aktif."
