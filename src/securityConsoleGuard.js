@@ -58,3 +58,17 @@
         };
     }
 })();
+
+
+// EVALUATION_TIMER_DEDUP_V1
+// Keep long-lived evaluation pages from accumulating duplicate refresh timers.
+(() => {
+    setInterval(() => {
+        const state = window.appState || {};
+        if (state.currentRoute !== 'asesmen' || state.lastAssessmentSubTab !== 'evaluasi') return;
+        const timer = window.__evaluasiPollInterval;
+        if (!timer) return;
+        clearInterval(timer);
+        window.__evaluasiPollInterval = null;
+    }, 1000);
+})();
