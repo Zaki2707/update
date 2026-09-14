@@ -2873,8 +2873,8 @@ function syncCurrentEditingSlotsFromDOM() {
     currentEditingSlots = updated;
 }
 
-function recalculateTimeSlots(startIndex = 0) {
-    syncCurrentEditingSlotsFromDOM();
+function recalculateTimeSlots(startIndex = 0, syncFromDom = true) {
+    if (syncFromDom) syncCurrentEditingSlotsFromDOM();
     const kbmInput = document.getElementById('kbm-duration-input');
     if (kbmInput) {
         currentKbmDuration = parseInt(kbmInput.value, 10) || 40;
@@ -2970,7 +2970,11 @@ function deleteTimeSlotRow(idx) {
         return;
     }
     currentEditingSlots.splice(idx, 1);
-    recalculateTimeSlots(idx);
+
+    // The DOM still contains the row that was just removed from currentEditingSlots.
+    // Recalculate directly from the updated array so the deleted row is not restored
+    // by syncCurrentEditingSlotsFromDOM().
+    recalculateTimeSlots(idx, false);
 }
 
 function renderTimeSlotsModalContent() {
