@@ -9136,7 +9136,80 @@ app.delete("/api/classes/:id", requireAuth, requireRole(['admin', 'bos', 'supera
   if (resolvedClass.ambiguous) return res.status(409).json({ success: false, message: "ID kelas ambigu lintas tenant; pilih tenant target secara eksplisit." });
   const targetClass = resolvedClass.item;
   if (!targetClass) return res.status(404).json({ success: false, message: "Kelas tidak ditemukan pada madrasah ini." });
-  classes = classes.filter((c: any) => !(String(c.id) === String(id) && isItemForCurrentMadrasah(c, req)));
+
+  const classId = String(id);
+  const referencesClass = (item: any): boolean => {
+    if (!item || !isItemForCurrentMadrasah(item, req)) return false;
+
+    const directIds = [
+      item.classId,
+      item.class_id,
+      item.kelasId,
+      item.kelas_id,
+      item.homeroom_class_id,
+      item.homeroomClassId
+    ];
+    if (directIds.some(value => value !== undefined && value !== null && String(value) === classId)) {
+      return true;
+    }
+
+    const arrayFields = [
+      item.classIds,
+      item.class_ids,
+      item.kelasIds,
+      item.targetClassIds
+    ];
+    return arrayFields.some(values =>
+      Array.isArray(values) && values.some(value => String(value) === classId)
+    );
+  };
+
+  const countRefs = (list: any[]) =>
+    (Array.isArray(list) ? list : []).filter(referencesClass).length;
+
+  const referenceCounts: Record<string, number> = {
+    students: countRefs(students),
+    teachers: countRefs(teachers),
+    schedules: countRefs(schedules),
+    exams: countRefs(exams),
+    questions: countRefs(questions),
+    attendance: countRefs(attendance),
+    grades: countRefs(grades),
+    rooms: countRefs(rooms),
+    journals: countRefs(journals),
+    lkpds: countRefs(lkpdList),
+    generatedExams: countRefs(generatedExams),
+    lessonPlans: countRefs(lessonPlans),
+    eduGames: countRefs(eduGames),
+    savedRosters: (Array.isArray(savedRosters) ? savedRosters : []).filter((roster: any) => {
+      if (!roster || !isItemForCurrentMadrasah(roster, req)) return false;
+      if (referencesClass(roster)) return true;
+      return Array.isArray(roster.schedules) && roster.schedules.some((item: any) => referencesClass(item));
+    }).length
+  };
+
+  const activeReferences = Object.entries(referenceCounts)
+    .filter(([, count]) => count > 0)
+    .reduce((acc: Record<string, number>, [key, count]) => {
+      acc[key] = count;
+      return acc;
+    }, {});
+
+  if (Object.keys(activeReferences).length > 0) {
+    const studentCount = referenceCounts.students || 0;
+    const primaryReason = studentCount > 0
+      ? `${studentCount} siswa masih terdaftar di kelas ini`
+      : 'kelas ini masih dipakai oleh data akademik lain';
+
+    return res.status(409).json({
+      success: false,
+      code: 'CLASS_IN_USE',
+      message: `Kelas tidak dapat dihapus karena ${primaryReason}. Pindahkan/hapus referensi terkait terlebih dahulu.`,
+      references: activeReferences
+    });
+  }
+
+  classes = classes.filter((c: any) => !(String(c.id) === classId && isItemForCurrentMadrasah(c, req)));
   await saveData('classes', classes);
   res.json({ success: true, message: "Kelas berhasil dihapus." });
 });
