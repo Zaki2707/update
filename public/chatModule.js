@@ -494,3 +494,52 @@ if (typeof window !== 'undefined') {
         }
     }, 45000);
 }
+
+
+// EVALUATION_REALTIME_PAUSE_GUARD_V1
+// Evaluasi already owns a throttled server snapshot. Pause the generic SSE sync only
+// in ONLINE mode while this tab is open so activeExamSessions invalidations from a busy
+// CBT room cannot fan out tenant-wide monitoring snapshots and starve Preview/Koreksi.
+(() => {
+  const CHECK_MS = 750;
+  let pausedForEvaluation = false;
+
+  function evaluationIsOpen() {
+    const state = window.appState || {};
+    return window.__onlineRuntimeReady === true &&
+      state.currentRoute === 'asesmen' &&
+      state.lastAssessmentSubTab === 'evaluasi';
+  }
+
+  function reconcileEvaluationRealtime() {
+    const shouldPause = evaluationIsOpen();
+
+    if (shouldPause) {
+      if (window.__madrasahRealtimeStarted && typeof window.__stopRealtimeSync === 'function') {
+        window.__stopRealtimeSync();
+      }
+      pausedForEvaluation = true;
+      return;
+    }
+
+    if (!pausedForEvaluation) return;
+    pausedForEvaluation = false;
+
+    if (
+      window.__onlineRuntimeReady === true &&
+      window.appState &&
+      window.appState.currentUser &&
+      typeof window.initRealtimeSync === 'function'
+    ) {
+      window.initRealtimeSync();
+    }
+  }
+
+  window.__evaluationRealtimeGuardTimer = window.setInterval(reconcileEvaluationRealtime, CHECK_MS);
+  window.addEventListener('beforeunload', () => {
+    if (window.__evaluationRealtimeGuardTimer) {
+      window.clearInterval(window.__evaluationRealtimeGuardTimer);
+      window.__evaluationRealtimeGuardTimer = null;
+    }
+  });
+})();
