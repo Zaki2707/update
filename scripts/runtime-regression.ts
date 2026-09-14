@@ -335,6 +335,20 @@ await test('Cloudinary repair discovers explicit persisted photo references only
   assert.equal(context.getCloudinaryPhotoIdFromReference('ordinary-non-photo-value'), null);
 });
 
+await test('Auth: inactive madrasah status is enforced online but does not lock APP_MODE=offline', () => {
+  const validateSession = serverFunction('validateAuthSessionAgainstCurrentState');
+  assert.match(validateSession, /OFFLINE_TENANT_STATUS_BYPASS_V1/);
+  assert.match(validateSession, /isOnlineMode && sessionMadrasah\.isActive === false/);
+
+  const loginStart = serverSource.indexOf('app.post("/api/login"');
+  const loginEnd = serverSource.indexOf('\napp.', loginStart + 20);
+  const loginRoute = serverSource.slice(loginStart, loginEnd > loginStart ? loginEnd : undefined);
+  assert.match(loginRoute, /isOnlineMode && foundMadrasah\.isActive === false/);
+  assert.match(loginRoute, /isOnlineMode && defaultM && defaultM\.isActive === false/);
+  assert.doesNotMatch(loginRoute, /if \(foundMadrasah\.isActive === false\)/);
+  assert.doesNotMatch(loginRoute, /if \(defaultM && defaultM\.isActive === false\)/);
+});
+
 await test('CBT: schedule gate is authoritative in WIB', () => {
   const context: any = vm.createContext({});
   vm.runInContext(serverFunction('getExamScheduleAccess'), context);
