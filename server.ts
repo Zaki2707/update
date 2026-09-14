@@ -13590,6 +13590,10 @@ app.post("/api/time-slots", requireAuth, requireRole(['admin', 'bos', 'superadmi
     await saveData('savedRosters', savedRosters);
   }
 
+  // Keep other open staff clients in sync without issuing duplicate persistence writes.
+  if (Array.isArray(newSlots) || newKbm !== undefined) broadcastStateUpdate('timeSlots');
+  if (Array.isArray(newSchedules)) broadcastStateUpdate('schedules');
+
   res.json({
     success: true,
     timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : [],
