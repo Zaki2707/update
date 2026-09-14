@@ -12531,12 +12531,9 @@ app.post("/api/exam/attempt/finish", async (req, res) => {
 
 // Phase 1 Endpoint: Summarized Teacher Monitoring (GET /api/exams/:examId/monitor)
 app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  // EVALUATION_LIGHTWEIGHT_SUMMARY_V2
   const { examId } = req.params;
   const eId = String(examId);
-
-  const authUser = req.user;
-  const isBos = authUser.role === 'bos' || authUser.role === 'superadmin';
-  const userMadrasahId = getRequestMadrasahId(req);
 
   const examSource = getMemoryKeyValue('exams') || exams || [];
   const resolvedExam = resolveTenantItemIndexById(examSource, eId, req);
@@ -12555,18 +12552,20 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
     canonicalRealtimeTenant(student.madrasahId || student.madrasahSlug || 'default') === examTenant
   );
 
-  // Filter students by assigned classes if defined on the exam
   let targetStudents = studentList;
   if (activeExam.classes && activeExam.classes.length > 0 && !activeExam.classes.includes('ALL')) {
     targetStudents = studentList.filter((student: any) =>
       activeExam.classes.includes(String(student.classId || student.className || student.class))
     );
   }
- 
+
+  const isAnsweredValue = (value: any) =>
+    value !== undefined && value !== null && String(value).trim() !== '';
+
   const summary = targetStudents.map((st: any) => {
     const sId = String(st.id);
     const key = resolveExamStateKey(req, sId, eId);
- 
+
     const session = activeExamSessions[key] || null;
     const isCompleted = Boolean(completedExams[key]);
     const isForceDone = Boolean(forceFinishedExams[key] || completedExams[key] === 'force_finish');
@@ -12574,16 +12573,68 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
     const isOutOfTab = Boolean(studentOutOfTab[key]);
     const tabSwitches = studentTabSwitches[key] || 0;
     const grade = studentExamGrades[key] || null;
- 
+
+    const persistedAnswers = studentExamAnswers[key] && typeof studentExamAnswers[key] === 'object'
+      ? studentExamAnswers[key]
+      : {};
+    const liveAnswers = session?.answers && typeof session.answers === 'object'
+      ? session.answers
+      : {};
+    const mergedAnswers = { ...persistedAnswers, ...liveAnswers };
+
+    const assignedQuestions = Array.isArray(studentExamQuestions[key]) ? studentExamQuestions[key] : [];
+    const masterQuestions = Array.isArray(studentExamMasterQuestions[key]) ? studentExamMasterQuestions[key] : [];
+    const countQuestions = masterQuestions.length > 0 ? masterQuestions : assignedQuestions;
+
+    let answeredPGCount = 0;
+    let answeredEssayCount = 0;
+    for (const q of countQuestions) {
+      const value = mergedAnswers[q.id] !== undefined ? mergedAnswers[q.id] : mergedAnswers[String(q.id)];
+      if (!isAnsweredValue(value)) continue;
+      if (q.type === 'esay' || q.type === 'essay') answeredEssayCount++;
+      else answeredPGCount++;
+    }
+
+    let liveCorrectPGCount = 0;
+    for (const q of masterQuestions) {
+      if (q.type === 'esay' || q.type === 'essay') continue;
+      const value = mergedAnswers[q.id] !== undefined ? mergedAnswers[q.id] : mergedAnswers[String(q.id)];
+      if (isMasterMultipleChoiceAnswerCorrect(q, value)) liveCorrectPGCount++;
+    }
+
+    const gradeTotalPG = Number(grade?.totalPGCount || 0);
+    const gradeTotalEssay = Number(grade?.totalEssayCount || 0);
+    const packetTotalPG = countQuestions.filter((q: any) => q.type !== 'esay' && q.type !== 'essay').length;
+    const packetTotalEssay = countQuestions.filter((q: any) => q.type === 'esay' || q.type === 'essay').length;
+    const totalPGCount = gradeTotalPG || packetTotalPG;
+    const totalEssayCount = gradeTotalEssay || packetTotalEssay;
+
+    const countedAnswers = Object.values(mergedAnswers).filter(isAnsweredValue).length;
+    const answeredCount = Math.max(Number(session?.answeredCount || 0), countedAnswers);
+    const totalQuestions = Math.max(
+      Number(session?.totalQuestions || 0),
+      countQuestions.length,
+      totalPGCount + totalEssayCount
+    );
+
     let status = 'not_started';
     if (isBlocked) status = 'blocked';
     else if (isForceDone) status = 'force_finished';
     else if (isCompleted) status = 'completed';
     else if (session) status = 'in_progress';
- 
-    // Calculate online status based on lastSeenAt (considered online if updated within last 30 seconds)
+
     const isOnline = Boolean(session && (Date.now() - (session.lastSeenAt || 0) < 30000));
- 
+    const gradeSummary = grade ? {
+      pgScore: grade.pgScore ?? null,
+      essayScore: grade.essayScore ?? 0,
+      finalScore: grade.finalScore ?? null,
+      isGraded: Boolean(grade.isGraded),
+      correctPGCount: Number(grade.correctPGCount ?? liveCorrectPGCount),
+      totalPGCount,
+      totalEssayCount,
+      submissionType: grade.submissionType || (isForceDone ? 'force_finish' : 'normal')
+    } : null;
+
     return {
       studentId: sId,
       name: st.name || '',
@@ -12591,16 +12642,25 @@ app.get("/api/exams/:examId/monitor", requireAuth, requireRole(['teacher', 'guru
       classId: st.classId || st.className || '',
       roomId: st.roomId || '',
       photo: st.photo || st.facePhoto || st.avatar || null,
-      status: status,
+      status,
+      started: Boolean(session || answeredCount > 0 || isCompleted || isForceDone),
       online: isOnline,
-      answeredCount: session ? (session.answeredCount || (session.answers ? Object.keys(session.answers).length : 0)) : 0,
-      totalQuestions: session ? (session.totalQuestions || 0) : 0,
-      progressPct: (session && session.totalQuestions > 0) ? Math.round(((session.answeredCount || 0) / session.totalQuestions) * 100) : (isCompleted ? 100 : 0),
-      tabSwitches: tabSwitches,
+      answeredCount,
+      answeredPGCount,
+      answeredEssayCount,
+      correctPGCount: Number(grade?.correctPGCount ?? liveCorrectPGCount),
+      totalPGCount,
+      totalEssayCount,
+      totalQuestions,
+      progressPct: totalQuestions > 0
+        ? Math.round((Math.min(answeredCount, totalQuestions) / totalQuestions) * 100)
+        : (isCompleted ? 100 : 0),
+      tabSwitches,
       outOfTab: isOutOfTab,
       blocked: isBlocked,
       forceFinished: isForceDone,
       score: grade ? (grade.finalScore !== null && grade.finalScore !== undefined ? grade.finalScore : grade.pgScore) : null,
+      grade: gradeSummary,
       remainingTime: session ? session.timeLeft : null
     };
   });

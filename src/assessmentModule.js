@@ -529,12 +529,18 @@ async function syncEvaluasiStateFromServer() {
     const now = Date.now();
     if (evaluasiSyncInFlight || now < evaluasiNextAllowedAt) return false;
 
+    const examId = String(appState.evaluasiSelectedExamId || appState.activeEvaluationExamId || '').trim();
+    if (!examId) return false;
+
     evaluasiSyncInFlight = true;
     try {
-        const res = await fetch('/api/exam-monitoring-state', { cache: 'no-store' });
+        // EVALUATION_LIGHTWEIGHT_SUMMARY_V2:
+        // Evaluasi only needs exam-scoped status/progress/aggregate grades. Raw answers
+        // and question packets remain on-demand through /api/exam/review.
+        const res = await fetch(`/api/exams/${encodeURIComponent(examId)}/monitor`, { cache: 'no-store' });
         const data = await res.json().catch(() => null);
 
-        if (!res.ok || !data || !data.success) {
+        if (!res.ok || !data || !data.success || !Array.isArray(data.students)) {
             if (res.status === 429 || res.status === 503) {
                 scheduleEvaluasiRetry(res);
             } else {
@@ -546,25 +552,68 @@ async function syncEvaluasiStateFromServer() {
         evaluasiSyncBackoffMs = 0;
         evaluasiNextAllowedAt = 0;
 
-        // This endpoint returns a complete tenant-scoped snapshot for staff. Replace the maps
-        // instead of merging so sessions removed by server do not survive as stale local cache.
-        appState.activeExamSessions = data.activeExamSessions || {};
-        appState.completedExams = data.completedExams || {};
-        appState.forceFinishedExams = data.forceFinishedExams || {};
-        appState.studentExamGrades = data.studentExamGrades || {};
-        appState.studentExamAnswers = data.studentExamAnswers || {};
-        appState.studentExamQuestions = data.studentExamQuestions || data.studentQuestions || {};
+        const studentsById = {};
+        const activeSessions = appState.activeExamSessions || {};
+        const completed = appState.completedExams || {};
+        const forceFinished = appState.forceFinishedExams || {};
+        const grades = appState.studentExamGrades || {};
 
-        safeSetStorage('madrasah_active_exam_sessions', appState.activeExamSessions);
-        safeSetStorage('madrasah_completed_exams', appState.completedExams);
-        safeSetStorage('madrasah_force_finished_exams', appState.forceFinishedExams);
-        safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
-        safeSetStorage('madrasah_student_exam_answers', appState.studentExamAnswers);
-        safeSetStorage('madrasah_student_exam_questions', appState.studentExamQuestions);
+        data.students.forEach(row => {
+            if (!row || row.studentId === undefined || row.studentId === null) return;
+            const studentId = String(row.studentId);
+            const publicKey = studentId + '_' + examId;
+            studentsById[studentId] = row;
+
+            if (row.status === 'in_progress') {
+                activeSessions[publicKey] = {
+                    status: 'active',
+                    answeredCount: Number(row.answeredCount || 0),
+                    totalQuestions: Number(row.totalQuestions || 0),
+                    timeLeft: row.remainingTime
+                };
+            } else {
+                delete activeSessions[publicKey];
+            }
+
+            if (row.status === 'completed' || row.status === 'force_finished') {
+                completed[publicKey] = row.status === 'force_finished' ? 'force_finish' : true;
+            } else {
+                delete completed[publicKey];
+            }
+
+            if (row.status === 'force_finished' || row.forceFinished) {
+                forceFinished[publicKey] = true;
+            } else {
+                delete forceFinished[publicKey];
+            }
+
+            if (row.grade && typeof row.grade === 'object') {
+                grades[publicKey] = row.grade;
+            }
+        });
+
+        appState.evaluasiMonitorSummary = {
+            examId,
+            fetchedAt: Date.now(),
+            totalStudents: Number(data.totalStudents || data.students.length),
+            activeCount: Number(data.activeCount || 0),
+            completedCount: Number(data.completedCount || 0),
+            studentsById
+        };
+        appState.activeExamSessions = activeSessions;
+        appState.completedExams = completed;
+        appState.forceFinishedExams = forceFinished;
+        appState.studentExamGrades = grades;
+
+        // Persist only compact aggregate state. Do not rewrite raw answers/questions here.
+        safeSetStorage('madrasah_active_exam_sessions', activeSessions);
+        safeSetStorage('madrasah_completed_exams', completed);
+        safeSetStorage('madrasah_force_finished_exams', forceFinished);
+        safeSetStorage('madrasah_student_exam_grades', grades);
         return true;
     } catch (e) {
         scheduleEvaluasiRetry();
-        console.warn('Evaluasi snapshot sync gagal:', e);
+        console.warn('Evaluasi summary sync gagal:', e);
         return false;
     } finally {
         evaluasiSyncInFlight = false;
@@ -589,10 +638,11 @@ function startEvaluasiPolling() {
             return;
         }
         try {
-            const hasChanges = await syncEvaluasiStateFromServer();
             const isModalOpen = document.querySelector('.modal-open, #koreksi-modal, #modal-container:not(.hidden)');
             const isInputActive = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
-            if (!isModalOpen && !isInputActive && hasChanges) {
+            if (isModalOpen || isInputActive) return;
+            const hasChanges = await syncEvaluasiStateFromServer();
+            if (hasChanges) {
                 const containerEl = document.getElementById('view-container');
                 if (containerEl && appState.lastAssessmentSubTab === 'evaluasi') {
                     renderAssessmentModule(containerEl, 'evaluasi', appState.evaluasiSelectedExamId);
@@ -1986,18 +2036,33 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                         const forceFinishedMap = appState.forceFinishedExams || JSON.parse(localStorage.getItem('madrasah_force_finished_exams') || '{}') || {};
                         const activeSessions = appState.activeExamSessions || JSON.parse(localStorage.getItem('madrasah_active_exam_sessions') || '{}') || {};
                         const storedAnswers = appState.studentExamAnswers || JSON.parse(localStorage.getItem('madrasah_student_exam_answers') || '{}') || {};
+                        const evaluasiSummary = appState.evaluasiMonitorSummary &&
+                            String(appState.evaluasiMonitorSummary.examId) === String(examId)
+                                ? appState.evaluasiMonitorSummary
+                                : null;
+                        const evaluasiSummaryStudents = evaluasiSummary?.studentsById || {};
 
-                        // Check if exam has essay questions
+                        // Check if exam has essay questions once per exam, never once per student.
                         let questions = getExamQuestions(ex);
                         const hasEssay = questions.some(q => q.type === 'esay' || q.type === 'essay');
 
-                        // Calculate summary counts across clsStudents
+                        // Calculate summary counts from the lightweight server summary when available.
                         let countWorking = 0;
                         let countSelesai = 0;
                         let countForceFinish = 0;
                         let countBelumMulai = 0;
 
                         clsStudents.forEach(st => {
+                            const summaryRow = evaluasiSummaryStudents[String(st.id)] || null;
+                            if (summaryRow) {
+                                if (summaryRow.status === 'force_finished' || summaryRow.forceFinished) countForceFinish++;
+                                else if (summaryRow.status === 'completed') countSelesai++;
+                                else if (summaryRow.status === 'in_progress' || (summaryRow.status === 'blocked' && summaryRow.started)) countWorking++;
+                                else countBelumMulai++;
+                                return;
+                            }
+
+                            // Legacy/offline fallback when no lightweight summary has been fetched yet.
                             const k1 = st.id + '_' + examId;
                             const k2 = String(st.id) + '_' + String(examId);
                             const isFF = Boolean(forceFinishedMap[k1] || forceFinishedMap[k2] || completedMap[k1] === 'force_finish' || completedMap[k2] === 'force_finish');
@@ -2154,78 +2219,104 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                             ${clsStudents.map((st, idx) => {
                                                 const key1 = st.id + '_' + examId;
                                                 const key2 = String(st.id) + '_' + String(examId);
+                                                const summaryRow = evaluasiSummaryStudents[String(st.id)] || null;
 
-                                                let gradeObj = (grades && (grades[key1] || grades[key2])) || (appState.studentExamGrades && (appState.studentExamGrades[key1] || appState.studentExamGrades[key2]));
+                                                let gradeObj = (summaryRow && summaryRow.grade) ||
+                                                    (grades && (grades[key1] || grades[key2])) ||
+                                                    (appState.studentExamGrades && (appState.studentExamGrades[key1] || appState.studentExamGrades[key2]));
 
-                                                const isForceFinished = Boolean(
-                                                    forceFinishedMap[key1] ||
-                                                    forceFinishedMap[key2] ||
-                                                    completedMap[key1] === 'force_finish' ||
-                                                    completedMap[key2] === 'force_finish' ||
-                                                    (gradeObj && gradeObj.submissionType === 'force_finish')
-                                                );
+                                                const isForceFinished = summaryRow
+                                                    ? Boolean(summaryRow.status === 'force_finished' || summaryRow.forceFinished)
+                                                    : Boolean(
+                                                        forceFinishedMap[key1] ||
+                                                        forceFinishedMap[key2] ||
+                                                        completedMap[key1] === 'force_finish' ||
+                                                        completedMap[key2] === 'force_finish' ||
+                                                        (gradeObj && gradeObj.submissionType === 'force_finish')
+                                                    );
 
-                                                const isCompleted = Boolean(completedMap[key1] || completedMap[key2]) || isForceFinished;
+                                                const isCompleted = summaryRow
+                                                    ? Boolean(summaryRow.status === 'completed' || summaryRow.status === 'force_finished')
+                                                    : (Boolean(completedMap[key1] || completedMap[key2]) || isForceFinished);
 
-                                                const currentSession = activeSessions[key1] || activeSessions[key2] || null;
+                                                const currentSession = summaryRow
+                                                    ? (summaryRow.status === 'in_progress' ? {
+                                                        status: 'active',
+                                                        answeredCount: Number(summaryRow.answeredCount || 0),
+                                                        totalQuestions: Number(summaryRow.totalQuestions || 0),
+                                                        timeLeft: summaryRow.remainingTime
+                                                    } : null)
+                                                    : (activeSessions[key1] || activeSessions[key2] || null);
 
-                                                const studentAnswers = (storedAnswers && (storedAnswers[key1] || storedAnswers[key2])) ||
-                                                    (currentSession && currentSession.answers) ||
-                                                    null;
+                                                // Raw answers/questions are intentionally bypassed when lightweight summary exists.
+                                                // Preview/Koreksi fetch the authoritative attempt on demand via /api/exam/review.
+                                                const studentAnswers = summaryRow
+                                                    ? null
+                                                    : ((storedAnswers && (storedAnswers[key1] || storedAnswers[key2])) ||
+                                                        (currentSession && currentSession.answers) ||
+                                                        null);
 
-                                                const stQuestions = getExamQuestions(ex, st.id);
+                                                const stQuestions = summaryRow ? [] : getExamQuestions(ex, st.id);
                                                 const pgQuestions = stQuestions.filter(q => q.type !== 'esay' && q.type !== 'essay');
                                                 const essayQuestions = stQuestions.filter(q => q.type === 'esay' || q.type === 'essay');
 
-                                                let answeredPGCount = 0;
-                                                let correctPGCount = 0;
-                                                pgQuestions.forEach(q => {
-                                                    const userAns = studentAnswers ? (studentAnswers[q.id] !== undefined ? studentAnswers[q.id] : studentAnswers[String(q.id)]) : undefined;
-                                                    if (userAns !== undefined && userAns !== null && String(userAns).trim() !== '') {
-                                                        answeredPGCount++;
-                                                        if (isCorrectAnswer(q, userAns)) {
-                                                            correctPGCount++;
-                                                        }
-                                                    }
-                                                });
-
-                                                let answeredEssayCount = 0;
-                                                essayQuestions.forEach(q => {
-                                                    const userAns = studentAnswers ? (studentAnswers[q.id] !== undefined ? studentAnswers[q.id] : studentAnswers[String(q.id)]) : undefined;
-                                                    if (userAns !== undefined && userAns !== null && String(userAns).trim() !== '') {
-                                                        answeredEssayCount++;
-                                                    }
-                                                });
-
-                                                // Completed attempts must show progress from authoritative stored answers,
-                                                // not only from a possibly stale local question package.
-                                                const storedAnsweredCount = studentAnswers
-                                                    ? Object.values(studentAnswers).filter(value => value !== undefined && value !== null && String(value).trim() !== '').length
+                                                let answeredPGCount = summaryRow ? Number(summaryRow.answeredPGCount || 0) : 0;
+                                                let correctPGCount = summaryRow
+                                                    ? Number(summaryRow.correctPGCount ?? gradeObj?.correctPGCount ?? 0)
                                                     : 0;
+                                                if (!summaryRow) {
+                                                    pgQuestions.forEach(q => {
+                                                        const userAns = studentAnswers ? (studentAnswers[q.id] !== undefined ? studentAnswers[q.id] : studentAnswers[String(q.id)]) : undefined;
+                                                        if (userAns !== undefined && userAns !== null && String(userAns).trim() !== '') {
+                                                            answeredPGCount++;
+                                                            if (isCorrectAnswer(q, userAns)) correctPGCount++;
+                                                        }
+                                                    });
+                                                }
+
+                                                let answeredEssayCount = summaryRow ? Number(summaryRow.answeredEssayCount || 0) : 0;
+                                                if (!summaryRow) {
+                                                    essayQuestions.forEach(q => {
+                                                        const userAns = studentAnswers ? (studentAnswers[q.id] !== undefined ? studentAnswers[q.id] : studentAnswers[String(q.id)]) : undefined;
+                                                        if (userAns !== undefined && userAns !== null && String(userAns).trim() !== '') answeredEssayCount++;
+                                                    });
+                                                }
+
+                                                const storedAnsweredCount = summaryRow
+                                                    ? Number(summaryRow.answeredCount || 0)
+                                                    : (studentAnswers
+                                                        ? Object.values(studentAnswers).filter(value => value !== undefined && value !== null && String(value).trim() !== '').length
+                                                        : 0);
                                                 const gradeTotalQuestions = gradeObj
                                                     ? (Number(gradeObj.totalPGCount || 0) + Number(gradeObj.totalEssayCount || 0))
                                                     : 0;
 
-                                                const totalAnsweredCount = (isCompleted && storedAnsweredCount > 0)
-                                                    ? storedAnsweredCount
-                                                    : ((currentSession && currentSession.answeredCount !== undefined && currentSession.answeredCount > 0)
-                                                        ? currentSession.answeredCount
-                                                        : Math.max(storedAnsweredCount, answeredPGCount + answeredEssayCount));
+                                                const totalAnsweredCount = summaryRow
+                                                    ? Number(summaryRow.answeredCount || 0)
+                                                    : ((isCompleted && storedAnsweredCount > 0)
+                                                        ? storedAnsweredCount
+                                                        : ((currentSession && currentSession.answeredCount !== undefined && currentSession.answeredCount > 0)
+                                                            ? currentSession.answeredCount
+                                                            : Math.max(storedAnsweredCount, answeredPGCount + answeredEssayCount)));
 
-                                                const totalQuestionsCount = (currentSession && currentSession.totalQuestions)
-                                                    ? currentSession.totalQuestions
-                                                    : (stQuestions.length || gradeTotalQuestions || storedAnsweredCount);
+                                                const totalQuestionsCount = summaryRow
+                                                    ? Number(summaryRow.totalQuestions || gradeTotalQuestions || 0)
+                                                    : ((currentSession && currentSession.totalQuestions)
+                                                        ? currentSession.totalQuestions
+                                                        : (stQuestions.length || gradeTotalQuestions || storedAnsweredCount));
 
-                                                const isCurrentlyWorking = !isCompleted && Boolean(
-                                                    (currentSession && (currentSession.status === 'active' || (currentSession.timeLeft !== undefined && currentSession.timeLeft > 0) || (currentSession.answeredCount && currentSession.answeredCount > 0))) ||
-                                                    totalAnsweredCount > 0 ||
-                                                    (studentAnswers && Object.keys(studentAnswers).length > 0)
-                                                );
+                                                const isCurrentlyWorking = summaryRow
+                                                    ? Boolean(summaryRow.status === 'in_progress' || (summaryRow.status === 'blocked' && summaryRow.started))
+                                                    : (!isCompleted && Boolean(
+                                                        (currentSession && (currentSession.status === 'active' || (currentSession.timeLeft !== undefined && currentSession.timeLeft > 0) || (currentSession.answeredCount && currentSession.answeredCount > 0))) ||
+                                                        totalAnsweredCount > 0 ||
+                                                        (studentAnswers && Object.keys(studentAnswers).length > 0)
+                                                    ));
 
                                                 const hasPgScore = Boolean(gradeObj && gradeObj.pgScore !== null && gradeObj.pgScore !== undefined);
 
-                                                // Only calculate grade if student completed the exam and score has not been recorded yet
-                                                if (isCompleted && studentAnswers && !hasPgScore) {
+                                                // Legacy/offline fallback may still derive missing grades locally.
+                                                if (!summaryRow && isCompleted && studentAnswers && !hasPgScore) {
                                                     const pgScore = pgQuestions.length > 0 ? Math.round((correctPGCount / pgQuestions.length) * 100) : 100;
                                                     const isGraded = essayQuestions.length === 0;
                                                     const finalScore = isGraded ? pgScore : null;
@@ -2237,6 +2328,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                         isGraded,
                                                         correctPGCount,
                                                         totalPGCount: pgQuestions.length,
+                                                        totalEssayCount: essayQuestions.length,
                                                         essayGrades: {},
                                                         submissionType: isForceFinished ? 'force_finish' : 'normal'
                                                     };
@@ -2249,7 +2341,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                         grades[key2] = gradeObj;
                                                     }
                                                     safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
-                                                } else if (isCompleted && gradeObj && !hasEssay && (gradeObj.finalScore === null || gradeObj.finalScore === undefined)) {
+                                                } else if (!summaryRow && isCompleted && gradeObj && !hasEssay && (gradeObj.finalScore === null || gradeObj.finalScore === undefined)) {
                                                     gradeObj.finalScore = gradeObj.pgScore;
                                                     gradeObj.isGraded = true;
                                                     if (!appState.studentExamGrades) appState.studentExamGrades = {};
@@ -2262,7 +2354,13 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                     safeSetStorage('madrasah_student_exam_grades', appState.studentExamGrades);
                                                 }
 
-                                                const pctAccuracy = pgQuestions.length > 0 ? Math.round((correctPGCount / pgQuestions.length) * 100) : 0;
+                                                const pgQuestionCount = summaryRow
+                                                    ? Number(summaryRow.totalPGCount ?? gradeObj?.totalPGCount ?? 0)
+                                                    : pgQuestions.length;
+                                                const essayQuestionCount = summaryRow
+                                                    ? Number(summaryRow.totalEssayCount ?? gradeObj?.totalEssayCount ?? 0)
+                                                    : essayQuestions.length;
+                                                const pctAccuracy = pgQuestionCount > 0 ? Math.round((correctPGCount / pgQuestionCount) * 100) : 0;
                                                 const pctProgressTotal = totalQuestionsCount > 0 ? Math.round((totalAnsweredCount / totalQuestionsCount) * 100) : 0;
 
                                                 let statusBadgeHTML = '';
@@ -2309,11 +2407,11 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
 
                                                 let pgScoreDisplay = '-';
                                                 if (isCompleted) {
-                                                    const score = (gradeObj && gradeObj.pgScore !== undefined) ? gradeObj.pgScore : (pgQuestions.length > 0 ? Math.round((correctPGCount / pgQuestions.length) * 100) : 100);
+                                                    const score = (gradeObj && gradeObj.pgScore !== undefined) ? gradeObj.pgScore : (pgQuestionCount > 0 ? Math.round((correctPGCount / pgQuestionCount) * 100) : 100);
                                                     pgScoreDisplay = `
                                                         <div class="flex flex-col items-center justify-center">
                                                             <span class="font-extrabold text-slate-800 text-xs">${score}%</span>
-                                                            <span class="text-[9px] text-slate-400 mt-0.5">${gradeObj?.correctPGCount !== undefined ? gradeObj.correctPGCount : correctPGCount}/${gradeObj?.totalPGCount !== undefined ? gradeObj.totalPGCount : pgQuestions.length} Benar</span>
+                                                            <span class="text-[9px] text-slate-400 mt-0.5">${gradeObj?.correctPGCount !== undefined ? gradeObj.correctPGCount : correctPGCount}/${gradeObj?.totalPGCount !== undefined ? gradeObj.totalPGCount : pgQuestionCount} Benar</span>
                                                         </div>
                                                     `;
                                                 } else if (isCurrentlyWorking) {
@@ -2323,7 +2421,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                                 ${pctAccuracy}%
                                                             </span>
                                                             <span class="text-[9px] text-slate-500 font-semibold mt-0.5 whitespace-nowrap">
-                                                                ${correctPGCount}/${pgQuestions.length} benar (${answeredPGCount} terjawab)
+                                                                ${correctPGCount}/${pgQuestionCount} benar (${answeredPGCount} terjawab)
                                                             </span>
                                                         </div>
                                                     `;
@@ -2351,7 +2449,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                                     essayScoreDisplay = `
                                                         <div class="flex flex-col items-center justify-center">
                                                             <span class="text-amber-700 bg-amber-50 px-2 py-0.5 rounded-lg border border-amber-200/80 text-[10px] font-semibold">
-                                                                ${answeredEssayCount}/${essayQuestions.length} Terjawab
+                                                                ${answeredEssayCount}/${essayQuestionCount} Terjawab
                                                             </span>
                                                             <span class="text-[9px] text-slate-400 mt-0.5">Sedang Berjalan</span>
                                                         </div>
