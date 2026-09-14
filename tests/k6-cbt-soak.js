@@ -16,6 +16,10 @@ const ANSWER_SECONDS = Math.max(5, Number.parseFloat(__ENV.ANSWER_SECONDS || '30
 const SUMMARY_SECONDS = Math.max(15, Number.parseFloat(__ENV.SUMMARY_SECONDS || '60'));
 const RECOVERY_RATE = Math.min(1, Math.max(0, Number.parseFloat(__ENV.RECOVERY_RATE || '0.10')));
 const VIOLATION_RATE = Math.min(1, Math.max(0, Number.parseFloat(__ENV.VIOLATION_RATE || '0')));
+const ANSWER_RETRIES = Math.max(0, Number.parseInt(__ENV.ANSWER_RETRIES || '3', 10));
+const ANSWER_RETRY_BASE_SECONDS = Math.max(0.05, Number.parseFloat(__ENV.ANSWER_RETRY_BASE_SECONDS || '0.5'));
+const VERIFY_RETRIES = Math.max(0, Number.parseInt(__ENV.VERIFY_RETRIES || '3', 10));
+const VERIFY_RETRY_BASE_SECONDS = Math.max(0.05, Number.parseFloat(__ENV.VERIFY_RETRY_BASE_SECONDS || '0.5'));
 const ACCOUNTS_FILE = String(__ENV.ACCOUNTS_FILE || './accounts.loadtest.local.json');
 
 if (!EXAM_ID) {
@@ -40,9 +44,16 @@ const answerFail = new Rate('answer_fail');
 const recoveryFail = new Rate('recovery_fail');
 const summaryFail = new Rate('summary_fail');
 const violationFail = new Rate('violation_fail');
+const answerTransportFail = new Rate('answer_transport_fail');
+const answerVerificationFail = new Rate('answer_verification_fail');
 
 const heartbeatCount = new Counter('heartbeat_count');
 const answerCountMetric = new Counter('answer_count');
+const answerRequestCount = new Counter('answer_request_count');
+const answerRetryCount = new Counter('answer_retry_count');
+const answerRetrySuccessCount = new Counter('answer_retry_success_count');
+const logicalAnswerVerified = new Counter('logical_answer_verified');
+const logicalAnswerLoss = new Counter('logical_answer_loss');
 const recoveryCount = new Counter('recovery_count');
 const completedSoakStudents = new Counter('completed_soak_students');
 
@@ -69,6 +80,9 @@ export const options = {
     start_questions_fail: ['rate<0.01'],
     heartbeat_fail: ['rate<0.01'],
     answer_fail: ['rate<0.01'],
+    answer_transport_fail: ['rate<0.01'],
+    answer_verification_fail: ['rate==0'],
+    logical_answer_loss: ['count==0'],
     recovery_fail: ['rate<0.01'],
     summary_fail: ['rate<0.01'],
     heartbeat_duration: ['p(95)<2000', 'p(99)<5000'],
@@ -111,6 +125,25 @@ function chooseAnswer(q) {
   if (type === 'essay' || type === 'esay') return 'jawaban soak test';
   if (Array.isArray(q?.options) && q.options.length > 0) return String(q.options[0]);
   return 'A';
+}
+
+function isRetryableResponse(res) {
+  const status = Number(res?.status || 0);
+  return status === 0 || status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function retryDelaySeconds(baseSeconds, retryIndex) {
+  const exponential = baseSeconds * Math.pow(2, Math.max(0, retryIndex));
+  const jitter = 0.75 + (Math.random() * 0.5);
+  return Math.min(8, exponential * jitter);
+}
+
+function sameAnswer(a, b) {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch (_) {
+    return String(a) === String(b);
+  }
 }
 
 export default function () {
@@ -206,6 +239,7 @@ export default function () {
   let nextAnswerAt = startedAt + (ANSWER_SECONDS * 1000 * (0.5 + Math.random()));
   let nextSummaryAt = startedAt + (SUMMARY_SECONDS * 1000 * (0.5 + Math.random()));
   let answerIndex = 0;
+  const expectedAnswers = {};
   let recoveryDone = false;
   let violationDone = false;
   const shouldRecover = Math.random() < RECOVERY_RATE;
@@ -244,18 +278,46 @@ export default function () {
       const q = questions[answerIndex];
       const qId = String(q?.id || '');
       if (qId) {
-        const answerRes = postJson('/api/exam/attempt/answer', {
-          studentId,
-          examId: EXAM_ID,
-          questionId: qId,
-          answer: chooseAnswer(q),
-          currentIndex: answerIndex,
-        }, headers, 'POST /api/exam/attempt/answer [soak]');
-        answerDuration.add(answerRes.timings.duration);
-        const answerOk = check(answerRes, { 'soak answer 200': (r) => r.status === 200 });
+        const answerValue = chooseAnswer(q);
+        expectedAnswers[qId] = answerValue;
+        const logicalAnswerStartedAt = Date.now();
+        let answerRes = null;
+        let answerOk = false;
+        let usedRetry = false;
+
+        for (let attempt = 0; attempt <= ANSWER_RETRIES; attempt++) {
+          answerRes = postJson('/api/exam/attempt/answer', {
+            studentId,
+            examId: EXAM_ID,
+            questionId: qId,
+            answer: answerValue,
+            currentIndex: answerIndex,
+          }, headers, 'POST /api/exam/attempt/answer [soak]');
+
+          answerRequestCount.add(1);
+          const requestOk = answerRes.status === 200;
+          answerTransportFail.add(!requestOk);
+
+          if (requestOk) {
+            answerOk = true;
+            if (usedRetry) answerRetrySuccessCount.add(1);
+            break;
+          }
+
+          if (!isRetryableResponse(answerRes) || attempt >= ANSWER_RETRIES) {
+            break;
+          }
+
+          usedRetry = true;
+          answerRetryCount.add(1);
+          sleep(retryDelaySeconds(ANSWER_RETRY_BASE_SECONDS, attempt));
+        }
+
+        answerDuration.add(Date.now() - logicalAnswerStartedAt);
+        check(answerRes, { 'soak answer 200': () => answerOk });
         answerFail.add(!answerOk);
         answerCountMetric.add(1);
-        if (!answerOk) logFailure('answer', answerRes);
+        if (!answerOk) logFailure('answer setelah retry', answerRes);
       }
       answerIndex += 1;
       nextAnswerAt = now + (ANSWER_SECONDS * 1000 * (0.75 + Math.random() * 0.5));
@@ -302,6 +364,47 @@ export default function () {
     }
 
     sleep(0.25);
+  }
+
+  // Final authoritative verification: recover the server session and compare every
+  // logical answer this VU attempted to send. HTTP 0/502/503/504/429 is retried
+  // because the server may have committed an answer even when the ACK was lost.
+  let verifyRes = null;
+  let verifyOk = false;
+  for (let attempt = 0; attempt <= VERIFY_RETRIES; attempt++) {
+    verifyRes = postJson('/api/exam/attempt/start', {
+      studentId,
+      examId: EXAM_ID,
+    }, headers, 'POST /api/exam/attempt/start [soak final verify]');
+
+    if (verifyRes.status === 200) {
+      verifyOk = true;
+      break;
+    }
+    if (!isRetryableResponse(verifyRes) || attempt >= VERIFY_RETRIES) break;
+    sleep(retryDelaySeconds(VERIFY_RETRY_BASE_SECONDS, attempt));
+  }
+
+  const verifyData = tryJson(verifyRes);
+  const persistedAnswers = verifyData?.session?.answers;
+  const verificationUsable = verifyOk && persistedAnswers && typeof persistedAnswers === 'object';
+  answerVerificationFail.add(!verificationUsable);
+
+  if (!verificationUsable) {
+    logFailure('final answer verification', verifyRes);
+  } else {
+    for (const [questionId, expectedAnswer] of Object.entries(expectedAnswers)) {
+      const hasAnswer = Object.prototype.hasOwnProperty.call(persistedAnswers, questionId);
+      const storedAnswer = hasAnswer ? persistedAnswers[questionId] : undefined;
+      if (hasAnswer && sameAnswer(storedAnswer, expectedAnswer)) {
+        logicalAnswerVerified.add(1);
+      } else {
+        logicalAnswerLoss.add(1);
+        console.error(
+          `logical answer loss: student=${studentId} question=${questionId} expected_present=true stored_present=${hasAnswer}`
+        );
+      }
+    }
   }
 
   completedSoakStudents.add(1);
