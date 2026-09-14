@@ -2415,16 +2415,15 @@ function renderRosterMatrixHTML(classes, subjects, teachers, schedules, teacherC
     days.forEach((day, dayIdx) => {
         let isFirstDayRow = true;
 
-        timeSlots.forEach((slot) => {
-            // Handle Upacara only on Monday
-            if (slot.type === 'upacara' && day !== 'Senin') return;
+        const visibleDaySlots = timeSlots.filter(slot => !(slot.type === 'upacara' && day !== 'Senin'));
 
+        visibleDaySlots.forEach((slot) => {
             let rowContent = '';
             let isNewDayStart = false;
 
             if (isFirstDayRow) {
                 isNewDayStart = true;
-                const totalDayRows = day === 'Senin' ? timeSlots.length : timeSlots.length - 1;
+                const totalDayRows = visibleDaySlots.length;
                 const dayTopBorderClass = dayIdx > 0 ? 'border-t-4 border-t-emerald-950' : '';
                 rowContent += `<td rowspan="${totalDayRows}" class="p-2 border border-emerald-700 ${dayTopBorderClass} bg-emerald-900 text-white font-extrabold text-center text-xs uppercase tracking-wider sticky left-0 z-20 writing-mode-vertical sm:writing-mode-horizontal shadow-sm">${day}</td>`;
                 isFirstDayRow = false;
@@ -2792,6 +2791,7 @@ function downloadRosterExcel() {
 
 // Edit Time Slots Modal (Supports Dynamic Add / Remove Rows & Auto Recalculation)
 let currentEditingSlots = [];
+let originalEditingSlots = [];
 let currentKbmDuration = 40;
 
 function parseTimeMinutes(str) {
@@ -2839,7 +2839,11 @@ function openEditTimeSlotsModal() {
     ];
 
     const sourceSlots = (appState.timeSlots && appState.timeSlots.length > 0) ? appState.timeSlots : defaultTimeSlots;
-    currentEditingSlots = sourceSlots.map(s => ({ ...s }));
+    originalEditingSlots = sourceSlots.map((s, idx) => ({
+        ...s,
+        _editKey: 'existing_' + idx
+    }));
+    currentEditingSlots = originalEditingSlots.map(s => ({ ...s }));
 
     // Detect KBM duration from first KBM slot if possible
     const firstKbm = currentEditingSlots.find(s => s.type === 'kbm');
@@ -2864,6 +2868,7 @@ function syncCurrentEditingSlotsFromDOM() {
         const labelInput = row.querySelector('.input-slot-label');
 
         updated.push({
+            _editKey: row.dataset.slotKey || (currentEditingSlots[idx] && currentEditingSlots[idx]._editKey) || ('slot_' + Date.now() + '_' + idx),
             jamKe: jamKeInput ? jamKeInput.value.trim() : String(idx),
             waktu: waktuInput ? waktuInput.value.trim() : '',
             type: typeSelect ? typeSelect.value : 'kbm',
@@ -2871,6 +2876,94 @@ function syncCurrentEditingSlotsFromDOM() {
         });
     });
     currentEditingSlots = updated;
+}
+
+function normalizeGeneratedJamKe() {
+    let kbmNumber = 0;
+    currentEditingSlots.forEach(slot => {
+        if (!slot) return;
+        if (slot.type === 'kbm') {
+            kbmNumber += 1;
+            slot.jamKe = String(kbmNumber);
+            slot.label = '';
+        } else if (slot.type === 'upacara') {
+            slot.jamKe = '0';
+            if (!slot.label) slot.label = 'UPACARA BENDERA';
+        } else if (slot.type === 'istirahat') {
+            slot.jamKe = '-';
+            if (!slot.label) slot.label = 'ISTIRAHAT';
+        }
+    });
+}
+
+function normalizeSlotTimeKey(value) {
+    const parsed = parseSlotTimes(value);
+    return parsed ? (String(parsed.start) + '-' + String(parsed.end)) : '';
+}
+
+function legacyScheduleMatchesJamKe(scheduleTime, jamKe) {
+    const value = String(scheduleTime || '');
+    if (String(jamKe) === '1') return value.includes('07:30');
+    if (String(jamKe) === '2') return value.includes('08:30');
+    if (String(jamKe) === '3') return value.includes('09:45');
+    if (String(jamKe) === '4') return value.includes('10:45');
+    return false;
+}
+
+function migrateSchedulesForTimeSlotEdit(sourceSchedules, previousSlots, nextSlots) {
+    const oldKbmSlots = (previousSlots || []).filter(slot => slot && slot.type === 'kbm');
+    const nextKbmByKey = new Map(
+        (nextSlots || [])
+            .filter(slot => slot && slot.type === 'kbm' && slot._editKey)
+            .map(slot => [String(slot._editKey), slot])
+    );
+
+    let migratedCount = 0;
+    let removedCount = 0;
+    const migratedSchedules = [];
+
+    (Array.isArray(sourceSchedules) ? sourceSchedules : []).forEach(schedule => {
+        const scheduleTimeKey = normalizeSlotTimeKey(schedule && schedule.time);
+        let oldSlot = oldKbmSlots.find(slot =>
+            scheduleTimeKey && normalizeSlotTimeKey(slot.waktu) === scheduleTimeKey
+        );
+
+        if (!oldSlot) {
+            oldSlot = oldKbmSlots.find(slot => legacyScheduleMatchesJamKe(schedule && schedule.time, slot.jamKe));
+        }
+
+        // Schedules that cannot be tied to one of the edited roster slots are
+        // preserved untouched (for example externally-created/manual schedules).
+        if (!oldSlot || !oldSlot._editKey) {
+            migratedSchedules.push({ ...schedule });
+            return;
+        }
+
+        const nextSlot = nextKbmByKey.get(String(oldSlot._editKey));
+        if (!nextSlot) {
+            // The KBM slot was deleted or converted into a non-KBM slot.
+            removedCount += 1;
+            return;
+        }
+
+        const nextSchedule = { ...schedule };
+        if (normalizeSlotTimeKey(nextSchedule.time) !== normalizeSlotTimeKey(nextSlot.waktu) ||
+            String(nextSchedule.time || '') !== String(nextSlot.waktu || '')) {
+            nextSchedule.time = nextSlot.waktu;
+            migratedCount += 1;
+        }
+        migratedSchedules.push(nextSchedule);
+    });
+
+    return { schedules: migratedSchedules, migratedCount, removedCount };
+}
+
+function stripTimeSlotEditMetadata(slots) {
+    return (Array.isArray(slots) ? slots : []).map(slot => {
+        const clean = { ...slot };
+        delete clean._editKey;
+        return clean;
+    });
 }
 
 function recalculateTimeSlots(startIndex = 0, syncFromDom = true) {
@@ -2920,25 +3013,13 @@ function recalculateTimeSlots(startIndex = 0, syncFromDom = true) {
 
 function handleSlotTimeChange(idx) {
     syncCurrentEditingSlotsFromDOM();
-    recalculateTimeSlots(idx + 1);
+    recalculateTimeSlots(idx + 1, false);
 }
 
 function handleSlotTypeChange(idx) {
     syncCurrentEditingSlotsFromDOM();
-    const slot = currentEditingSlots[idx];
-    if (slot) {
-        if (slot.type === 'istirahat') {
-            slot.jamKe = '-';
-            if (!slot.label) slot.label = 'ISTIRAHAT';
-        } else if (slot.type === 'upacara') {
-            slot.jamKe = '0';
-            if (!slot.label) slot.label = 'UPACARA BENDERA';
-        } else if (slot.type === 'kbm') {
-            slot.jamKe = String(idx);
-            slot.label = '';
-        }
-    }
-    recalculateTimeSlots(idx);
+    normalizeGeneratedJamKe();
+    recalculateTimeSlots(idx, false);
 }
 
 function addTimeSlotRow() {
@@ -2953,13 +3034,14 @@ function addTimeSlotRow() {
     const endMins = parseTimeMinutes(lastEnd) || 15 * 60;
     const nextEnd = endMins + currentKbmDuration;
 
-    let nextJam = currentEditingSlots.length > 0 ? (parseInt(currentEditingSlots[currentEditingSlots.length - 1].jamKe) + 1 || currentEditingSlots.length) : 1;
     currentEditingSlots.push({
-        jamKe: String(nextJam),
+        _editKey: 'new_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        jamKe: '',
         waktu: `${lastEnd} - ${formatMinutesToTime(nextEnd)}`,
         type: 'kbm',
         label: ''
     });
+    normalizeGeneratedJamKe();
     renderTimeSlotsModalContent();
 }
 
@@ -2970,6 +3052,7 @@ function deleteTimeSlotRow(idx) {
         return;
     }
     currentEditingSlots.splice(idx, 1);
+    normalizeGeneratedJamKe();
 
     // The DOM still contains the row that was just removed from currentEditingSlots.
     // Recalculate directly from the updated array so the deleted row is not restored
@@ -2982,7 +3065,7 @@ function renderTimeSlotsModalContent() {
     if (!modal) return;
 
     const rows = currentEditingSlots.map((slot, idx) => `
-        <tr class="hover:bg-slate-50 transition text-xs slot-row-item">
+        <tr class="hover:bg-slate-50 transition text-xs slot-row-item" data-slot-key="${slot._editKey || ''}">
             <td class="p-2 text-center font-bold text-slate-500">${idx + 1}</td>
             <td class="p-2">
                 <input type="text" value="${slot.jamKe}" class="input-slot-jam w-16 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-center font-mono font-bold focus:ring-1 focus:ring-emerald-500">
@@ -3082,40 +3165,93 @@ function renderTimeSlotsModalContent() {
     `;
 }
 
-function saveTimeSlots(e) {
+async function saveTimeSlots(e) {
     if (e) e.preventDefault();
     syncCurrentEditingSlotsFromDOM();
 
-    appState.timeSlots = currentEditingSlots;
-    appState.kbmDuration = currentKbmDuration;
+    const kbmInput = document.getElementById('kbm-duration-input');
+    if (kbmInput) {
+        currentKbmDuration = parseInt(kbmInput.value, 10) || currentKbmDuration || 40;
+    }
 
-    safeSetLocalStorage('madrasah_timeSlots', appState.timeSlots);
-    safeSetLocalStorage('madrasah_kbmDuration', appState.kbmDuration);
+    normalizeGeneratedJamKe();
 
-    if (appState.activeRosterId && Array.isArray(appState.savedRosters)) {
-        const activeRoster = appState.savedRosters.find(r => String(r.id) === String(appState.activeRosterId));
+    const invalidSlot = currentEditingSlots.find(slot => !parseSlotTimes(slot && slot.waktu));
+    if (invalidSlot) {
+        showToast('Ada rentang waktu slot yang tidak valid. Gunakan format seperti 07.00 - 07.40.', 'error');
+        return;
+    }
+
+    const migration = migrateSchedulesForTimeSlotEdit(
+        appState.schedules || [],
+        originalEditingSlots || [],
+        currentEditingSlots || []
+    );
+
+    const persistedSlots = stripTimeSlotEditMetadata(currentEditingSlots);
+    const nextSavedRosters = JSON.parse(JSON.stringify(appState.savedRosters || []));
+    if (appState.activeRosterId && Array.isArray(nextSavedRosters)) {
+        const activeRoster = nextSavedRosters.find(r => String(r.id) === String(appState.activeRosterId));
         if (activeRoster) {
-            activeRoster.timeSlots = JSON.parse(JSON.stringify(currentEditingSlots));
+            activeRoster.timeSlots = JSON.parse(JSON.stringify(persistedSlots));
             activeRoster.kbmDuration = currentKbmDuration;
-            saveState('savedRosters');
+            activeRoster.schedules = JSON.parse(JSON.stringify(migration.schedules));
         }
     }
 
-    saveState('timeSlots');
-    saveState('kbmDuration');
+    const submitButton = e && e.target ? e.target.querySelector('button[type="submit"]') : null;
+    const originalButtonHtml = submitButton ? submitButton.innerHTML : '';
+    if (submitButton) {
+        submitButton.disabled = true;
+        submitButton.innerHTML = '<i class="fa-solid fa-spinner animate-spin mr-1"></i>Menyimpan...';
+    }
 
-    // Explicit direct save to server
-    fetch('/api/time-slots', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timeSlots: appState.timeSlots, kbmDuration: appState.kbmDuration })
-    }).catch(err => console.warn('Error saving time slots directly:', err));
+    try {
+        const response = await fetch('/api/time-slots', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                timeSlots: persistedSlots,
+                kbmDuration: currentKbmDuration,
+                schedules: migration.schedules,
+                savedRosters: nextSavedRosters
+            })
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.success) {
+            throw new Error((data && data.message) || 'Server gagal menyimpan perubahan waktu roster.');
+        }
 
-    showToast('Waktu slot roster berhasil diperbarui dan tersimpan permanen!', 'success');
-    closeModal();
+        appState.timeSlots = Array.isArray(data.timeSlots) ? data.timeSlots : persistedSlots;
+        appState.kbmDuration = Number(data.kbmDuration) || currentKbmDuration;
+        appState.schedules = Array.isArray(data.schedules) ? data.schedules : migration.schedules;
+        appState.savedRosters = Array.isArray(data.savedRosters) ? data.savedRosters : nextSavedRosters;
 
-    const container = document.getElementById('view-container');
-    if (container) renderScheduleModule(container);
+        safeSetLocalStorage('madrasah_timeSlots', appState.timeSlots);
+        safeSetLocalStorage('madrasah_kbmDuration', appState.kbmDuration);
+        safeSetLocalStorage('madrasah_schedules', appState.schedules);
+        safeSetLocalStorage('madrasah_savedRosters', appState.savedRosters);
+
+        let detail = '';
+        if (migration.migratedCount > 0 || migration.removedCount > 0) {
+            detail = ` (${migration.migratedCount} jadwal mengikuti waktu baru`;
+            if (migration.removedCount > 0) detail += `, ${migration.removedCount} jadwal pada slot KBM yang dihapus dibersihkan`;
+            detail += ')';
+        }
+        showToast('Waktu slot roster berhasil tersimpan permanen' + detail + '!', 'success');
+        closeModal();
+
+        const container = document.getElementById('view-container');
+        if (container) renderScheduleModule(container);
+    } catch (err) {
+        console.error('Gagal menyimpan waktu slot roster:', err);
+        showToast(err.message || 'Gagal menyimpan waktu slot roster.', 'error');
+    } finally {
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.innerHTML = originalButtonHtml;
+        }
+    }
 }
 
 // Print / Download Roster Function (Guaranteed to Work in all environments)

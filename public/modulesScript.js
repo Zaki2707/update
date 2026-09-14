@@ -2285,7 +2285,7 @@ function filterTeacherAttendance() {
                 <td class="p-4 border-l border-slate-100 text-center">
                     <div class="flex flex-col items-center gap-1.5 justify-center">
                         <span class="text-[10px] text-slate-400 font-medium italic">Belum Presensi</span>
-                        <select onchange="updateTeacherAttendanceAdmin('${teacher.id}', '${filterDate}', this.value, '${type}')" class="px-2 py-1 bg-slate-50 border border-slate-200 rounded-xl text-[10px] font-bold cursor-pointer hover:bg-slate-100 transition shadow-xs text-slate-500">
+                        <select onchange="updateTeacherAttendanceAdmin('${teacher.id}', '${filterDate}', this.value, '${type}', this)" class="px-2 py-1 bg-slate-50 border border-slate-200 rounded-xl text-[10px] font-bold cursor-pointer hover:bg-slate-100 transition shadow-xs text-slate-500">
                             <option value="BELUM PRESENSI" selected>Set Absen</option>
                             <option value="HADIR">HADIR</option>
                             <option value="IZIN">IZIN</option>
@@ -2316,7 +2316,7 @@ function filterTeacherAttendance() {
         }
 
         let statusHtml = `
-            <select onchange="updateTeacherAttendanceAdmin('${teacher.id}', '${filterDate}', this.value, '${type}')" class="px-2 py-0.5 border rounded-lg text-[10px] font-bold cursor-pointer transition shadow-xs ${currentStatus === 'HADIR' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : (currentStatus === 'IZIN' ? 'bg-blue-50 text-blue-700 border-blue-300' : (currentStatus === 'SAKIT' ? 'bg-amber-50 text-amber-700 border-amber-300' : (currentStatus === 'ALPA' ? 'bg-rose-50 text-rose-700 border-rose-300' : 'bg-slate-50 text-slate-600 border-slate-200')))}">
+            <select onchange="updateTeacherAttendanceAdmin('${teacher.id}', '${filterDate}', this.value, '${type}', this)" class="px-2 py-0.5 border rounded-lg text-[10px] font-bold cursor-pointer transition shadow-xs ${currentStatus === 'HADIR' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : (currentStatus === 'IZIN' ? 'bg-blue-50 text-blue-700 border-blue-300' : (currentStatus === 'SAKIT' ? 'bg-amber-50 text-amber-700 border-amber-300' : (currentStatus === 'ALPA' ? 'bg-rose-50 text-rose-700 border-rose-300' : 'bg-slate-50 text-slate-600 border-slate-200')))}">
                 <option value="BELUM PRESENSI" ${currentStatus === 'BELUM PRESENSI' ? 'selected' : ''}>BELUM</option>
                 <option value="HADIR" ${currentStatus === 'HADIR' ? 'selected' : ''}>HADIR</option>
                 <option value="IZIN" ${currentStatus === 'IZIN' ? 'selected' : ''}>IZIN</option>
@@ -2376,47 +2376,43 @@ function exportTeacherAttendance() {
     exportToExcel('teacher-attendance-admin-table', `Laporan_Absensi_Guru_${filterDate}`);
 }
 
-function updateTeacherAttendanceAdmin(teacherId, dateStr, newStatus, type) {
-    if (!appState.teacherAttendance) appState.teacherAttendance = [];
+async function updateTeacherAttendanceAdmin(teacherId, dateStr, newStatus, type, selectEl = null) {
     const teacher = (appState.teachers || []).find(t => String(t.id) === String(teacherId));
     const teacherName = teacher ? teacher.name : teacherId;
     const attType = type || 'MASUK';
 
-    let attIndex = appState.teacherAttendance.findIndex(a => 
-        String(a.teacherId) === String(teacherId) && 
-        String(a.date).substring(0, 10) === dateStr &&
-        (a.type || 'MASUK') === attType
-    );
-
-    if (newStatus === 'BELUM PRESENSI') {
-        if (attIndex !== -1) {
-            appState.teacherAttendance.splice(attIndex, 1);
+    if (selectEl) selectEl.disabled = true;
+    try {
+        const response = await fetch('/api/teacher-attendance/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ teacherId, date: dateStr, status: newStatus, type: attType })
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.success) {
+            throw new Error((data && data.message) || 'Gagal mengubah status presensi guru.');
         }
-    } else {
-        if (attIndex !== -1) {
-            appState.teacherAttendance[attIndex].status = newStatus;
+
+        if (Array.isArray(data.teacherAttendance)) {
+            appState.teacherAttendance = data.teacherAttendance;
+            try { localStorage.setItem('madrasah_teacher_attendance', JSON.stringify(appState.teacherAttendance)); } catch (_) {}
         } else {
-            appState.teacherAttendance.push({
-                id: 'TATT_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-                teacherId: teacherId,
-                date: dateStr,
-                status: newStatus,
-                type: attType,
-                location: 'Input Admin',
-                photo: '',
-                createdAt: new Date().toISOString()
-            });
+            const refreshResponse = await fetch('/api/teacher-attendance', { cache: 'no-store' });
+            const refreshData = await refreshResponse.json().catch(() => null);
+            if (!refreshResponse.ok || !refreshData || !refreshData.success || !Array.isArray(refreshData.teacherAttendance)) {
+                throw new Error((refreshData && refreshData.message) || 'Status tersimpan, tetapi data presensi terbaru gagal dimuat.');
+            }
+            appState.teacherAttendance = refreshData.teacherAttendance;
         }
+
+        showToast(`Status presensi ${attType === 'PULANG' ? 'pulang' : 'masuk'} guru ${teacherName} diubah menjadi ${newStatus}`, 'success');
+    } catch (err) {
+        console.error('Gagal update presensi guru:', err);
+        showToast(err.message || 'Gagal mengubah status presensi guru.', 'error');
+    } finally {
+        if (selectEl) selectEl.disabled = false;
+        filterTeacherAttendance();
     }
-
-    fetch('/api/teacher-attendance/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teacherId, date: dateStr, status: newStatus, type: attType })
-    }).catch(err => console.warn('Gagal update presensi guru di server:', err));
-
-    showToast(`Status presensi ${attType === 'PULANG' ? 'pulang' : 'masuk'} guru ${teacherName} diubah menjadi ${newStatus}`, 'success');
-    filterTeacherAttendance();
 }
 
 async function refreshTeacherAttendanceData(btn) {

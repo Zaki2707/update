@@ -1655,7 +1655,7 @@ function renderStudentAttendanceAdminOnly(container) {
                                             <td class="p-4 text-center">${profilePhotoHtml}</td>
                                             <td class="p-4 font-semibold text-slate-800">${st.name}</td>
                                             <td class="p-4 text-center">
-                                                <select onchange="updateStudentAttendanceAdmin('${st.id}', '${selectedDate}', this.value)" class="px-2.5 py-1.5 border rounded-xl text-xs font-bold cursor-pointer transition shadow-xs ${status === 'HADIR' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : (status === 'IZIN' ? 'bg-blue-50 text-blue-700 border-blue-300' : (status === 'SAKIT' ? 'bg-amber-50 text-amber-700 border-amber-300' : (status === 'ALPA' ? 'bg-rose-50 text-rose-700 border-rose-300' : 'bg-slate-50 text-slate-600 border-slate-200')))}">
+                                                <select onchange="updateStudentAttendanceAdmin(decodeURIComponent('${encodeURIComponent(String(st.id || ''))}'), '${selectedDate}', this.value, decodeURIComponent('${encodeURIComponent(att && att.id ? String(att.id) : '')}'), this)" class="px-2.5 py-1.5 border rounded-xl text-xs font-bold cursor-pointer transition shadow-xs ${status === 'HADIR' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : (status === 'IZIN' ? 'bg-blue-50 text-blue-700 border-blue-300' : (status === 'SAKIT' ? 'bg-amber-50 text-amber-700 border-amber-300' : (status === 'ALPA' ? 'bg-rose-50 text-rose-700 border-rose-300' : 'bg-slate-50 text-slate-600 border-slate-200')))}">
                                                     <option value="BELUM ABSEN" ${status === 'BELUM ABSEN' || status === 'BELUM HADIR' ? 'selected' : ''}>BELUM HADIR</option>
                                                     <option value="HADIR" ${status === 'HADIR' ? 'selected' : ''}>HADIR</option>
                                                     <option value="IZIN" ${status === 'IZIN' ? 'selected' : ''}>IZIN</option>
@@ -1844,6 +1844,21 @@ async function setAttendancePhotoAsStudentProfile(studentId, photoUrl, dateStr) 
 }
 window.setAttendancePhotoAsStudentProfile = setAttendancePhotoAsStudentProfile;
 
+async function reloadAuthoritativeAttendance(payload = null) {
+    if (payload && Array.isArray(payload.attendance)) {
+        appState.attendance = payload.attendance;
+    } else {
+        const response = await fetch('/api/attendance', { cache: 'no-store' });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.success || !Array.isArray(data.attendance)) {
+            throw new Error((data && data.message) || 'Gagal memuat ulang data absensi dari server.');
+        }
+        appState.attendance = data.attendance;
+    }
+    safeSetLocalStorage('madrasah_attendance', appState.attendance);
+    return appState.attendance;
+}
+
 async function markAllStudentsPresent() {
     const selectedClassId = appState.activeAttendanceClassId;
     const selectedSubjectId = appState.activeAttendanceSubjectId || 'ALL';
@@ -1869,83 +1884,72 @@ async function markAllStudentsPresent() {
         return;
     }
 
-    if (!appState.attendance) appState.attendance = [];
-
     const bulkItems = [];
     let alreadyAttendedCount = 0;
-    let newlyMarkedCount = 0;
 
     students.forEach(st => {
         const studentId = st.id;
         const classId = st.classId || st.class_id || selectedClassId;
         const subId = (selectedSubjectId && selectedSubjectId !== 'ALL') ? selectedSubjectId : '';
 
-        // Check if student already has attendance entry for date and subject
         const existingAtt = (appState.attendance || []).find(a => {
             const sameStudent = (
-                String(a.studentId) === String(st.id) || 
+                String(a.studentId) === String(st.id) ||
                 (a.studentId && st.id && String(a.studentId).toLowerCase().trim() === String(st.id).toLowerCase().trim()) ||
                 (a.studentId && st.nis && String(a.studentId).toLowerCase().trim() === String(st.nis).toLowerCase().trim()) ||
                 (a.studentId && st.name && String(a.studentId).toLowerCase().trim() === String(st.name).toLowerCase().trim()) ||
                 (a.studentId && st.username && String(a.studentId).toLowerCase().trim() === String(st.username).toLowerCase().trim())
             );
             const sameDate = String(a.date).substring(0, 10) === selectedDate;
-            let sameSubject = true;
-            if (selectedSubjectId && selectedSubjectId !== 'ALL') {
-                sameSubject = (String(a.subjectId || '') === String(selectedSubjectId) || !a.subjectId || String(a.subjectId) === 'ALL');
-            } else {
-                sameSubject = true;
-            }
+            const sameSubject = selectedSubjectId && selectedSubjectId !== 'ALL'
+                ? (String(a.subjectId || '') === String(selectedSubjectId) || !a.subjectId || String(a.subjectId) === 'ALL')
+                : true;
             return sameStudent && sameDate && sameSubject;
         });
 
-        // JANGAN MENIMPA SISWA YANG SUDAH ABSEN:
-        // Jika siswa sudah memiliki data absensi (sudah absen dengan selfie foto, GPS, maupun status izin/sakit/hadir),
-        // JANGAN DITIMPA agar foto selfie & koordinat GPS asli tidak hilang!
         if (existingAtt) {
             alreadyAttendedCount++;
             return;
         }
 
-        // Hanya tandai siswa yang BELUM ABSEN menjadi HADIR
-        const newObj = {
-            id: 'ATT_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-            studentId: studentId,
-            classId: classId,
+        bulkItems.push({
+            studentId,
+            classId,
             subjectId: subId,
             date: selectedDate,
             status: 'HADIR',
             location: 'Input Admin',
             photo: '',
             note: 'Input Admin'
-        };
-        appState.attendance.push(newObj);
-        bulkItems.push(newObj);
-        newlyMarkedCount++;
+        });
     });
 
-    if (newlyMarkedCount > 0) {
-        if (alreadyAttendedCount > 0) {
-            showToast(`Berhasil menandai ${newlyMarkedCount} siswa yang belum absen menjadi HADIR. (${alreadyAttendedCount} siswa yang sudah absen tetap aman dengan foto & GPS aslinya).`, 'success');
-        } else {
-            showToast(`Berhasil menandai ${newlyMarkedCount} siswa menjadi HADIR!`, 'success');
-        }
-
-        safeSetLocalStorage('madrasah_attendance', appState.attendance);
-        if (typeof saveState === 'function') saveState('attendance');
-
-        // Send bulk update to server ONLY for newly marked students
-        try {
-            await fetch('/api/attendance/bulk', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items: bulkItems })
-            });
-        } catch (err) {
-            console.warn('Gagal sinkronisasi absensi bulk ke server:', err);
-        }
-    } else {
+    if (bulkItems.length === 0) {
         showToast(`Seluruh siswa (${alreadyAttendedCount} siswa) sudah memiliki data absensi. Tidak ada data yang ditimpa sehingga foto & lokasi tetap aman.`, 'info');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/attendance/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: bulkItems })
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.success) {
+            throw new Error((data && data.message) || 'Gagal menyimpan absensi massal.');
+        }
+
+        await reloadAuthoritativeAttendance();
+
+        if (alreadyAttendedCount > 0) {
+            showToast(`Berhasil menandai ${bulkItems.length} siswa yang belum absen menjadi HADIR. (${alreadyAttendedCount} siswa yang sudah absen tetap aman dengan foto & GPS aslinya).`, 'success');
+        } else {
+            showToast(`Berhasil menandai ${bulkItems.length} siswa menjadi HADIR!`, 'success');
+        }
+    } catch (err) {
+        console.error('Gagal menyimpan absensi massal:', err);
+        showToast(err.message || 'Gagal menyimpan absensi massal.', 'error');
     }
 
     refreshStudentAttendanceView();
@@ -1992,175 +1996,95 @@ async function refreshStudentAttendanceData(btn) {
 
 async function markAllStudentsUnmarked() {
     const selectedClassId = appState.activeAttendanceClassId;
-    const selectedSubjectId = appState.activeAttendanceSubjectId || "ALL";
-    const todayIso = new Date().toISOString().split("T")[0];
+    const selectedSubjectId = appState.activeAttendanceSubjectId || 'ALL';
+    const todayIso = new Date().toISOString().split('T')[0];
     let selectedDate = appState.activeAttendanceDate || todayIso;
-    if (selectedDate === "undefined") selectedDate = todayIso;
+    if (selectedDate === 'undefined') selectedDate = todayIso;
 
     let students = [];
-    if (selectedClassId === "ALL") {
+    if (selectedClassId === 'ALL') {
         students = appState.students || [];
     } else if (selectedClassId) {
         students = (appState.students || []).filter(s => String(s.classId || s.class_id) === String(selectedClassId));
     }
 
-    const searchKeyword = appState.activeAttendanceSearch || "";
-    if (searchKeyword.trim() !== "") {
+    const searchKeyword = appState.activeAttendanceSearch || '';
+    if (searchKeyword.trim() !== '') {
         const kw = searchKeyword.toLowerCase();
         students = students.filter(s => (s.name && String(s.name).toLowerCase().includes(kw)) || (s.nis && String(s.nis).toLowerCase().includes(kw)));
     }
 
     if (!students || students.length === 0) {
-        showToast("Tidak ada siswa untuk ditandai belum absen.", "warning");
+        showToast('Tidak ada siswa untuk ditandai belum absen.', 'warning');
         return;
     }
 
-    if (!appState.attendance) appState.attendance = [];
-
-    appState.attendance = appState.attendance.filter(a => {
-        const sameDate = String(a.date).substring(0, 10) === selectedDate;
-        if (!sameDate) return true;
-
-        let sameSubject = true;
-        if (selectedSubjectId && selectedSubjectId !== 'ALL') {
-            sameSubject = (String(a.subjectId || '') === String(selectedSubjectId) || !a.subjectId || String(a.subjectId) === 'ALL');
-        }
-
-        if (!sameSubject) return true;
-
-        const belongsToSelectedStudent = students.some(st => {
-            return (
-                String(a.studentId) === String(st.id) || 
-                (a.studentId && st.id && String(a.studentId).toLowerCase().trim() === String(st.id).toLowerCase().trim()) ||
-                (a.studentId && st.nis && String(a.studentId).toLowerCase().trim() === String(st.nis).toLowerCase().trim()) ||
-                (a.studentId && st.name && String(a.studentId).toLowerCase().trim() === String(st.name).toLowerCase().trim()) ||
-                (a.studentId && st.username && String(a.studentId).toLowerCase().trim() === String(st.username).toLowerCase().trim())
-            );
-        });
-
-        return !belongsToSelectedStudent;
-    });
-
-    showToast(`Berhasil mereset status ${students.length} siswa menjadi BELUM ABSEN!`, "success");
-    
-    safeSetLocalStorage('madrasah_attendance', appState.attendance);
-    if (typeof saveState === 'function') saveState('attendance');
-
     try {
-        const studentIds = students.map(s => s.id || s.nis);
-        await fetch("/api/attendance/reset", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
+        const studentIds = students.map(s => s.id || s.nis).filter(Boolean);
+        const response = await fetch('/api/attendance/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 classId: selectedClassId,
                 subjectId: selectedSubjectId,
                 date: selectedDate,
-                studentIds: studentIds
+                studentIds
             })
         });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.success) {
+            throw new Error((data && data.message) || 'Gagal mereset absensi di server.');
+        }
+
+        await reloadAuthoritativeAttendance();
+        showToast(`Berhasil mereset status ${students.length} siswa menjadi BELUM ABSEN!`, 'success');
     } catch (err) {
-        console.warn("Gagal sinkronisasi reset absensi ke server:", err);
+        console.error('Gagal reset absensi:', err);
+        showToast(err.message || 'Gagal mereset absensi.', 'error');
     }
-    
+
     refreshStudentAttendanceView();
 }
 
-async function updateStudentAttendanceAdmin(studentId, dateStr, newStatus) {
-    if (!appState.attendance) appState.attendance = [];
-    const student = (appState.students || []).find(s => String(s.id) === String(studentId) || (s.nis && String(s.nis) === String(studentId)) || (s.name && s.name === studentId));
+async function updateStudentAttendanceAdmin(studentId, dateStr, newStatus, attendanceId = '', selectEl = null) {
+    const student = (appState.students || []).find(s =>
+        String(s.id) === String(studentId) ||
+        (s.nis && String(s.nis) === String(studentId)) ||
+        (s.name && s.name === studentId)
+    );
     const studentName = student ? student.name : studentId;
     const classId = student ? (student.classId || student.class_id) : '';
     const selectedSubjectId = appState.activeAttendanceSubjectId || 'ALL';
 
-    const isReset = newStatus === 'BELUM ABSEN' || newStatus === 'BELUM HADIR' || !newStatus;
-
-    // Helper matcher for student identity
-    const matchesStudent = (a) => {
-        if (!a) return false;
-        const sid = String(a.studentId || '').toLowerCase().trim();
-        if (String(studentId).toLowerCase().trim() === sid) return true;
-        if (student) {
-            if (student.id && String(student.id).toLowerCase().trim() === sid) return true;
-            if (student.nis && String(student.nis).toLowerCase().trim() === sid) return true;
-            if (student.name && String(student.name).toLowerCase().trim() === sid) return true;
-            if (student.username && String(student.username).toLowerCase().trim() === sid) return true;
-        }
-        return false;
-    };
-
-    const matchesDateSubject = (a) => {
-        if (String(a.date).substring(0, 10) !== dateStr) return false;
-        if (selectedSubjectId === 'ALL') return true;
-        return String(a.subjectId || '') === String(selectedSubjectId) || !a.subjectId || String(a.subjectId) === 'ALL';
-    };
-
-    if (isReset) {
-        // Remove ALL matching attendance records for this student on this date & subject
-        appState.attendance = appState.attendance.filter(a => !(matchesStudent(a) && matchesDateSubject(a)));
-        
-        const resetIds = [
-            studentId,
-            student ? student.id : '',
-            student ? student.nis : '',
-            student ? student.name : '',
-            student ? student.username : ''
-        ].filter(Boolean);
-
-        try {
-            await fetch('/api/attendance/reset', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    studentIds: resetIds,
-                    date: dateStr,
-                    subjectId: selectedSubjectId
-                })
-            });
-        } catch (err) {
-            console.warn('Gagal reset absensi ke server:', err);
-        }
-    } else {
-        let attIndex = appState.attendance.findIndex(a => matchesStudent(a) && matchesDateSubject(a));
-        const existingRec = attIndex !== -1 ? appState.attendance[attIndex] : null;
-        const attData = {
-            studentId: student ? student.id || studentId : studentId,
-            classId: classId,
-            subjectId: selectedSubjectId !== 'ALL' ? selectedSubjectId : '',
-            date: dateStr,
-            status: newStatus,
-            location: (existingRec && existingRec.location) ? existingRec.location : 'Input Admin',
-            photo: (existingRec && existingRec.photo) ? existingRec.photo : '',
-            note: (existingRec && existingRec.note) ? existingRec.note : 'Input Admin'
-        };
-
-        if (attIndex !== -1) {
-            appState.attendance[attIndex].status = newStatus;
-            if (selectedSubjectId && selectedSubjectId !== 'ALL') {
-                appState.attendance[attIndex].subjectId = selectedSubjectId;
-            }
-        } else {
-            appState.attendance.push({
-                id: 'ATT_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-                ...attData
-            });
+    if (selectEl) selectEl.disabled = true;
+    try {
+        const response = await fetch('/api/attendance/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                attendanceId: attendanceId || '',
+                studentId: student ? (student.id || studentId) : studentId,
+                classId,
+                date: dateStr,
+                status: newStatus,
+                subjectId: selectedSubjectId
+            })
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.success) {
+            throw new Error((data && data.message) || 'Gagal mengubah status absensi.');
         }
 
-        try {
-            await fetch('/api/attendance', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(attData)
-            });
-        } catch (err) {
-            console.warn('Gagal menyimpan absensi ke server:', err);
-        }
+        await reloadAuthoritativeAttendance(data);
+        const isReset = newStatus === 'BELUM ABSEN' || newStatus === 'BELUM HADIR' || !newStatus;
+        showToast(`Status absensi ${studentName} diubah menjadi ${isReset ? 'BELUM HADIR' : newStatus}`, 'success');
+    } catch (err) {
+        console.error('Gagal mengubah status absensi:', err);
+        showToast(err.message || 'Gagal mengubah status absensi.', 'error');
+    } finally {
+        if (selectEl) selectEl.disabled = false;
+        refreshStudentAttendanceView();
     }
-
-    safeSetLocalStorage('madrasah_attendance', appState.attendance);
-    if (typeof saveState === 'function') saveState('attendance');
-
-    showToast(`Status absensi ${studentName} diubah menjadi ${isReset ? 'BELUM HADIR' : newStatus}`, 'success');
-    refreshStudentAttendanceView();
 }
 
 function renderAttendanceModule(container) {
