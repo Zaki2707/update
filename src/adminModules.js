@@ -358,15 +358,22 @@ async function saveClass(e, id) {
 }
 
 async function deleteClass(id) {
-    showConfirmModal('Apakah Anda yakin ingin menghapus kelas ini?', async () => {
+    const targetClass = (appState.classes || []).find(c => String(c.id) === String(id));
+    const className = targetClass ? String(targetClass.name || targetClass.code || id) : String(id);
+    showConfirmModal(`Hapus kelas "${className}"? Kelas yang masih memiliki siswa atau dipakai data akademik akan ditolak oleh server.`, async () => {
         try {
             const res = await fetch(`/api/classes/${id}`, { method: 'DELETE' });
-            const data = await res.json();
-            if (!res.ok || !data.success) throw new Error(data.message || 'Gagal menghapus kelas');
+            const data = await res.json().catch(() => null);
+            if (!res.ok || !data || !data.success) {
+                const err = new Error((data && data.message) || 'Gagal menghapus kelas');
+                err.code = data && data.code ? data.code : '';
+                err.references = data && data.references ? data.references : null;
+                throw err;
+            }
 
             appState.classes = (appState.classes || []).filter(c => String(c.id) !== String(id));
             saveState('classes');
-            showToast('Kelas berhasil dihapus!', 'success');
+            showToast(`Kelas "${className}" berhasil dihapus.`, 'success');
 
             const container = document.getElementById('view-container');
             if (container) {
