@@ -18,6 +18,7 @@ const cbtModulesSource = fs.readFileSync('src/cbtModules.js', 'utf8');
 const appSource = fs.readFileSync('src/appScript.js', 'utf8');
 const settingsSource = fs.readFileSync('src/settingsAndMisc.js', 'utf8');
 const assessmentSource = fs.readFileSync('src/assessmentModule.js', 'utf8');
+const chatSource = fs.readFileSync('src/chatModule.js', 'utf8');
 const lkpdSource = fs.readFileSync('src/lkpdModule.js', 'utf8');
 const gameSource = fs.readFileSync('src/gameModule.js', 'utf8');
 const modulAjarSource = fs.readFileSync('src/modulAjarModule.js', 'utf8');
@@ -580,6 +581,15 @@ await test('Realtime: teacher SSE events follow academic exam and LKPD scope', (
   assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { examId: 'exam-2' }, 'm-1'), false);
   assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { lkpdId: 'lkpd-1' }, 'm-1'), true);
   assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { studentId: 's-1' }, 'm-1'), false);
+});
+
+await test('Evaluasi: generic realtime is paused only while online evaluation is open', () => {
+  assert.match(chatSource, /EVALUATION_REALTIME_PAUSE_GUARD_V1/);
+  assert.match(chatSource, /window\.__onlineRuntimeReady === true/);
+  assert.match(chatSource, /state\.lastAssessmentSubTab === 'evaluasi'/);
+  assert.match(chatSource, /window\.__stopRealtimeSync\(\)/);
+  assert.match(chatSource, /window\.initRealtimeSync\(\)/);
+  assert.match(chatSource, /window\.__madrasahRealtimeStarted/);
 });
 
 await test('Realtime: P2P signaling bridges WebSocket and HTTP fallback per account', () => {
