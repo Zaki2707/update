@@ -583,6 +583,32 @@ await test('Realtime: teacher SSE events follow academic exam and LKPD scope', (
   assert.equal(context.teacherCanReceiveRealtimeEvent(teacher, { studentId: 's-1' }, 'm-1'), false);
 });
 
+await test('Evaluasi: lightweight summary path avoids raw attempt snapshots', () => {
+  const syncStart = assessmentSource.indexOf('async function syncEvaluasiStateFromServer()');
+  const syncEnd = assessmentSource.indexOf('\nfunction stopEvaluasiPolling()', syncStart);
+  const syncFn = assessmentSource.slice(syncStart, syncEnd);
+  assert.ok(syncFn.includes('EVALUATION_LIGHTWEIGHT_SUMMARY_V2'));
+  assert.ok(syncFn.includes('/api/exams/'));
+  assert.ok(syncFn.includes('/monitor'));
+  assert.equal(syncFn.includes('/api/exam-monitoring-state'), false);
+  assert.equal(syncFn.includes('madrasah_student_exam_answers'), false);
+  assert.equal(syncFn.includes('madrasah_student_exam_questions'), false);
+
+  const monitorStart = serverSource.indexOf('app.get("/api/exams/:examId/monitor"');
+  const monitorEnd = serverSource.indexOf('\ntype DeltaBatchWrite', monitorStart);
+  const monitorRoute = serverSource.slice(monitorStart, monitorEnd);
+  assert.ok(monitorRoute.includes('EVALUATION_LIGHTWEIGHT_SUMMARY_V2'));
+  assert.ok(monitorRoute.includes('grade: gradeSummary'));
+  assert.ok(monitorRoute.includes('answeredPGCount'));
+  assert.ok(monitorRoute.includes('answeredEssayCount'));
+  assert.equal(monitorRoute.includes('studentExamAnswers:'), false);
+  assert.equal(monitorRoute.includes('studentExamQuestions:'), false);
+  assert.equal(monitorRoute.includes('studentExamMasterQuestions:'), false);
+
+  assert.ok(assessmentSource.includes('const stQuestions = summaryRow ? [] : getExamQuestions(ex, st.id)'));
+  assert.ok(assessmentSource.includes('/api/exam/review?studentId='));
+});
+
 await test('Evaluasi: generic realtime is paused only while online evaluation is open', () => {
   assert.match(chatSource, /EVALUATION_REALTIME_PAUSE_GUARD_V1/);
   assert.match(chatSource, /window\.__onlineRuntimeReady === true/);
