@@ -9483,6 +9483,112 @@ app.post("/api/attendance", requireAuth, async (req: any, res) => {
   }
 });
 
+app.post("/api/attendance/update", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  const {
+    attendanceId,
+    studentId,
+    classId,
+    date,
+    status,
+    subjectId
+  } = req.body || {};
+
+  const resolvedTargetStudent = resolveTenantItemIndexById(students, studentId, req);
+  if (resolvedTargetStudent.ambiguous) {
+    return res.status(409).json({ success: false, message: 'ID siswa ambigu lintas tenant.' });
+  }
+  const targetStudent = resolvedTargetStudent.item;
+  if (!targetStudent) {
+    return res.status(404).json({ success: false, message: 'Siswa tidak ditemukan pada madrasah ini.' });
+  }
+
+  const dateStr = String(date || '').substring(0, 10);
+  if (!dateStr) return res.status(400).json({ success: false, message: 'Tanggal absensi wajib diisi.' });
+
+  const normalizedStatus = String(status || '').trim().toUpperCase();
+  const isReset = normalizedStatus === 'BELUM ABSEN' || normalizedStatus === 'BELUM HADIR' || normalizedStatus === 'BELUM PRESENSI' || !normalizedStatus;
+  const allowedStatuses = new Set(['HADIR', 'IZIN', 'SAKIT', 'ALPA']);
+  if (!isReset && !allowedStatuses.has(normalizedStatus)) {
+    return res.status(400).json({ success: false, message: 'Status absensi tidak valid.' });
+  }
+
+  let resultItem: any = null;
+  let removed = false;
+
+  try {
+    await updateStoreKeyWithLock('attendance', (currentVal) => {
+      let attList = Array.isArray(currentVal) ? currentVal : [];
+
+      let targetIndex = -1;
+      if (attendanceId) {
+        targetIndex = attList.findIndex((record: any) =>
+          isItemForCurrentMadrasah(record, req) &&
+          String(record.id || '') === String(attendanceId)
+        );
+      }
+
+      if (targetIndex < 0) {
+        const exactSubject = subjectId && subjectId !== 'ALL' ? String(subjectId) : null;
+        for (let idx = attList.length - 1; idx >= 0; idx--) {
+          const record: any = attList[idx];
+          if (!isItemForCurrentMadrasah(record, req)) continue;
+          if (String(record.studentId || '') !== String(targetStudent.id)) continue;
+          if (String(record.date || '').substring(0, 10) !== dateStr) continue;
+          if (exactSubject !== null && String(record.subjectId || '') !== exactSubject) continue;
+          targetIndex = idx;
+          break;
+        }
+      }
+
+      if (isReset) {
+        if (targetIndex >= 0) {
+          attList.splice(targetIndex, 1);
+          removed = true;
+        }
+        return attList;
+      }
+
+      if (targetIndex >= 0) {
+        const existing: any = attList[targetIndex];
+        existing.status = normalizedStatus;
+        existing.classId = existing.classId || classId || targetStudent.classId || targetStudent.class_id || '';
+        if (subjectId && subjectId !== 'ALL') existing.subjectId = String(subjectId);
+        if (!existing.location) existing.location = 'Input Admin';
+        existing.note = existing.note || 'Input Admin';
+        existing.updatedAt = new Date().toISOString();
+        resultItem = existing;
+        return attList;
+      }
+
+      const newAtt = tagNewRecord({
+        id: 'ATT_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        studentId: targetStudent.id,
+        classId: classId || targetStudent.classId || targetStudent.class_id || '',
+        subjectId: subjectId && subjectId !== 'ALL' ? String(subjectId) : '',
+        date: dateStr,
+        status: normalizedStatus,
+        location: 'Input Admin',
+        photo: '',
+        note: 'Input Admin',
+        timestamp: Date.now()
+      }, req);
+      attList.push(newAtt);
+      resultItem = newAtt;
+      return attList;
+    });
+
+    return res.json({
+      success: true,
+      updated: Boolean(resultItem),
+      removed,
+      attendanceItem: resultItem,
+      attendance: filterByMadrasah(attendance || [], req)
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: safeServerError(error) });
+  }
+});
+
 app.post("/api/attendance/bulk", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { items } = req.body;
   if (!Array.isArray(items)) {
@@ -9819,7 +9925,10 @@ app.post("/api/teacher-attendance/update", requireAuth, requireRole(['admin', 'b
       }
       return list;
     });
-    res.json({ success: true });
+    res.json({
+      success: true,
+      teacherAttendance: filterByMadrasah(teacherAttendance || [], req)
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err) });
   }
@@ -13445,7 +13554,23 @@ app.get("/api/time-slots", requireAuth, (req, res) => {
 });
 
 app.post("/api/time-slots", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req, res) => {
-  const { timeSlots: newSlots, kbmDuration: newKbm } = req.body;
+  const {
+    timeSlots: newSlots,
+    kbmDuration: newKbm,
+    schedules: newSchedules,
+    savedRosters: newSavedRosters
+  } = req.body || {};
+
+  if (newSlots !== undefined && !Array.isArray(newSlots)) {
+    return res.status(400).json({ success: false, message: 'timeSlots harus berupa array.' });
+  }
+  if (newSchedules !== undefined && !Array.isArray(newSchedules)) {
+    return res.status(400).json({ success: false, message: 'schedules harus berupa array.' });
+  }
+  if (newSavedRosters !== undefined && !Array.isArray(newSavedRosters)) {
+    return res.status(400).json({ success: false, message: 'savedRosters harus berupa array.' });
+  }
+
   if (Array.isArray(newSlots)) {
     timeSlots = mergeTenantListData(timeSlots, newSlots, req);
     await saveData('timeSlots', timeSlots);
@@ -13456,10 +13581,21 @@ app.post("/api/time-slots", requireAuth, requireRole(['admin', 'bos', 'superadmi
     kbmDuration = setTenantConfigValue(kbmDuration, req, nextKbm, 40, 'kbmDuration');
     await saveData('kbmDuration', kbmDuration);
   }
+  if (Array.isArray(newSchedules)) {
+    schedules = mergeTenantListData(schedules, newSchedules, req);
+    await saveData('schedules', schedules);
+  }
+  if (Array.isArray(newSavedRosters)) {
+    savedRosters = mergeTenantListData(savedRosters, newSavedRosters, req);
+    await saveData('savedRosters', savedRosters);
+  }
+
   res.json({
     success: true,
     timeSlots: Array.isArray(timeSlots) ? filterByMadrasah(timeSlots, req) : [],
-    kbmDuration: tenantConfigValue(kbmDuration, req, 40, 'kbmDuration')
+    kbmDuration: tenantConfigValue(kbmDuration, req, 40, 'kbmDuration'),
+    schedules: Array.isArray(schedules) ? filterByMadrasah(schedules, req) : [],
+    savedRosters: Array.isArray(savedRosters) ? filterByMadrasah(savedRosters, req) : []
   });
 });
 
