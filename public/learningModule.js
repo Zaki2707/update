@@ -54,6 +54,136 @@ function materialLocked(material) {
     const prereq = Array.isArray(material?.prerequisiteMaterialIds) ? material.prerequisiteMaterialIds : [];
     return prereq.some(id => !isCompleted(id));
 }
+function learningPolicy(material) {
+    const policy = material?.engagementPolicy || {};
+    return {
+        minActiveSeconds: Math.max(0, Math.min(3600, Number(policy.minActiveSeconds ?? material?.minActiveSeconds ?? 45) || 0)),
+        requireAllBlocks: policy.requireAllBlocks === false ? false : true
+    };
+}
+function materialBlockIds(material) {
+    return (Array.isArray(material?.blocks) ? material.blocks : [])
+        .map((block, index) => String(block.id || `block_${index + 1}`));
+}
+function engagementReady(material) {
+    const tracker = learningState().__activeLearningTracker;
+    if (!tracker || String(tracker.materialId) !== String(material?.id || '')) return { ready: false, message: 'Buka materi terlebih dahulu.' };
+    const policy = learningPolicy(material);
+    const activeSeconds = trackerActiveSeconds(tracker);
+    if (activeSeconds < policy.minActiveSeconds) {
+        return { ready: false, message: `Baca materi minimal ${policy.minActiveSeconds} detik aktif sebelum lanjut.` };
+    }
+    if (policy.requireAllBlocks) {
+        const required = materialBlockIds(material);
+        const seen = new Set(Array.from(tracker.viewedBlockIds || []).map(String));
+        if (required.length > 0 && !required.every(id => seen.has(id))) {
+            return { ready: false, message: 'Lihat semua bagian materi terlebih dahulu.' };
+        }
+    }
+    return { ready: true };
+}
+function trackerActiveSeconds(tracker) {
+    if (!tracker) return 0;
+    const live = tracker.active && !document.hidden ? Date.now() - tracker.lastStartedAt : 0;
+    return Math.floor((tracker.activeMs + Math.max(0, live)) / 1000);
+}
+function stopLearningTracker() {
+    const tracker = learningState().__activeLearningTracker;
+    if (!tracker) return;
+    if (tracker.active) tracker.activeMs += Math.max(0, Date.now() - tracker.lastStartedAt);
+    tracker.active = false;
+    if (tracker.interval) window.clearInterval(tracker.interval);
+    if (tracker.observer) tracker.observer.disconnect();
+    window.removeEventListener('scroll', tracker.onScroll, true);
+    window.removeEventListener('focus', tracker.onFocus);
+    window.removeEventListener('blur', tracker.onBlur);
+    document.removeEventListener('visibilitychange', tracker.onVisibility);
+}
+function startLearningTracker(material) {
+    stopLearningTracker();
+    const tracker = {
+        materialId: String(material.id),
+        activeMs: 0,
+        lastStartedAt: Date.now(),
+        active: !document.hidden,
+        viewedBlockIds: new Set(),
+        observer: null,
+        onScroll: null,
+        onFocus: null,
+        onBlur: null,
+        onVisibility: null
+    };
+    const pause = () => {
+        if (!tracker.active) return;
+        tracker.activeMs += Math.max(0, Date.now() - tracker.lastStartedAt);
+        tracker.active = false;
+    };
+    const resume = () => {
+        if (tracker.active || document.hidden) return;
+        tracker.lastStartedAt = Date.now();
+        tracker.active = true;
+    };
+    const markVisibleBlocks = () => {
+        document.querySelectorAll('[data-learning-block-id]').forEach(el => {
+            const rect = el.getBoundingClientRect();
+            const visible = rect.top < window.innerHeight * 0.85 && rect.bottom > window.innerHeight * 0.15;
+            if (visible) tracker.viewedBlockIds.add(String(el.getAttribute('data-learning-block-id') || ''));
+        });
+        updateEngagementUi(material);
+    };
+    tracker.onScroll = () => window.requestAnimationFrame(markVisibleBlocks);
+    tracker.onFocus = resume;
+    tracker.onBlur = pause;
+    tracker.onVisibility = () => document.hidden ? pause() : resume();
+    window.addEventListener('scroll', tracker.onScroll, true);
+    window.addEventListener('focus', tracker.onFocus);
+    window.addEventListener('blur', tracker.onBlur);
+    document.addEventListener('visibilitychange', tracker.onVisibility);
+    if ('IntersectionObserver' in window) {
+        tracker.observer = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting && entry.intersectionRatio >= 0.55) {
+                    tracker.viewedBlockIds.add(String(entry.target.getAttribute('data-learning-block-id') || ''));
+                }
+            });
+            updateEngagementUi(material);
+        }, { threshold: [0.55] });
+        document.querySelectorAll('[data-learning-block-id]').forEach(el => tracker.observer.observe(el));
+    }
+    learningState().__activeLearningTracker = tracker;
+    markVisibleBlocks();
+    tracker.interval = window.setInterval(() => updateEngagementUi(material), 1000);
+}
+function learningCompletionPayload(material) {
+    const tracker = learningState().__activeLearningTracker;
+    return {
+        materialId: material.id,
+        status: 'completed',
+        progressPercent: 100,
+        activeSeconds: trackerActiveSeconds(tracker),
+        viewedBlockIds: tracker ? Array.from(tracker.viewedBlockIds || []) : []
+    };
+}
+function updateEngagementUi(material) {
+    const tracker = learningState().__activeLearningTracker;
+    if (!tracker || String(tracker.materialId) !== String(material?.id || '')) return;
+    const policy = learningPolicy(material);
+    const activeSeconds = trackerActiveSeconds(tracker);
+    const required = materialBlockIds(material);
+    const seenCount = required.filter(id => tracker.viewedBlockIds.has(id)).length;
+    const ready = engagementReady(material).ready;
+    const button = document.getElementById('learning-complete-button');
+    if (button) {
+        button.disabled = !ready;
+        button.classList.toggle('opacity-60', !ready);
+        button.classList.toggle('cursor-not-allowed', !ready);
+    }
+    const status = document.getElementById('learning-engagement-status');
+    if (status) {
+        status.textContent = `Aktif membaca ${Math.min(activeSeconds, policy.minActiveSeconds)}/${policy.minActiveSeconds} detik` +
+            (policy.requireAllBlocks ? ` • bagian terlihat ${seenCount}/${required.length || 1}` : '');
+    }
+}
 function queueLearningProgress(payload) {
     try {
         const queue = JSON.parse(localStorage.getItem(LEARNING_QUEUE_KEY) || '[]');
@@ -142,15 +272,16 @@ async function postLearningProgress(payload) {
     }
 }
 function renderMaterialBlocks(blocks = []) {
-    return blocks.map(block => {
+    return blocks.map((block, index) => {
         const type = String(block.type || 'text').toLowerCase();
+        const blockId = learningAttr(block.id || `block_${index + 1}`);
         if (type === 'text') {
-            return `<div class="whitespace-pre-wrap text-sm leading-7 text-slate-700">${learningEsc(block.content || block.text || '')}</div>`;
+            return `<div data-learning-block-id="${blockId}" class="whitespace-pre-wrap text-sm leading-7 text-slate-700">${learningEsc(block.content || block.text || '')}</div>`;
         }
         if (type === 'video' || type === 'link') {
             const url = String(block.url || '');
             if (!/^https?:\/\//i.test(url)) return '';
-            return `<a href="${learningAttr(url)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold"><i class="fa-solid fa-arrow-up-right-from-square"></i>${type === 'video' ? 'Buka Video' : 'Buka Sumber'}</a>`;
+            return `<div data-learning-block-id="${blockId}"><a href="${learningAttr(url)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold"><i class="fa-solid fa-arrow-up-right-from-square"></i>${type === 'video' ? 'Buka Video' : 'Buka Sumber'}</a></div>`;
         }
         return '';
     }).join('');
@@ -165,6 +296,7 @@ function safeBlocksFromForm() {
 }
 
 window.renderLearningTeacher = async function(container) {
+    stopLearningTracker();
     if (!container) return;
     container.innerHTML = '<div class="p-8 text-center text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Memuat materi...</div>';
     try {
@@ -230,6 +362,7 @@ window.showLearningEditor = async function(existing = null) {
     const textBlock = (material.blocks || []).find(block => block.type === 'text')?.content || material.content || '';
     const video = (material.blocks || []).find(block => block.type === 'video')?.url || '';
     const resource = (material.blocks || []).find(block => block.type === 'link')?.url || '';
+    const policy = learningPolicy(material);
     document.body.insertAdjacentHTML('beforeend', `
         <div id="learning-editor-modal" class="fixed inset-0 z-[120] bg-slate-950/70 backdrop-blur-sm p-4 overflow-y-auto">
             <div class="max-w-3xl mx-auto my-6 bg-white rounded-3xl p-6 shadow-2xl space-y-4">
@@ -257,6 +390,13 @@ window.showLearningEditor = async function(existing = null) {
                     </div>
                     <label class="mt-3 flex items-center gap-2 text-xs font-bold text-slate-600"><input id="learning-require-complete" type="checkbox" ${material.requiresCompletionForLinks === false ? '' : 'checked'} class="rounded">Kunci LKPD/asesmen sampai materi ditandai selesai</label>
                 </div>
+                <div class="p-4 rounded-2xl bg-emerald-50 border border-emerald-100">
+                    <div class="font-bold text-sm mb-3 text-emerald-900">Syarat materi dianggap dipelajari</div>
+                    <div class="grid md:grid-cols-2 gap-3">
+                        <label class="text-xs font-bold text-emerald-900">Minimal baca aktif, detik<input id="learning-min-active-seconds" type="number" min="0" max="3600" step="5" value="${learningAttr(policy.minActiveSeconds)}" class="mt-1 w-full p-3 border border-emerald-100 rounded-xl font-normal bg-white"></label>
+                        <label class="mt-7 flex items-center gap-2 text-xs font-bold text-emerald-900"><input id="learning-require-all-blocks" type="checkbox" ${policy.requireAllBlocks ? 'checked' : ''} class="rounded">Wajib semua bagian materi terlihat</label>
+                    </div>
+                </div>
                 <div class="flex justify-end gap-2">
                     <button type="button" onclick="saveLearningMaterial('draft')" class="px-4 py-2.5 bg-slate-100 rounded-xl text-xs font-bold">Simpan Draft</button>
                     <button type="button" onclick="saveLearningMaterial('published')" class="px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-bold">Publikasikan</button>
@@ -281,6 +421,10 @@ window.saveLearningMaterial = async function(status) {
         lkpdId: document.getElementById('learning-lkpd')?.value || '',
         examId: document.getElementById('learning-exam')?.value || '',
         requiresCompletionForLinks: document.getElementById('learning-require-complete')?.checked !== false,
+        engagementPolicy: {
+            minActiveSeconds: Math.max(0, Math.min(3600, Number(document.getElementById('learning-min-active-seconds')?.value || 0) || 0)),
+            requireAllBlocks: document.getElementById('learning-require-all-blocks')?.checked !== false
+        },
         status
     };
     if (!payload.title) return learningToast('Judul materi wajib diisi.', 'warning');
@@ -313,6 +457,7 @@ window.deleteLearningMaterial = async function(id) {
 };
 
 window.renderLearningStudent = async function(container) {
+    stopLearningTracker();
     if (!container) return;
     if (!featureEnabled('learning')) {
         learningToast('Menu Belajar sedang dinonaktifkan.', 'info');
@@ -348,6 +493,7 @@ window.renderLearningStudent = async function(container) {
     }
 };
 window.openLearningMaterial = async function(id, staffPreview = false) {
+    stopLearningTracker();
     let material = (window.__learningMaterials || []).find(item => String(item.id) === String(id));
     if (!material) material = (await loadLearningMaterials()).find(item => String(item.id) === String(id));
     if (!material) return learningToast('Materi tidak ditemukan.', 'error');
@@ -356,6 +502,7 @@ window.openLearningMaterial = async function(id, staffPreview = false) {
     if (!container) return;
     if (!staffPreview) await postLearningProgress({ materialId: material.id, status: 'viewed', progressPercent: Math.max(10, Number(progressForMaterial(material.id)?.progressPercent || 0)) });
     const completed = staffPreview ? false : isCompleted(material.id);
+    const policy = learningPolicy(material);
     container.innerHTML = `
         <div class="max-w-3xl mx-auto pb-12">
             <button type="button" onclick="navigateTo('${staffPreview ? 'learning_teacher' : 'learning_student'}')" class="text-xs font-bold text-slate-500 mb-4"><i class="fa-solid fa-arrow-left mr-1"></i>Kembali</button>
@@ -365,19 +512,31 @@ window.openLearningMaterial = async function(id, staffPreview = false) {
                 <p class="text-sm text-slate-500 mt-1">${learningEsc(material.topic || '')}</p>
                 <div class="mt-7 space-y-5">${renderMaterialBlocks(material.blocks || [])}</div>
                 ${!staffPreview ? `<div class="mt-8 pt-6 border-t">
-                    <button type="button" onclick="completeLearningMaterial(${learningInlineArg(material.id)})" class="w-full py-3 rounded-2xl ${completed ? 'bg-emerald-50 text-emerald-700' : 'bg-emerald-600 text-white'} font-black text-sm">${completed ? 'Materi telah dipelajari' : 'Saya Sudah Mempelajari Materi'}</button>
+                    ${!completed ? `<div id="learning-engagement-status" class="mb-3 text-center text-xs font-bold text-slate-500">Aktif membaca 0/${policy.minActiveSeconds} detik${policy.requireAllBlocks ? ' • bagian terlihat 0/' + Math.max(1, materialBlockIds(material).length) : ''}</div>` : ''}
+                    <button id="learning-complete-button" type="button" onclick="completeLearningMaterial(${learningInlineArg(material.id)})" class="w-full py-3 rounded-2xl ${completed ? 'bg-emerald-50 text-emerald-700' : 'bg-emerald-600 text-white'} font-black text-sm">${completed ? 'Materi telah dipelajari' : 'Saya Sudah Mempelajari Materi'}</button>
                     <div id="learning-next-actions" class="mt-3">${completed ? learningNextActions(material) : ''}</div>
                 </div>` : ''}
             </article>
         </div>`;
+    if (!staffPreview && !completed) startLearningTracker(material);
 };
 window.completeLearningMaterial = async function(id) {
     const material = (window.__learningMaterials || []).find(item => String(item.id) === String(id));
     if (!material) return;
-    const progress = await postLearningProgress({ materialId: material.id, status: 'completed', progressPercent: 100 });
+    const ready = engagementReady(material);
+    if (!ready.ready) return learningToast(ready.message || 'Selesaikan syarat baca materi terlebih dahulu.', 'info');
+    const progress = await postLearningProgress(learningCompletionPayload(material));
     if (progress?.rejected) return;
+    stopLearningTracker();
     const actionContainer = document.getElementById('learning-next-actions');
     if (actionContainer) actionContainer.innerHTML = learningNextActions(material);
+    const button = document.getElementById('learning-complete-button');
+    if (button) {
+        button.disabled = false;
+        button.classList.remove('opacity-60', 'cursor-not-allowed');
+        button.classList.add('bg-emerald-50', 'text-emerald-700');
+        button.textContent = 'Materi telah dipelajari';
+    }
     learningToast(progress?.pendingSync ? 'Progress disimpan sementara dan akan disinkronkan saat online.' : 'Materi ditandai selesai.', 'success');
 };
 function learningNextActions(material) {
@@ -429,8 +588,8 @@ window.openLearningMonitor = async function(id) {
                     </div>
                     <div class="mt-5 overflow-x-auto border rounded-2xl">
                         <table class="w-full text-xs">
-                            <thead class="bg-slate-50 text-slate-500 uppercase"><tr><th class="p-3 text-left">Siswa</th><th class="p-3 text-left">NIS</th><th class="p-3 text-left">Status</th><th class="p-3 text-left">Progress</th><th class="p-3 text-left">Update</th></tr></thead>
-                            <tbody>${rows.map(row => `<tr class="border-t"><td class="p-3 font-bold text-slate-800">${learningEsc(row.studentName)}</td><td class="p-3 text-slate-500">${learningEsc(row.nis || '-')}</td><td class="p-3">${learningEsc(row.status)}</td><td class="p-3">${Number(row.progressPercent || 0)}%</td><td class="p-3 text-slate-500">${learningEsc(row.updatedAt || '-')}</td></tr>`).join('') || '<tr><td colspan="5" class="p-8 text-center text-slate-400">Belum ada siswa target.</td></tr>'}</tbody>
+                            <thead class="bg-slate-50 text-slate-500 uppercase"><tr><th class="p-3 text-left">Siswa</th><th class="p-3 text-left">NIS</th><th class="p-3 text-left">Status</th><th class="p-3 text-left">Progress</th><th class="p-3 text-left">Baca Aktif</th><th class="p-3 text-left">Bagian</th><th class="p-3 text-left">Update</th></tr></thead>
+                            <tbody>${rows.map(row => `<tr class="border-t"><td class="p-3 font-bold text-slate-800">${learningEsc(row.studentName)}</td><td class="p-3 text-slate-500">${learningEsc(row.nis || '-')}</td><td class="p-3">${learningEsc(row.status)}</td><td class="p-3">${Number(row.progressPercent || 0)}%</td><td class="p-3">${Math.floor(Number(row.activeSeconds || 0))} detik</td><td class="p-3">${Number(row.viewedBlockCount || 0)}</td><td class="p-3 text-slate-500">${learningEsc(row.updatedAt || '-')}</td></tr>`).join('') || '<tr><td colspan="7" class="p-8 text-center text-slate-400">Belum ada siswa target.</td></tr>'}</tbody>
                         </table>
                     </div>
                 </div>
