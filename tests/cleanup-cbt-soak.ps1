@@ -94,7 +94,15 @@ if (-not $Exam) {
     throw "Exam '$ExamId' tidak ditemukan pada tenant '$Tenant'."
 }
 
-$ExamName = [string]($Exam.title || $Exam.name || $Exam.subject || "")
+$ExamName = ""
+if ($Exam.title) {
+    $ExamName = [string]$Exam.title
+} elseif ($Exam.name) {
+    $ExamName = [string]$Exam.name
+} elseif ($Exam.subject) {
+    $ExamName = [string]$Exam.subject
+}
+
 if ($ExamName -notmatch '(?i)LOAD[\s_-]*TEST') {
     throw "Cleanup dibatalkan: ujian '$ExamName' tidak teridentifikasi sebagai LOAD TEST. Ubah nama ujian test agar mengandung 'LOAD TEST'."
 }
@@ -124,7 +132,8 @@ foreach ($Account in $Targets) {
             -Body $Body
 
         if (-not $Result.success) {
-            throw ([string]($Result.message || "Server menolak reset."))
+            $ServerMessage = if ($Result.message) { [string]$Result.message } else { "Server menolak reset." }
+            throw $ServerMessage
         }
         $Succeeded++
     } catch {
