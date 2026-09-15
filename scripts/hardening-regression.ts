@@ -95,9 +95,12 @@ function testServerGuards() {
   assert.match(server, /hasHydratedPersistentState = true;[\s\S]*await runOneTimeMigrations\(\)/);
   assert.match(server, /reason,[\s\S]*readyAt: onlineRuntimeReadyAt/);
   assert.match(server, /if \(!isOnlineMode && connection\.host !== 'localhost'\)/);
-assert.match(server, /const offlineHttpsRequested = isOfflineMode &&/);
+assert.match(server, /const offlineHttpsRequested = !isTrustedCloudRunRuntime && isOfflineMode &&/);
 assert.match(server, /https\.createServer\(\{ key: offlineHttpsOptions\.key, cert: offlineHttpsOptions\.cert \}, app\)/);
 assert.equal(server.includes('const offlineHttpsRequested = isOnlineMode'), false, 'offline HTTPS must never be enabled by online mode');
+assert.match(server, /Trusted Cloud Run always keeps the normal HTTP listener/);
+assert.match(server, /offline-https-ca-cert\.pem/);
+assert.match(server, /meta\?\.sanSignature === sanSignature/);
   for (const source of [server, drizzleConfig, drizzleDb]) {
     assert.match(source, /resolveSqlConnection\(/);
     assert.equal(source.includes('process.env.DATABASE_URL'), false);
