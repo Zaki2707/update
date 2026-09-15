@@ -187,6 +187,7 @@ assert.match(server, /meta\?\.sanSignature === sanSignature/);
   assert.match(server, /function collectOrphanExamIdsForTenant\(/);
   assert.match(server, /function cleanupExamStateForExam\(/);
   assert.match(server, /legacyIdConflictsWithLkpd/);
+  assert.match(server, /OFFLINE_LOCALSTORE_CBT_CLEANUP_V1/);
   assert.match(server, /app\.post\("\/api\/exams\/cleanup-orphan-state", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
   assert.match(server, /cleanupSummary = await cleanupExamStateForExam\(examId, examTenant/);
   assert.match(server, /State CBT ujian belum dapat dibersihkan\. Ujian tidak dihapus\./);
