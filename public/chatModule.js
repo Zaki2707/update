@@ -34,6 +34,27 @@ function isSafeChatAttachment(att) {
     return /^data:(?:application\/pdf|application\/msword|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|application\/vnd\.android\.package-archive|application\/octet-stream);base64,[A-Za-z0-9+/=\r\n]+$/i.test(data);
 }
 
+function resetChatAttachmentPreview() {
+    window.chatAttachmentData = null;
+    const preview = document.getElementById('chat-attachment-preview');
+    const img = document.getElementById('chat-preview-img');
+    const video = document.getElementById('chat-preview-vid');
+    const doc = document.getElementById('chat-preview-doc');
+    const input = document.getElementById('chat-file-input');
+    if (preview) preview.classList.add('hidden');
+    if (img) {
+        img.removeAttribute('src');
+        img.classList.add('hidden');
+    }
+    if (video) {
+        video.removeAttribute('src');
+        video.classList.add('hidden');
+        try { video.load(); } catch (_) {}
+    }
+    if (doc) doc.classList.add('hidden');
+    if (input) input.value = '';
+}
+
 function hasAuthenticatedChatSession() {
     const currentUser = window.appState?.currentUser;
     return Boolean(
@@ -240,7 +261,7 @@ window.renderChatModal = function(targetId, targetName, senderId, receiverId) {
     const sendForm = document.getElementById('chat-send-form');
     if (sendForm) sendForm.onsubmit = (event) => sendChatMessage(event, senderId, receiverId, targetId, targetName);
 
-    window.chatAttachmentData = null;
+    resetChatAttachmentPreview();
     refreshChatMessages(senderId, receiverId);
     
     // Auto-refresh chat every 15 seconds while modal is open
@@ -258,11 +279,13 @@ window.renderChatModal = function(targetId, targetName, senderId, receiverId) {
 
 window.handleChatAttachment = function(e) {
     const file = e.target.files[0];
+    resetChatAttachmentPreview();
     if (!file) return;
     
     const maxMb = 2; // limit to 2MB to avoid local storage explosion
     if (file.size > maxMb * 1024 * 1024) {
         window.showToast("Ukuran file maksimal " + maxMb + "MB", "error");
+        resetChatAttachmentPreview();
         return;
     }
     
@@ -289,40 +312,47 @@ window.handleChatAttachment = function(e) {
         }
         window.chatAttachmentData = candidate;
         
-        document.getElementById('chat-attachment-preview').classList.remove('hidden');
-        document.getElementById('chat-preview-img').classList.add('hidden');
-        document.getElementById('chat-preview-vid').classList.add('hidden');
-        document.getElementById('chat-preview-doc').classList.add('hidden');
+        const preview = document.getElementById('chat-attachment-preview');
+        const img = document.getElementById('chat-preview-img');
+        const video = document.getElementById('chat-preview-vid');
+        const doc = document.getElementById('chat-preview-doc');
+        if (preview) preview.classList.remove('hidden');
         
         if (type === 'image') {
-            document.getElementById('chat-preview-img').src = res;
-            document.getElementById('chat-preview-img').classList.remove('hidden');
+            if (img) {
+                img.src = res;
+                img.classList.remove('hidden');
+            }
         } else if (type === 'video') {
-            document.getElementById('chat-preview-vid').src = res;
-            document.getElementById('chat-preview-vid').classList.remove('hidden');
+            if (video) {
+                video.src = res;
+                video.classList.remove('hidden');
+            }
         } else {
-            document.getElementById('chat-preview-doc').classList.remove('hidden');
+            if (doc) doc.classList.remove('hidden');
         }
+    };
+    reader.onerror = () => {
+        window.showToast('Gagal membaca lampiran.', 'error');
+        resetChatAttachmentPreview();
     };
     reader.readAsDataURL(file);
 }
 
 window.clearChatAttachment = function() {
-    window.chatAttachmentData = null;
-    const preview = document.getElementById('chat-attachment-preview');
-    if (preview) preview.classList.add('hidden');
-    const input = document.getElementById('chat-file-input');
-    if (input) input.value = '';
+    resetChatAttachmentPreview();
 }
 
 window.clearAllChats = async function(senderId, receiverId) {
     showConfirmModal("Apakah Anda yakin ingin mengosongkan semua pesan dalam obrolan ini?", async () => {
         try {
-            await fetch('/api/chats/clear', {
+            const res = await fetch('/api/chats/clear', {
                 method: 'POST',
                 headers: getChatAuthHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ senderId, receiverId })
             });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok || !payload?.success) throw new Error(payload?.message || 'Gagal mengosongkan obrolan.');
             window.appState.chats = (window.appState.chats || []).filter(c => !(
                 (String(c.senderId) === String(senderId) && String(c.receiverId) === String(receiverId)) ||
                 (String(c.senderId) === String(receiverId) && String(c.receiverId) === String(senderId))
@@ -333,7 +363,7 @@ window.clearAllChats = async function(senderId, receiverId) {
             }
             window.showToast("Obrolan berhasil dikosongkan");
         } catch (e) {
-            window.showToast("Gagal mengosongkan obrolan", "error");
+            window.showToast("Gagal mengosongkan obrolan: " + (e.message || 'Periksa koneksi.'), "error");
         }
     });
 }
@@ -386,9 +416,17 @@ window.refreshChatMessages = function(senderId, receiverId) {
         let attachmentHtml = '';
         if (msg.attachment) {
             if (msg.attachment.type === 'image') {
-                if (isSafeChatAttachment(msg.attachment)) attachmentHtml = `<img src="${chatEscapeAttr(msg.attachment.data)}" class="max-w-full rounded-xl mb-2 border border-black/10" alt="Lampiran gambar">`;
+                if (isSafeChatAttachment(msg.attachment)) {
+                    attachmentHtml = `<img src="${chatEscapeAttr(msg.attachment.data)}" class="max-w-full rounded-xl mb-2 border border-black/10" alt="Lampiran gambar">`;
+                } else {
+                    attachmentHtml = `<div class="flex items-center gap-2 p-2 bg-amber-50 text-amber-700 rounded-xl mb-2 text-xs border border-amber-100"><i class="fa-solid fa-triangle-exclamation"></i> Lampiran gambar tidak tersedia.</div>`;
+                }
             } else if (msg.attachment.type === 'video') {
-                if (isSafeChatAttachment(msg.attachment)) attachmentHtml = `<video src="${chatEscapeAttr(msg.attachment.data)}" controls class="max-w-full rounded-xl mb-2 border border-black/10"></video>`;
+                if (isSafeChatAttachment(msg.attachment)) {
+                    attachmentHtml = `<video src="${chatEscapeAttr(msg.attachment.data)}" controls class="max-w-full rounded-xl mb-2 border border-black/10"></video>`;
+                } else {
+                    attachmentHtml = `<div class="flex items-center gap-2 p-2 bg-amber-50 text-amber-700 rounded-xl mb-2 text-xs border border-amber-100"><i class="fa-solid fa-triangle-exclamation"></i> Lampiran video tidak tersedia.</div>`;
+                }
             } else if (msg.attachment.type === 'apk' || String(msg.attachment.name || '').endsWith('.apk')) {
                 attachmentHtml = `
                     <div class="p-3 bg-slate-900 text-white rounded-xl mb-2 flex items-center justify-between border border-slate-700/50">
