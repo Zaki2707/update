@@ -3801,6 +3801,16 @@ async function renderStudentCBTList(container, isRefresh = false) {
         return (appState.exams.indexOf(b) - appState.exams.indexOf(a));
     });
 
+    const pendingLearningExamId = String(appState.__pendingLearningExamId || '').trim();
+    if (pendingLearningExamId && displayExams.some(ex => String(ex.id) === pendingLearningExamId)) {
+        appState.__pendingLearningExamId = '';
+        setTimeout(() => {
+            if (typeof window.confirmStartStudentExam === 'function') {
+                window.confirmStartStudentExam(pendingLearningExamId);
+            }
+        }, 0);
+    }
+
     // 1. Helper to check LKPD expiry (by date only)
     const isLkpdExpired = (lk) => {
         if (!lk.date) return false;

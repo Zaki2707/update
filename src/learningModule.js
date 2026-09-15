@@ -562,13 +562,19 @@ window.openLinkedLearningLkpd = async function(lkpdId) {
 };
 window.openLinkedLearningExam = async function(examId) {
     if (!featureEnabled('cbt')) return learningToast('Menu CBT sedang dinonaktifkan.', 'info');
+    learningState().__pendingLearningExamId = String(examId || '');
     if (!Array.isArray(learningState().exams) || !learningState().exams.some(item => String(item.id) === String(examId))) {
         const data = await fetch('/api/exams').then(r => r.json()).catch(() => ({}));
         if (data.exams) learningState().exams = data.exams;
     }
-    if (typeof window.confirmStartStudentExam === 'function') window.confirmStartStudentExam(examId);
-    else if (typeof window.startStudentExam === 'function') window.startStudentExam(examId);
-    else window.navigateTo('asesmen_siswa');
+    if (typeof window.navigateTo === 'function') window.navigateTo('asesmen_siswa');
+    setTimeout(() => {
+        if (String(learningState().__pendingLearningExamId || '') !== String(examId)) return;
+        if ((learningState().exams || []).some(item => String(item.id) === String(examId)) && typeof window.confirmStartStudentExam === 'function') {
+            learningState().__pendingLearningExamId = '';
+            window.confirmStartStudentExam(examId);
+        }
+    }, 250);
 };
 window.openLearningMonitor = async function(id) {
     const container = document.getElementById('view-container');
