@@ -13100,6 +13100,183 @@ async function saveDeltaBatchDb(items: DeltaBatchWrite[]) {
   });
 }
 
+// CBT_EXAM_CASCADE_CLEANUP_V1
+// Exam state is stored per student in delta rows. Keep deletion tenant-scoped and
+// infer legacy orphan IDs only from CBT-only stores so LKPD state is never guessed
+// as an exam merely because it shares the legacy student_target key shape.
+function examCleanupTenantStudentIds(targetTenant: string): string[] {
+  const counts = new Map<string, number>();
+  for (const student of (students || [])) {
+    const id = String(student?.id || '');
+    if (id) counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return (students || [])
+    .filter((student: any) =>
+      canonicalRealtimeTenant(student?.madrasahId || student?.madrasahSlug || 'default') === targetTenant &&
+      counts.get(String(student?.id || '')) === 1
+    )
+    .map((student: any) => String(student.id))
+    .filter(Boolean)
+    .sort((a: string, b: string) => b.length - a.length);
+}
+
+function examCleanupDeltaStores() {
+  return [
+    { name: 'activeExamSessions', store: activeExamSessions },
+    { name: 'completedExams', store: completedExams },
+    { name: 'forceFinishedExams', store: forceFinishedExams },
+    { name: 'studentExamAnswers', store: studentExamAnswers },
+    { name: 'studentExamQuestions', store: studentExamQuestions },
+    { name: 'studentExamMasterQuestions', store: studentExamMasterQuestions },
+    { name: 'studentExamGrades', store: studentExamGrades },
+    { name: 'studentTabSwitches', store: studentTabSwitches },
+    { name: 'studentOutOfTab', store: studentOutOfTab },
+    { name: 'blockedStudents', store: blockedStudents },
+    { name: 'studentLivecamFrames', store: studentLivecamFrames }
+  ];
+}
+
+function legacyExamStateIdFromCbtOnlyKey(rawKey: string, targetTenant: string): string {
+  const raw = String(rawKey || '');
+  for (const studentId of examCleanupTenantStudentIds(targetTenant)) {
+    const directPrefix = studentId + '_';
+    if (raw.startsWith(directPrefix)) return raw.slice(directPrefix.length);
+    const reverseSuffix = '_' + studentId;
+    if (raw.endsWith(reverseSuffix)) return raw.slice(0, raw.length - reverseSuffix.length);
+  }
+  return '';
+}
+
+function collectOrphanExamIdsForTenant(targetTenant: string): string[] {
+  const existingExamIds = new Set(
+    (exams || [])
+      .filter((exam: any) => canonicalRealtimeTenant(exam?.madrasahId || exam?.madrasahSlug || 'default') === targetTenant)
+      .map((exam: any) => String(exam.id))
+  );
+  const orphanIds = new Set<string>();
+
+  // Namespaced v2 keys are self-describing and safe to inspect in every exam state store.
+  for (const { store } of examCleanupDeltaStores()) {
+    for (const key of Object.keys(store || {})) {
+      const parsed = parseNamespacedExamStateKey(key);
+      if (!parsed) continue;
+      if (canonicalRealtimeTenant(parsed.tenant) !== targetTenant) continue;
+      if (!existingExamIds.has(parsed.examId)) orphanIds.add(parsed.examId);
+    }
+  }
+
+  // Legacy keys have no tenant/type namespace. Infer them only from CBT-only stores.
+  const cbtOnlyStores = [
+    studentExamAnswers,
+    studentExamQuestions,
+    studentExamMasterQuestions,
+    studentExamGrades
+  ];
+  for (const store of cbtOnlyStores) {
+    for (const key of Object.keys(store || {})) {
+      if (parseNamespacedExamStateKey(key)) continue;
+      const examId = legacyExamStateIdFromCbtOnlyKey(key, targetTenant);
+      if (examId && !existingExamIds.has(examId)) orphanIds.add(examId);
+    }
+  }
+
+  return Array.from(orphanIds).filter(Boolean).sort();
+}
+
+async function cleanupExamStateForExam(
+  examIdInput: any,
+  targetTenantInput: any,
+  options: { allowLegacyBroadcast?: boolean; dryRun?: boolean } = {}
+) {
+  const examId = String(examIdInput || '').trim();
+  const targetTenant = canonicalRealtimeTenant(targetTenantInput || 'default');
+  if (!examId || !targetTenant || targetTenant === 'BOSS') {
+    throw new Error('Target cleanup CBT tidak valid.');
+  }
+
+  const legacyStudentKeys = new Set<string>();
+  for (const studentId of examCleanupTenantStudentIds(targetTenant)) {
+    legacyStudentKeys.add(legacyExamStateKey(studentId, examId));
+    legacyStudentKeys.add(legacyExamStateKey(examId, studentId));
+  }
+
+  const storePlans: Array<{ name: string; store: any; keys: string[] }> = [];
+  const deltaWrites: DeltaBatchWrite[] = [];
+  for (const entry of examCleanupDeltaStores()) {
+    const keys = Object.keys(entry.store || {}).filter((key) => {
+      const parsed = parseNamespacedExamStateKey(key);
+      if (parsed) {
+        return canonicalRealtimeTenant(parsed.tenant) === targetTenant && parsed.examId === examId;
+      }
+      return legacyStudentKeys.has(key);
+    });
+    if (keys.length === 0) continue;
+    storePlans.push({ ...entry, keys });
+    for (const key of keys) deltaWrites.push({ storeName: entry.name, itemKey: key, value: null });
+  }
+
+  const nextMessages = { ...(examMessages || {}) };
+  let messageDeletes = 0;
+  for (const key of Object.keys(nextMessages)) {
+    const parsedState = parseNamespacedExamStateKey(key);
+    const parsedBroadcast = parseNamespacedExamBroadcastKey(key);
+    const namespacedMatch =
+      (parsedState && canonicalRealtimeTenant(parsedState.tenant) === targetTenant && parsedState.examId === examId) ||
+      (parsedBroadcast && canonicalRealtimeTenant(parsedBroadcast.tenant) === targetTenant && parsedBroadcast.examId === examId);
+    const legacyMatch =
+      legacyStudentKeys.has(key) ||
+      (options.allowLegacyBroadcast === true && key === 'broadcast_' + examId);
+    if (namespacedMatch || legacyMatch) {
+      delete nextMessages[key];
+      messageDeletes++;
+    }
+  }
+
+  const nextViolationLogs = { ...(examViolationLogs || {}) };
+  let violationDeletes = 0;
+  for (const key of Object.keys(nextViolationLogs)) {
+    const parsedBroadcast = parseNamespacedExamBroadcastKey(key);
+    const namespacedMatch =
+      parsedBroadcast &&
+      canonicalRealtimeTenant(parsedBroadcast.tenant) === targetTenant &&
+      parsedBroadcast.examId === examId;
+    const legacyMatch = options.allowLegacyBroadcast === true && key === examId;
+    if (namespacedMatch || legacyMatch) {
+      delete nextViolationLogs[key];
+      violationDeletes++;
+      deltaWrites.push({ storeName: 'examViolationLogs', itemKey: key, value: null });
+    }
+  }
+
+  const summary = {
+    examId,
+    tenant: targetTenant,
+    stateKeys: storePlans.reduce((sum, item) => sum + item.keys.length, 0),
+    messageKeys: messageDeletes,
+    violationKeys: violationDeletes,
+    totalKeys: storePlans.reduce((sum, item) => sum + item.keys.length, 0) + messageDeletes + violationDeletes
+  };
+  if (options.dryRun) return summary;
+
+  // Keep SQL cleanup bounded even when a soak run created thousands of rows.
+  for (let index = 0; index < deltaWrites.length; index += 1000) {
+    await saveDeltaBatchDb(deltaWrites.slice(index, index + 1000));
+  }
+  if (messageDeletes > 0) await saveData('examMessages', nextMessages);
+  if (violationDeletes > 0) await saveData('examViolationLogs', nextViolationLogs);
+
+  for (const plan of storePlans) {
+    for (const key of plan.keys) {
+      delete plan.store[key];
+      if (plan.name === 'studentLivecamFrames') clearRuntimeLivecamFrame(key);
+    }
+  }
+  if (messageDeletes > 0) examMessages = nextMessages;
+  if (violationDeletes > 0) examViolationLogs = nextViolationLogs;
+
+  return summary;
+}
+
 async function saveDeltaDb(deltaType: string, itemKey: string, value: any) {
   if (isOnlineMode) {
     if (dbInitPromise) await dbInitPromise;
@@ -17772,6 +17949,47 @@ app.post("/api/exams", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bo
   await saveData('exams', exams);
   res.json({ success: true, exams: isTeacherRequest(req) ? examsForRequest(req) : filterByMadrasah(exams, req) });
 });
+app.post("/api/exams/cleanup-orphan-state", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const targetTenant = canonicalRealtimeTenant(
+    getRequestMadrasahId(req) || authUser?.madrasahId || authUser?.madrasahSlug || 'default'
+  );
+  if (!targetTenant || targetTenant === 'BOSS') {
+    return res.status(400).json({ success: false, message: "Pilih tenant madrasah target sebelum membersihkan orphan CBT." });
+  }
+
+  const orphanExamIds = collectOrphanExamIdsForTenant(targetTenant);
+  const dryRun = req.body?.dryRun === true;
+  const summaries = [];
+  try {
+    for (const examId of orphanExamIds) {
+      summaries.push(await cleanupExamStateForExam(examId, targetTenant, {
+        dryRun,
+        // Legacy broadcast/log keys are not tenant-scoped. Never guess them for orphan cleanup.
+        allowLegacyBroadcast: false
+      }));
+    }
+  } catch (err: any) {
+    return res.status(503).json({ success: false, message: safeServerError(err, 'Orphan state CBT belum dapat dibersihkan. Silakan coba lagi.') });
+  }
+
+  const removedStateKeys = summaries.reduce((sum: number, item: any) => sum + Number(item.stateKeys || 0), 0);
+  const removedMessageKeys = summaries.reduce((sum: number, item: any) => sum + Number(item.messageKeys || 0), 0);
+  const removedViolationKeys = summaries.reduce((sum: number, item: any) => sum + Number(item.violationKeys || 0), 0);
+  return res.json({
+    success: true,
+    dryRun,
+    tenant: targetTenant,
+    orphanExamCount: orphanExamIds.length,
+    orphanExamIds,
+    removedStateKeys,
+    removedMessageKeys,
+    removedViolationKeys,
+    removedTotalKeys: removedStateKeys + removedMessageKeys + removedViolationKeys
+  });
+});
+
 app.delete("/api/exams/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req, res) => {
   const { id } = req.params;
   const resolved = resolveTenantItemIndexById(exams, id, req, false);
@@ -17780,9 +17998,23 @@ app.delete("/api/exams/:id", requireAuth, requireRole(['teacher', 'guru', 'admin
   if (isTeacherRequest(req) && !teacherCanMutateExamPayload(req, resolved.item)) {
     return res.status(403).json({ success: false, message: "Guru hanya dapat menghapus ujian non-event pada mata pelajaran/bank soal yang diampu." });
   }
-  exams.splice(resolved.index, 1);
-  await saveData('exams', exams);
-  res.json({ success: true, exams: filterByMadrasah(exams, req) });
+
+  const examId = String(resolved.item?.id || id);
+  const examTenant = canonicalRealtimeTenant(resolved.item?.madrasahId || resolved.item?.madrasahSlug || getRequestMadrasahId(req) || 'default');
+  const sameIdCount = (exams || []).filter((exam: any) => String(exam?.id || '') === examId).length;
+  let cleanupSummary;
+  try {
+    cleanupSummary = await cleanupExamStateForExam(examId, examTenant, {
+      allowLegacyBroadcast: sameIdCount === 1
+    });
+  } catch (err: any) {
+    return res.status(503).json({ success: false, message: safeServerError(err, 'State CBT ujian belum dapat dibersihkan. Ujian tidak dihapus.') });
+  }
+
+  const nextExams = exams.filter((_exam: any, index: number) => index !== resolved.index);
+  await saveData('exams', nextExams);
+  exams = nextExams;
+  res.json({ success: true, exams: filterByMadrasah(exams, req), cleanup: cleanupSummary });
 });
 
 // Rooms API
