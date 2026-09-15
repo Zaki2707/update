@@ -1646,7 +1646,7 @@ async function determineAndInitPool() {
     config: {
       ...connection,
       max: 10,
-      connectionTimeoutMillis: !isOnlineMode && connection.host === 'localhost' ? 2000 : connectionTimeoutMillis,
+      connectionTimeoutMillis,
       keepAlive: true,
       idleTimeoutMillis: 15000,
     }
@@ -1655,7 +1655,7 @@ async function determineAndInitPool() {
   if (!isOnlineMode && connection.host !== 'localhost') {
     candidateConfigs.push({
       name: "Localhost TCP PostgreSQL",
-      config: { ...candidateConfigs[0].config, host: 'localhost', connectionTimeoutMillis: 2000 }
+      config: { ...candidateConfigs[0].config, host: 'localhost', connectionTimeoutMillis }
     });
   }
 
