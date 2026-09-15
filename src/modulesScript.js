@@ -633,6 +633,7 @@ async function saveStudentPhotoBase64(base64Img, studentId) {
             appState.currentUser.photo = appState.students[stIdx].photo;
             appState.currentUser.photoHistory = appState.students[stIdx].photoHistory;
             if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
+            if (window.renderStudentHeaderProfile) window.renderStudentHeaderProfile();
         }
 
         try {
@@ -868,6 +869,7 @@ async function selectStudentProfileFromHistory(studentId, photoUrl) {
             appState.currentUser.photo = photoUrl;
             appState.currentUser.photoHistory = appState.students[stIdx].photoHistory;
             if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
+            if (window.renderStudentHeaderProfile) window.renderStudentHeaderProfile();
         }
 
         try {
@@ -949,6 +951,7 @@ async function deleteStudentPhotoFromHistory(studentId, photoUrl, event) {
                 appState.currentUser.photoHistory = appState.students[stIdx].photoHistory;
                 appState.currentUser.deletedPhotos = appState.students[stIdx].deletedPhotos;
                 if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
+                if (window.renderStudentHeaderProfile) window.renderStudentHeaderProfile();
             }
 
             try {
@@ -1032,8 +1035,7 @@ async function saveStudentProfileUpdate(e, studentId) {
             delete appState.currentUser.password;
             if (data.token) appState.currentUser.token = data.token;
             if (window.persistCurrentUser) appState.currentUser = window.persistCurrentUser(appState.currentUser) || appState.currentUser;
-            const nameEl = document.getElementById('user-display-name');
-            if (nameEl) nameEl.innerText = name;
+            if (window.renderStudentHeaderProfile) window.renderStudentHeaderProfile();
         }
 
         try {
