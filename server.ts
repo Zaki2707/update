@@ -13280,6 +13280,16 @@ async function cleanupExamStateForExam(
   if (messageDeletes > 0) examMessages = nextMessages;
   if (violationDeletes > 0) examViolationLogs = nextViolationLogs;
 
+  // OFFLINE_LOCALSTORE_CBT_CLEANUP_V1: delta rows are the efficient online path,
+  // but an offline installation may run without PostgreSQL. Persist the mutated
+  // full maps to local_store only in offline mode so deletions survive restart.
+  if (isOfflineMode) {
+    const offlineItems = storePlans
+      .filter((plan) => plan.name !== 'studentLivecamFrames')
+      .map((plan) => ({ key: plan.name, value: plan.store }));
+    if (offlineItems.length > 0) await saveDataBatch(offlineItems);
+  }
+
   return summary;
 }
 
