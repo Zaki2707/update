@@ -232,3 +232,22 @@ powershell -ExecutionPolicy Bypass -File .\tests\reset-loadtest-passwords.ps1 -T
 ```
 
 Script hanya memilih akun dengan pola username `loadtestNNN` dan NIS `LTNNN`. Proses dibatalkan otomatis bila jumlah target tidak sama dengan `ExpectedCount` (default 800). Password baru diminta secara tersembunyi dan tidak dicetak ke terminal.
+
+
+## Cleanup orphan state setelah ujian load-test terhapus
+
+Backend terbaru membersihkan state CBT otomatis saat ujian dihapus. Untuk ujian load-test yang **sudah terlanjur dihapus sebelum perbaikan ini**, gunakan helper orphan cleanup.
+
+Lakukan dry-run terlebih dahulu:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\cleanup-cbt-orphans.ps1 -Tenant default -DryRun
+```
+
+Jika daftar orphan sesuai dengan ujian load-test lama, jalankan cleanup sebenarnya:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\cleanup-cbt-orphans.ps1 -Tenant default
+```
+
+Helper meminta kredensial admin secara lokal dan tidak menulis password/JWT ke file. Endpoint hanya membersihkan orphan state pada tenant target dan tidak menghapus siswa, ujian yang masih ada, atau LKPD. Key legacy yang tidak dapat dibuktikan tenant/type-nya tidak ditebak secara destruktif.
