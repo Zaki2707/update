@@ -1,60 +1,52 @@
-// Prevent legacy full-tenant CBT snapshot refreshes from being triggered by SSE.
-// Modern CBT monitoring already receives micro-events (progress/heartbeat/violation/
-// finish/presence) and uses /api/exams/:examId/monitor for explicit/fallback pulls.
-// Keeping the legacy activeExamSessions state-update event alive here would cause
-// appScript.js to fetch /api/exam-monitoring-state, which includes large answer,
-// question, grade and monitoring maps and can overwhelm a browser after soak tests.
+// Prevent browser-side full-tenant CBT monitoring snapshots from being pulled by
+// legacy realtime state-sync. Modern CBT monitoring already uses micro-events and
+// /api/exams/:examId/monitor, while POST /api/exam-monitoring-state is still kept
+// intact for explicit staff mutations such as block/message/duration changes.
 (() => {
-    const NativeEventSource = window.EventSource;
-    if (!NativeEventSource || window.__madrasahExamSnapshotGuardInstalled) return;
+    const nativeFetch = window.fetch;
+    if (typeof nativeFetch !== 'function' || window.__madrasahExamSnapshotGuardInstalled) return;
 
-    const nativeOnMessageDescriptor = Object.getOwnPropertyDescriptor(NativeEventSource.prototype, 'onmessage');
-    if (!nativeOnMessageDescriptor || typeof nativeOnMessageDescriptor.set !== 'function') return;
-
-    function shouldSuppress(event) {
-        try {
-            const payload = JSON.parse(event?.data || 'null');
-            return payload?.type === 'state-update' && payload?.key === 'activeExamSessions';
-        } catch (_) {
-            return false;
+    function requestMethod(resource, options) {
+        const explicit = options && options.method;
+        if (explicit) return String(explicit).toUpperCase();
+        if (typeof Request !== 'undefined' && resource instanceof Request) {
+            return String(resource.method || 'GET').toUpperCase();
         }
+        return 'GET';
     }
 
-    function GuardedEventSource(url, eventSourceInitDict) {
-        const source = new NativeEventSource(url, eventSourceInitDict);
-        let userHandler = null;
+    function requestUrl(resource) {
+        if (typeof resource === 'string') return resource;
+        if (typeof URL !== 'undefined' && resource instanceof URL) return resource.toString();
+        if (resource && typeof resource.url === 'string') return resource.url;
+        return '';
+    }
 
-        try {
-            Object.defineProperty(source, 'onmessage', {
-                configurable: true,
-                enumerable: true,
-                get() {
-                    return userHandler;
-                },
-                set(handler) {
-                    userHandler = typeof handler === 'function' ? handler : null;
-                    const wrapped = userHandler
-                        ? function(event) {
-                            if (shouldSuppress(event)) return;
-                            return userHandler.call(source, event);
+    window.fetch = function(resource, options) {
+        const method = requestMethod(resource, options);
+        const rawUrl = requestUrl(resource);
+
+        if (method === 'GET' && rawUrl) {
+            try {
+                const parsed = new URL(rawUrl, window.location.origin);
+                if (parsed.pathname === '/api/exam-monitoring-state') {
+                    return Promise.resolve(new Response(JSON.stringify({
+                        success: false,
+                        suppressed: true,
+                        message: 'Legacy full monitoring snapshot suppressed; use exam-scoped monitoring.'
+                    }), {
+                        status: 200,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Madrasah-Legacy-Monitoring-Suppressed': '1'
                         }
-                        : null;
-                    nativeOnMessageDescriptor.set.call(source, wrapped);
+                    }));
                 }
-            });
-        } catch (_) {
-            // If a browser refuses the instance property override, leave the native
-            // EventSource behavior untouched rather than risking realtime breakage.
+            } catch (_) {}
         }
 
-        return source;
-    }
+        return nativeFetch.call(this || window, resource, options);
+    };
 
-    GuardedEventSource.prototype = NativeEventSource.prototype;
-    Object.setPrototypeOf(GuardedEventSource, NativeEventSource);
-
-    try {
-        window.EventSource = GuardedEventSource;
-        window.__madrasahExamSnapshotGuardInstalled = true;
-    } catch (_) {}
+    window.__madrasahExamSnapshotGuardInstalled = true;
 })();
