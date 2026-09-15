@@ -3170,22 +3170,31 @@ function deleteExam(id) {
             });
             const deleteData = await deleteRes.json().catch(() => null);
 
-            if (!deleteRes.ok && deleteRes.status !== 404) {
+            if (deleteRes.ok) {
+                // DELETE sudah dipersist server. Commit state lokal langsung agar kegagalan
+                // GET sesudahnya tidak membalikkan operasi yang sebenarnya sudah berhasil.
+                appState.exams = (appState.exams || []).filter(ex => String(ex?.id) !== examId);
+                if (typeof window.safeSetLocalStorage === 'function') {
+                    window.safeSetLocalStorage('madrasah_exams', appState.exams);
+                }
+                showToast('Jadwal ujian berhasil dihapus!', 'success');
+                renderAssessmentModule(document.getElementById('view-container'), 'jadwal');
+                return;
+            }
+
+            if (deleteRes.status !== 404) {
                 throw new Error(deleteData?.message || `Gagal menghapus ujian (HTTP ${deleteRes.status}).`);
             }
 
+            // 404 dapat terjadi bila item sudah dihapus oleh client/tab lain. Rekonsiliasi
+            // hanya pada kasus ini dan anggap sukses bila server memastikan ID memang hilang.
             const examsAfterDelete = await syncExamListFromServer();
             const stillExists = examsAfterDelete.some(ex => String(ex?.id) === examId);
             if (stillExists) {
                 throw new Error('Ujian masih ditemukan setelah penghapusan. Silakan coba lagi.');
             }
 
-            showToast(
-                deleteRes.status === 404
-                    ? 'Jadwal ujian sudah tidak ada dan daftar telah disinkronkan.'
-                    : 'Jadwal ujian berhasil dihapus!',
-                'success'
-            );
+            showToast('Jadwal ujian sudah tidak ada dan daftar telah disinkronkan.', 'success');
             renderAssessmentModule(document.getElementById('view-container'), 'jadwal');
         } catch (err) {
             console.warn('Error deleting exam API:', err);
