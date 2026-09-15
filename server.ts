@@ -6106,8 +6106,7 @@ app.get("/api/game/active-sessions", requireAuth, requireRole(['teacher', 'guru'
 app.post("/api/game/active-sessions", (req: any, res) => {
   try {
     const authUser = req.user || getAuthUser(req);
-    const role = String(authUser?.role || '').toLowerCase();
-    const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+      const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
     const requested = String(req.body?.studentId || '');
     const studentId = self ? String(authUser?.id || '') : requested;
     const sessionData = req.body?.sessionData;
@@ -13195,9 +13194,15 @@ async function cleanupExamStateForExam(
   }
 
   const legacyStudentKeys = new Set<string>();
-  for (const studentId of examCleanupTenantStudentIds(targetTenant)) {
-    legacyStudentKeys.add(legacyExamStateKey(studentId, examId));
-    legacyStudentKeys.add(legacyExamStateKey(examId, studentId));
+  const legacyIdConflictsWithLkpd = (lkpdList || []).some((lkpd: any) =>
+    String(lkpd?.id || '') === examId &&
+    canonicalRealtimeTenant(lkpd?.madrasahId || lkpd?.madrasahSlug || 'default') === targetTenant
+  );
+  if (!legacyIdConflictsWithLkpd) {
+    for (const studentId of examCleanupTenantStudentIds(targetTenant)) {
+      legacyStudentKeys.add(legacyExamStateKey(studentId, examId));
+      legacyStudentKeys.add(legacyExamStateKey(examId, studentId));
+    }
   }
 
   const storePlans: Array<{ name: string; store: any; keys: string[] }> = [];
