@@ -21,6 +21,12 @@ const ANSWER_RETRY_BASE_SECONDS = Math.max(0.05, Number.parseFloat(__ENV.ANSWER_
 const VERIFY_RETRIES = Math.max(0, Number.parseInt(__ENV.VERIFY_RETRIES || '3', 10));
 const VERIFY_RETRY_BASE_SECONDS = Math.max(0.05, Number.parseFloat(__ENV.VERIFY_RETRY_BASE_SECONDS || '0.5'));
 const ACCOUNTS_FILE = String(__ENV.ACCOUNTS_FILE || './accounts.loadtest.local.json');
+const CLEANUP_USERNAME = String(__ENV.CLEANUP_USERNAME || '').trim();
+const CLEANUP_PASSWORD = String(__ENV.CLEANUP_PASSWORD || '');
+const CLEANUP_TENANT = String(__ENV.CLEANUP_TENANT || TENANT || '').trim();
+const CLEANUP_AFTER = /^(1|true|yes|on)$/i.test(String(
+  __ENV.CLEANUP_AFTER || (CLEANUP_USERNAME && CLEANUP_PASSWORD ? 'true' : 'false')
+));
 
 if (!EXAM_ID) {
   throw new Error('EXAM_ID wajib diisi. Gunakan ID ujian LOAD TEST khusus, jangan ujian sungguhan.');
@@ -144,6 +150,69 @@ function sameAnswer(a, b) {
   } catch (_) {
     return String(a) === String(b);
   }
+}
+
+export function setup() {
+  if (!CLEANUP_AFTER) return { cleanup: null };
+  if (!CLEANUP_USERNAME || !CLEANUP_PASSWORD) {
+    throw new Error('CLEANUP_AFTER aktif tetapi CLEANUP_USERNAME/CLEANUP_PASSWORD belum diisi.');
+  }
+
+  const loginBody = {
+    username: CLEANUP_USERNAME,
+    password: CLEANUP_PASSWORD,
+  };
+  const loginHeaders = { 'Content-Type': 'application/json' };
+  if (CLEANUP_TENANT) {
+    loginBody.madrasahId = CLEANUP_TENANT;
+    loginBody.madrasahSlug = CLEANUP_TENANT;
+    loginHeaders['X-Madrasah-Id'] = CLEANUP_TENANT;
+  }
+
+  const res = http.post(
+    `${BASE_URL}/api/login`,
+    JSON.stringify(loginBody),
+    { headers: loginHeaders, tags: { name: 'POST /api/login [soak cleanup setup]' }, timeout: '15s' }
+  );
+  const data = tryJson(res);
+  const token = String(data?.user?.token || data?.token || '');
+  if (res.status !== 200 || token.length <= 20) {
+    throw new Error(`Login admin cleanup gagal (HTTP ${res.status}).`);
+  }
+
+  const tenant = String(
+    CLEANUP_TENANT ||
+    data?.user?.madrasahId ||
+    data?.user?.madrasahSlug ||
+    ''
+  ).trim();
+
+  return { cleanup: { token, tenant } };
+}
+
+export function teardown(data) {
+  if (!CLEANUP_AFTER) return;
+  const cleanup = data?.cleanup;
+  if (!cleanup?.token) {
+    console.error('Cleanup soak dilewati: token admin cleanup tidak tersedia.');
+    return;
+  }
+
+  const res = postJson(
+    '/api/load-test/cleanup-exam',
+    { examId: EXAM_ID, confirm: 'DELETE_LOAD_TEST_STATE' },
+    authHeaders(cleanup.token, cleanup.tenant || ''),
+    'POST /api/load-test/cleanup-exam [soak teardown]'
+  );
+  const body = tryJson(res);
+  if (res.status !== 200 || !body?.success) {
+    logFailure('cleanup load test', res);
+    return;
+  }
+
+  console.log(
+    `Cleanup load test selesai: exam=${EXAM_ID}, state=${body.deletedStateEntries || 0}, messages=${body.deletedMessages || 0}, violations=${body.deletedViolationLogs || 0}`
+  );
 }
 
 export default function () {
