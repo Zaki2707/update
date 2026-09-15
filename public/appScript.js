@@ -955,8 +955,12 @@ async function syncKeyFromServer(key) {
     else if (key === 'grades') endpoint = '/api/grades';
     else if (key === 'lkpdList') endpoint = '/api/lkpds';
     else if (key === 'activeExamSessions') {
-        if (appState.role === 'student' || appState.role === 'siswa') return;
-        endpoint = '/api/exam-monitoring-state';
+        // CBT_REALTIME_NO_GLOBAL_SNAPSHOT_V1:
+        // Exam progress already arrives as micro-events (exam_progress, heartbeat,
+        // violation, finish, presence). Monitoring/Evaluasi use the exam-scoped
+        // /api/exams/:examId/monitor summary. Never pull the tenant-wide legacy
+        // /api/exam-monitoring-state snapshot from generic realtime updates.
+        return;
     }
     else if (key === 'calendarEvents') endpoint = '/api/calendar-events';
     else if (key === 'settings') endpoint = '/api/settings';
@@ -1092,7 +1096,6 @@ async function syncKeyFromServer(key) {
                     'journals': ['jurnal', 'dashboard'],
                     'grades': ['nilai'],
                     'lkpdList': ['asesmen', 'dashboard'],
-                    'activeExamSessions': ['asesmen'],
                     'calendarEvents': ['kalender', 'dashboard'],
                     'settings': ['setting'],
                     'madrasahs': ['token', 'boss_dashboard', 'dashboard'],
