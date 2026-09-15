@@ -6106,6 +6106,7 @@ app.get("/api/game/active-sessions", requireAuth, requireRole(['teacher', 'guru'
 app.post("/api/game/active-sessions", (req: any, res) => {
   try {
     const authUser = req.user || getAuthUser(req);
+    const role = String(authUser?.role || '').toLowerCase();
       const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
     const requested = String(req.body?.studentId || '');
     const studentId = self ? String(authUser?.id || '') : requested;
@@ -6143,6 +6144,7 @@ app.post("/api/game/active-sessions", (req: any, res) => {
 
 app.get("/api/game/messages", (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
   const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
   const requested = String(req.query.studentId || '');
   const studentId = self ? String(authUser?.id || '') : requested;
@@ -17955,7 +17957,7 @@ app.post("/api/exams", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bo
 });
 app.post("/api/exams/cleanup-orphan-state", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
-  const role = String(authUser?.role || '').toLowerCase();
+
   const targetTenant = canonicalRealtimeTenant(
     getRequestMadrasahId(req) || authUser?.madrasahId || authUser?.madrasahSlug || 'default'
   );
