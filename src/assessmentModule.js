@@ -2981,9 +2981,16 @@ async function saveExam(e) {
     const essayCount = essayCountVal && !isNaN(parseInt(essayCountVal, 10)) && parseInt(essayCountVal, 10) > 0 ? parseInt(essayCountVal, 10) : null;
 
     const finalClasses = tempExamClasses.length === 0 ? ['ALL'] : tempExamClasses;
+    const existingExamForEdit = editId
+        ? (appState.exams || []).find(ex => String(ex.id) === String(editId))
+        : null;
+    const existingEditStatus = String(existingExamForEdit?.status || '').trim().toLowerCase();
+    const activatingDraft = Boolean(existingExamForEdit && ['draft', 'inactive'].includes(existingEditStatus));
 
-    // Token validation and deduction for NEW exams
-    if (!editId) {
+    // Consume a token only when creating a normal exam or when a learning-created
+    // draft is completed and activated for the first time. Merely creating the
+    // draft from Materi never consumes a token.
+    if (!editId || activatingDraft) {
         const tokenBalance = (typeof window.getActiveMadrasahTokenBalance === 'function')
             ? window.getActiveMadrasahTokenBalance()
             : ((appState.currentUser && appState.currentUser.cbtTokenBalance) || 0);
@@ -3063,7 +3070,7 @@ async function saveExam(e) {
     if (editId) {
         const idx = appState.exams.findIndex(ex => String(ex.id) === String(editId));
         if (idx !== -1) {
-            const oldExam = appState.exams[idx];
+            const oldExam = existingExamForEdit || appState.exams[idx];
             const originalStatus = oldExam.status || 'Active';
             const oldDuration = parseInt(oldExam.duration || 60, 10);
             const newDuration = parseInt(duration || 60, 10);
@@ -3113,12 +3120,15 @@ async function saveExam(e) {
             appState.exams[idx] = { 
                 ...oldExam, 
                 ...examData, 
-                status: originalStatus,
+                status: activatingDraft ? 'Active' : originalStatus,
+                activatedAt: activatingDraft ? new Date().toISOString() : oldExam.activatedAt,
                 addedTimeSec: (oldExam.addedTimeSec || 0) + (durationDiffSec > 0 ? durationDiffSec : 0),
                 lastScheduleEdit: Date.now()
             };
 
-            if (durationDiffSec > 0) {
+            if (activatingDraft) {
+                showToast('Draft asesmen sudah dilengkapi dan diaktifkan. 1 Token Ujian dikonsumsi saat aktivasi.', 'success');
+            } else if (durationDiffSec > 0) {
                 showToast(`Jadwal ujian diperbarui! Durasi bertambah ${Math.round(durationDiffSec / 60)} menit & waktu pengerjaan ${extendedCount} siswa aktif otomatis bertambah.`, 'success');
             } else {
                 showToast('Jadwal ujian berhasil diperbarui! Seluruh data pengerjaan, nilai, dan siswa tetap aman terjaga.', 'success');

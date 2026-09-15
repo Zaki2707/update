@@ -5183,6 +5183,10 @@ function gradePayloadAllowedForTeacher(req: any, gradePayload: any): boolean {
 
 function studentCanAccessExam(student: any, exam: any): boolean {
   if (!student || !exam) return false;
+  const status = String(exam.status || '').trim().toLowerCase();
+  // Legacy exams without status remain compatible. Explicit Draft/Inactive records
+  // are teacher-only and are also rejected by attempt-context checks.
+  if (status && !['active', 'aktif', 'published'].includes(status)) return false;
   const targets = Array.isArray(exam.classes)
     ? exam.classes.map((value: any) => String(value))
     : [exam.classId, exam.class_id, exam.className].filter(Boolean).map((value: any) => String(value));
@@ -5194,6 +5198,10 @@ function studentCanAccessExam(student: any, exam: any): boolean {
 
 function studentCanAccessLkpd(student: any, lkpd: any): boolean {
   if (!student || !lkpd) return false;
+  const status = String(lkpd.status || '').trim().toLowerCase();
+  // Legacy LKPD without status remain compatible; explicit inactive/draft records
+  // stay hidden from student list/submission paths until a teacher activates them.
+  if (status && !['active', 'aktif', 'published'].includes(status)) return false;
   const targets = Array.isArray(lkpd.classes)
     ? lkpd.classes.map((value: any) => String(value))
     : [lkpd.classId, lkpd.class_id, lkpd.className].filter(Boolean).map((value: any) => String(value));
@@ -15935,11 +15943,21 @@ app.get("/api/learning/materials", requireAuth, (req: any, res) => {
       .map((material: any) => {
         const prereq = Array.isArray(material.prerequisiteMaterialIds) ? material.prerequisiteMaterialIds.map(String) : [];
         const locked = prereq.some((id: string) => !completedIds.has(id));
+        const linkedLkpd = material.lkpdId
+          ? (lkpdList || []).find((item: any) => String(item.id) === String(material.lkpdId) && isItemForCurrentMadrasah(item, req))
+          : null;
+        const linkedExam = material.examId
+          ? (exams || []).find((item: any) => String(item.id) === String(material.examId) && isItemForCurrentMadrasah(item, req))
+          : null;
         return {
           ...sanitizeLearningMaterialForStudent(material),
           progress: progressByMaterial.get(String(material.id || '')) || null,
           locked,
-          lockedBy: locked ? prereq.filter((id: string) => !completedIds.has(id)) : []
+          lockedBy: locked ? prereq.filter((id: string) => !completedIds.has(id)) : [],
+          linkedActivities: {
+            lkpdReady: Boolean(linkedLkpd && studentCanAccessLkpd(own.student, linkedLkpd)),
+            examReady: Boolean(linkedExam && studentCanAccessExam(own.student, linkedExam))
+          }
         };
       });
     return res.json({ success: true, materials, progress: ownProgress });
@@ -15961,11 +15979,112 @@ app.post("/api/learning/materials", requireAuth, requireRole(['teacher', 'guru',
     if (resolved.material && isTeacherRequest(req) && !teacherCanUseLearningMaterialPayload(req, resolved.material)) {
       return res.status(403).json({ success: false, message: 'Guru tidak dapat mengubah materi di luar mata pelajaran yang diampu.' });
     }
-    const material = sanitizeLearningMaterialMutation(req, req.body || {}, resolved.material || {});
-    if (resolved.index >= 0) (lessonPlans as any[])[resolved.index] = { ...(lessonPlans as any[])[resolved.index], ...material };
-    else (lessonPlans as any[]).push(material);
-    await saveData('lessonPlans', lessonPlans);
-    res.json({ success: true, material, data: material, lessonPlans: learningMaterialsForStaffRequest(req) });
+
+    let material = sanitizeLearningMaterialMutation(req, req.body || {}, resolved.material || {});
+    const createLkpdDraft = req.body?.createLkpdDraft === true;
+    const createExamDraft = req.body?.createExamDraft === true;
+    const nextLessonPlans = [...(lessonPlans as any[])];
+    const nextLkpds = [...(lkpdList || [])];
+    const nextExams = [...(exams || [])];
+    const batch: any[] = [];
+
+    if (createLkpdDraft && !material.lkpdId) {
+      const draftId = ('LKPD_' + String(material.id || '')).slice(0, 256);
+      let draft = nextLkpds.find((item: any) =>
+        String(item.id || '') === draftId && isItemForCurrentMadrasah(item, req)
+      );
+      if (!draft) {
+        const targetClassId = String(material.classId || 'ALL');
+        const classRecord = (classes || []).find((item: any) =>
+          String(item.id || '') === targetClassId && isItemForCurrentMadrasah(item, req)
+        );
+        draft = tagNewRecord({
+          id: draftId,
+          title: ('LKPD - ' + material.title).slice(0, 240),
+          subjectId: material.subjectId || material.subjectName || '',
+          subjectName: material.subjectName || material.subjectId || '',
+          classId: targetClassId || 'ALL',
+          className: targetClassId === 'ALL' ? 'Semua Kelas' : (classRecord?.name || targetClassId),
+          answeringMode: 'below',
+          description: ('Draft otomatis dari materi: ' + material.title).slice(0, 1000),
+          date: '',
+          durationMinutes: 45,
+          status: 'inactive',
+          allowDownloadPdf: true,
+          markers: [],
+          submissions: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          sourceLearningMaterialId: material.id
+        }, req);
+        nextLkpds.unshift(draft);
+      }
+      material = { ...material, lkpdId: draftId };
+    }
+
+    if (createExamDraft && !material.examId) {
+      const draftId = ('EX_' + String(material.id || '')).slice(0, 256);
+      let draft = nextExams.find((item: any) =>
+        String(item.id || '') === draftId && isItemForCurrentMadrasah(item, req)
+      );
+      if (!draft) {
+        const targetClassId = String(material.classId || 'ALL');
+        draft = tagNewRecord({
+          id: draftId,
+          title: ('Asesmen - ' + material.title).slice(0, 240),
+          eventId: 'EV_HARIAN',
+          subject: material.subjectName || material.subjectId || '',
+          subjectId: material.subjectId || '',
+          bankCode: '',
+          questionCount: null,
+          qCount: null,
+          essayCount: null,
+          duration: 60,
+          date: '',
+          startTime: '07:30',
+          endTime: '',
+          type: 'pilihan_ganda',
+          weightType: 'auto',
+          weightPg: 50,
+          weightEssay: 50,
+          autoBlock: 0,
+          classes: targetClassId ? [targetClassId] : ['ALL'],
+          shuffleQ: false,
+          shuffleOpt: false,
+          showScore: false,
+          allowDownloadResult: false,
+          status: 'Draft',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          sourceLearningMaterialId: material.id
+        }, req);
+        nextExams.push(draft);
+      }
+      material = { ...material, examId: draftId };
+    }
+
+    if (resolved.index >= 0) nextLessonPlans[resolved.index] = { ...nextLessonPlans[resolved.index], ...material };
+    else nextLessonPlans.push(material);
+
+    batch.push({ key: 'lessonPlans', value: nextLessonPlans });
+    if (createLkpdDraft) batch.push({ key: 'lkpdList', value: nextLkpds });
+    if (createExamDraft) batch.push({ key: 'exams', value: nextExams });
+    await saveDataBatch(batch);
+
+    lessonPlans = nextLessonPlans;
+    if (createLkpdDraft) lkpdList = nextLkpds;
+    if (createExamDraft) exams = nextExams;
+
+    res.json({
+      success: true,
+      material,
+      data: material,
+      createdDrafts: {
+        lkpdId: createLkpdDraft ? material.lkpdId : '',
+        examId: createExamDraft ? material.examId : ''
+      },
+      lessonPlans: learningMaterialsForStaffRequest(req)
+    });
   } catch (err: any) {
     const message = safeServerError(err, 'Materi gagal disimpan.');
     const status = /tidak ditemukan|tidak dapat|hanya dapat|wajib|tidak valid/i.test(message) ? 400 : 500;
