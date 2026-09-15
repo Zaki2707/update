@@ -3006,7 +3006,7 @@ function resolveRuntimePath(rawPath: string): string {
   return path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
 }
 
-function collectOfflineHttpsAltNames(): Array<{ type: number; value?: string; ip?: string }> {
+function collectOfflineHttpsAltNames(): any[] {
   const dnsNames = new Set<string>(['localhost']);
   const ipNames = new Set<string>(['127.0.0.1']);
 
