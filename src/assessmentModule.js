@@ -3148,6 +3148,22 @@ function deleteExam(id) {
             return;
         }
 
+        const onlineServerAuthoritative = typeof window.isOnlineServerAuthoritativeStorage === 'function'
+            && window.isOnlineServerAuthoritativeStorage();
+
+        // Pertahankan perilaku online yang sudah stabil. Pada mode online,
+        // omission dari /api/sync-state bukan sinyal delete; DELETE khusus tetap
+        // melakukan penghapusan seperti sebelumnya.
+        if (onlineServerAuthoritative) {
+            appState.exams = (appState.exams || []).filter(e => String(e?.id) !== examId);
+            saveState('exams');
+            fetch(`/api/exams/${encodeURIComponent(examId)}`, { method: 'DELETE' })
+                .catch(err => console.warn('Error deleting exam API:', err));
+            showToast('Jadwal ujian berhasil dihapus!', 'success');
+            renderAssessmentModule(document.getElementById('view-container'), 'jadwal');
+            return;
+        }
+
         const syncExamListFromServer = async () => {
             const refreshRes = await fetch('/api/exams', { cache: 'no-store' });
             const refreshData = await refreshRes.json().catch(() => null);
@@ -3162,17 +3178,15 @@ function deleteExam(id) {
         };
 
         try {
-            // DELETE adalah satu-satunya jalur destruktif. Jangan panggil saveState('exams')
-            // sebelum DELETE karena pada mode offline /api/sync-state dapat lebih dulu
-            // menghapus item dan membuat DELETE berikutnya menghasilkan 404 palsu.
+            // OFFLINE ONLY: DELETE adalah satu-satunya jalur destruktif.
+            // Jangan panggil saveState('exams') sebelum DELETE karena /api/sync-state
+            // offline memakai replace-list dan dapat menghapus item lebih dulu.
             const deleteRes = await fetch(`/api/exams/${encodeURIComponent(examId)}`, {
                 method: 'DELETE'
             });
             const deleteData = await deleteRes.json().catch(() => null);
 
             if (deleteRes.ok) {
-                // DELETE sudah dipersist server. Commit state lokal langsung agar kegagalan
-                // GET sesudahnya tidak membalikkan operasi yang sebenarnya sudah berhasil.
                 appState.exams = (appState.exams || []).filter(ex => String(ex?.id) !== examId);
                 if (typeof window.safeSetLocalStorage === 'function') {
                     window.safeSetLocalStorage('madrasah_exams', appState.exams);
@@ -3186,8 +3200,8 @@ function deleteExam(id) {
                 throw new Error(deleteData?.message || `Gagal menghapus ujian (HTTP ${deleteRes.status}).`);
             }
 
-            // 404 dapat terjadi bila item sudah dihapus oleh client/tab lain. Rekonsiliasi
-            // hanya pada kasus ini dan anggap sukses bila server memastikan ID memang hilang.
+            // 404 offline dapat berarti state sudah lebih dulu terhapus/stale.
+            // Rekonsiliasi dan anggap sukses hanya jika server memastikan ID sudah hilang.
             const examsAfterDelete = await syncExamListFromServer();
             const stillExists = examsAfterDelete.some(ex => String(ex?.id) === examId);
             if (stillExists) {
