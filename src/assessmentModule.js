@@ -3141,12 +3141,56 @@ async function saveExam(e) {
 }
 
 function deleteExam(id) {
-    showConfirmModal('Apakah Anda yakin ingin menghapus jadwal ujian ini?', () => {
-        appState.exams = (appState.exams || []).filter(e => String(e.id) !== String(id));
-        saveState('exams');
-        fetch(`/api/exams/${id}`, { method: 'DELETE' }).catch(err => console.warn('Error deleting exam API:', err));
-        showToast('Jadwal ujian berhasil dihapus!', 'success');
-        renderAssessmentModule(document.getElementById('view-container'), 'jadwal');
+    showConfirmModal('Apakah Anda yakin ingin menghapus jadwal ujian ini?', async () => {
+        const examId = String(id || '').trim();
+        if (!examId) {
+            showToast('ID ujian tidak valid.', 'error');
+            return;
+        }
+
+        const syncExamListFromServer = async () => {
+            const refreshRes = await fetch('/api/exams', { cache: 'no-store' });
+            const refreshData = await refreshRes.json().catch(() => null);
+            if (!refreshRes.ok || !refreshData?.success || !Array.isArray(refreshData.exams)) {
+                throw new Error(refreshData?.message || `Gagal menyinkronkan daftar ujian (HTTP ${refreshRes.status}).`);
+            }
+            appState.exams = refreshData.exams;
+            if (typeof window.safeSetLocalStorage === 'function') {
+                window.safeSetLocalStorage('madrasah_exams', appState.exams);
+            }
+            return refreshData.exams;
+        };
+
+        try {
+            // DELETE adalah satu-satunya jalur destruktif. Jangan panggil saveState('exams')
+            // sebelum DELETE karena pada mode offline /api/sync-state dapat lebih dulu
+            // menghapus item dan membuat DELETE berikutnya menghasilkan 404 palsu.
+            const deleteRes = await fetch(`/api/exams/${encodeURIComponent(examId)}`, {
+                method: 'DELETE'
+            });
+            const deleteData = await deleteRes.json().catch(() => null);
+
+            if (!deleteRes.ok && deleteRes.status !== 404) {
+                throw new Error(deleteData?.message || `Gagal menghapus ujian (HTTP ${deleteRes.status}).`);
+            }
+
+            const examsAfterDelete = await syncExamListFromServer();
+            const stillExists = examsAfterDelete.some(ex => String(ex?.id) === examId);
+            if (stillExists) {
+                throw new Error('Ujian masih ditemukan setelah penghapusan. Silakan coba lagi.');
+            }
+
+            showToast(
+                deleteRes.status === 404
+                    ? 'Jadwal ujian sudah tidak ada dan daftar telah disinkronkan.'
+                    : 'Jadwal ujian berhasil dihapus!',
+                'success'
+            );
+            renderAssessmentModule(document.getElementById('view-container'), 'jadwal');
+        } catch (err) {
+            console.warn('Error deleting exam API:', err);
+            showToast(err?.message || 'Gagal menghapus jadwal ujian.', 'error');
+        }
     });
 }
 
