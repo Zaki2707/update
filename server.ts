@@ -2992,6 +2992,117 @@ const app = express();
 export const appExport = app;
 export default app;
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+const offlineHttpsRequested = isOfflineMode && /^(1|true|yes|on)$/i.test(String(process.env.USE_HTTPS || '').trim());
+
+type OfflineHttpsRuntimeOptions = {
+  key: string | Buffer;
+  cert: string | Buffer;
+  generated: boolean;
+  certPath: string;
+};
+
+function resolveRuntimePath(rawPath: string): string {
+  return path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
+}
+
+function collectOfflineHttpsAltNames(): Array<{ type: number; value?: string; ip?: string }> {
+  const dnsNames = new Set<string>(['localhost']);
+  const ipNames = new Set<string>(['127.0.0.1']);
+
+  try {
+    const host = String(os.hostname() || '').trim();
+    if (host) dnsNames.add(host);
+
+    const ifaces = os.networkInterfaces();
+    for (const entries of Object.values(ifaces)) {
+      for (const iface of entries || []) {
+        if (iface.family === 'IPv4' && !iface.internal && iface.address) {
+          ipNames.add(String(iface.address));
+        }
+      }
+    }
+  } catch (_) {}
+
+  String(process.env.OFFLINE_HTTPS_HOSTNAMES || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean)
+    .forEach(name => dnsNames.add(name));
+
+  return [
+    ...Array.from(dnsNames).map(value => ({ type: 2, value })),
+    ...Array.from(ipNames).map(ip => ({ type: 7, ip }))
+  ];
+}
+
+async function getOfflineHttpsRuntimeOptions(): Promise<OfflineHttpsRuntimeOptions | null> {
+  // SECURITY/COMPATIBILITY BOUNDARY: local HTTPS is strictly an OFFLINE feature.
+  // Cloud Run/online continues to rely on the platform TLS terminator and app.listen().
+  if (!offlineHttpsRequested) return null;
+
+  const customKeyPath = String(process.env.OFFLINE_HTTPS_KEY_PATH || '').trim();
+  const customCertPath = String(process.env.OFFLINE_HTTPS_CERT_PATH || '').trim();
+  if (Boolean(customKeyPath) !== Boolean(customCertPath)) {
+    throw new Error('OFFLINE_HTTPS_KEY_PATH dan OFFLINE_HTTPS_CERT_PATH harus diisi berpasangan.');
+  }
+
+  if (customKeyPath && customCertPath) {
+    const keyPath = resolveRuntimePath(customKeyPath);
+    const certPath = resolveRuntimePath(customCertPath);
+    if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+      throw new Error('File sertifikat HTTPS offline tidak ditemukan. Periksa OFFLINE_HTTPS_KEY_PATH/OFFLINE_HTTPS_CERT_PATH.');
+    }
+    return {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+      generated: false,
+      certPath
+    };
+  }
+
+  const secretsDir = path.join(process.cwd(), '.madrasah-secrets');
+  const keyPath = path.join(secretsDir, 'offline-https-key.pem');
+  const certPath = path.join(secretsDir, 'offline-https-cert.pem');
+
+  if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+    return {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+      generated: true,
+      certPath
+    };
+  }
+
+  fs.mkdirSync(secretsDir, { recursive: true });
+
+  const notAfterDate = new Date();
+  notAfterDate.setFullYear(notAfterDate.getFullYear() + 5);
+
+  const attrs = [{ name: 'commonName', value: 'Madrasah Bisa Offline' }];
+  const pems = await selfsigned.generate(attrs, {
+    algorithm: 'sha256',
+    keyType: 'rsa',
+    keySize: 2048,
+    notAfterDate,
+    extensions: [
+      { name: 'basicConstraints', cA: false, critical: true },
+      { name: 'keyUsage', digitalSignature: true, keyEncipherment: true, critical: true },
+      { name: 'extKeyUsage', serverAuth: true, clientAuth: true },
+      { name: 'subjectAltName', altNames: collectOfflineHttpsAltNames() }
+    ]
+  });
+
+  fs.writeFileSync(keyPath, pems.private, { encoding: 'utf8', mode: 0o600 });
+  fs.writeFileSync(certPath, pems.cert, { encoding: 'utf8', mode: 0o644 });
+
+  return {
+    key: pems.private,
+    cert: pems.cert,
+    generated: true,
+    certPath
+  };
+}
 if (isOnlineMode) app.set('trust proxy', 1);
 
 // ONLINE persistence gate: never acknowledge a mutating API request when Cloud SQL is unavailable.
@@ -19686,11 +19797,14 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, "0.0.0.0", 1024, () => {
+  const offlineHttpsOptions = await getOfflineHttpsRuntimeOptions();
+  const localProtocol = offlineHttpsOptions ? 'https' : 'http';
+
+  const onServerListening = () => {
     console.log(`\n======================================================`);
     console.log(`  MADRASAH BISA CBT & MANAJEMEN SERVER SIAP`);
     console.log(`======================================================`);
-    console.log(`  > Akses Lokal Laptop : http://localhost:${PORT}`);
+    console.log(`  > Akses Lokal Laptop : ${localProtocol}://localhost:${PORT}`);
     
     let hasLan = false;
     try {
@@ -19700,7 +19814,7 @@ async function startServer() {
       for (const name of Object.keys(ifaces)) {
         for (const iface of ifaces[name] || []) {
           if (iface.family === 'IPv4' && !iface.internal) {
-            console.log(`  > Akses HP Siswa (LAN/Wi-Fi): http://${iface.address}:${PORT}`);
+            console.log(`  > Akses HP Siswa (LAN/Wi-Fi): ${localProtocol}://${iface.address}:${PORT}`);
             hasLan = true;
           }
         }
@@ -19709,11 +19823,24 @@ async function startServer() {
       console.warn('[Startup] Network interface enumeration unavailable:', networkErr?.code || 'UNKNOWN_ERROR');
     }
     if (!hasLan) {
-      console.log(`  > Akses Jaringan: http://0.0.0.0:${PORT}`);
+      console.log(`  > Akses Jaringan: ${localProtocol}://0.0.0.0:${PORT}`);
+    }
+    if (offlineHttpsOptions?.generated) {
+      console.log(`  > HTTPS Offline: sertifikat lokal aktif. Perangkat siswa harus mempercayai sertifikat agar kamera/WebRTC diizinkan browser.`);
+      console.log(`  > Sertifikat publik lokal: ${offlineHttpsOptions.certPath}`);
+    } else if (offlineHttpsOptions) {
+      console.log(`  > HTTPS Offline: memakai sertifikat yang dikonfigurasi administrator.`);
     }
     console.log(`  > Connection Backlog: 1024 connections max`);
     console.log(`======================================================\n`);
-  });
+  };
+
+  // Online/Cloud Run intentionally keeps the existing HTTP listener because TLS is
+  // terminated by Cloud Run. HTTPS is created only for explicitly-enabled OFFLINE runtime.
+  const server = offlineHttpsOptions
+    ? https.createServer({ key: offlineHttpsOptions.key, cert: offlineHttpsOptions.cert }, app)
+        .listen(PORT, "0.0.0.0", 1024, onServerListening)
+    : app.listen(PORT, "0.0.0.0", 1024, onServerListening);
 
   // High-performance WebSocket Signaling Server for WebRTC P2P
   try {
