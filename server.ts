@@ -5294,6 +5294,22 @@ function sanitizeLearningMaterialForStudent(material: any): any {
   };
 }
 
+function learningEngagementPolicy(material: any): { minActiveSeconds: number; requireAllBlocks: boolean } {
+  const policy = material?.engagementPolicy && typeof material.engagementPolicy === 'object' && !Array.isArray(material.engagementPolicy)
+    ? material.engagementPolicy
+    : {};
+  const minActiveSeconds = Math.max(0, Math.min(3600, Math.floor(Number(policy.minActiveSeconds ?? material?.minActiveSeconds ?? 45) || 0)));
+  return {
+    minActiveSeconds,
+    requireAllBlocks: policy.requireAllBlocks === false ? false : true
+  };
+}
+
+function learningBlockIds(material: any): string[] {
+  const blocks = Array.isArray(material?.blocks) ? material.blocks : [];
+  return blocks.map((block: any, index: number) => String(block?.id || `block_${index + 1}`));
+}
+
 function sanitizeLearningMaterialMutation(req: any, raw: any, existing: any = {}): any {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('Payload materi tidak valid.');
@@ -5309,6 +5325,16 @@ function sanitizeLearningMaterialMutation(req: any, raw: any, existing: any = {}
   const subjectId = String(raw.subjectId ?? raw.subject ?? existing.subjectId ?? '').trim().slice(0, 160);
   const lkpdId = String(raw.lkpdId || '').trim().slice(0, 256);
   const examId = String(raw.examId || '').trim().slice(0, 256);
+  const rawPolicy = raw.engagementPolicy && typeof raw.engagementPolicy === 'object' && !Array.isArray(raw.engagementPolicy)
+    ? raw.engagementPolicy
+    : {};
+  const existingPolicy = existing.engagementPolicy && typeof existing.engagementPolicy === 'object' && !Array.isArray(existing.engagementPolicy)
+    ? existing.engagementPolicy
+    : {};
+  const engagementPolicy = {
+    minActiveSeconds: Math.max(0, Math.min(3600, Math.floor(Number(rawPolicy.minActiveSeconds ?? existingPolicy.minActiveSeconds ?? 45) || 0))),
+    requireAllBlocks: rawPolicy.requireAllBlocks === false ? false : true
+  };
 
   if (isTeacherRequest(req) && !teacherCanUseLearningMaterialPayload(req, { ...existing, ...raw, subjectId })) {
     throw new Error('Guru hanya dapat membuat materi untuk mata pelajaran yang diampu.');
@@ -5342,6 +5368,7 @@ function sanitizeLearningMaterialMutation(req: any, raw: any, existing: any = {}
     blocks: sanitizeLearningBlocks(raw.blocks || existing.blocks || []),
     lkpdId,
     examId,
+    engagementPolicy,
     prerequisiteMaterialIds: Array.isArray(raw.prerequisiteMaterialIds)
       ? raw.prerequisiteMaterialIds.map((value: any) => String(value).trim().slice(0, 256)).filter(Boolean).slice(0, 20)
       : (Array.isArray(existing.prerequisiteMaterialIds) ? existing.prerequisiteMaterialIds : []),
@@ -15814,6 +15841,7 @@ app.get("/api/learning/progress", requireAuth, (req: any, res) => {
     const byStudent = new Map(progressRows.map((item: any) => [String(item.studentId || ''), item]));
     const rows = targetStudents.map((student: any) => {
       const progress = byStudent.get(String(student.id || '')) || null;
+      const viewedBlockCount = Array.isArray(progress?.viewedBlockIds) ? progress.viewedBlockIds.length : 0;
       return {
         studentId: String(student.id || ''),
         studentName: String(student.name || ''),
@@ -15822,6 +15850,8 @@ app.get("/api/learning/progress", requireAuth, (req: any, res) => {
         className: String(student.className || ''),
         status: progress?.status || 'not_started',
         progressPercent: Number(progress?.progressPercent || 0),
+        activeSeconds: Number(progress?.activeSeconds || 0),
+        viewedBlockCount,
         viewedAt: progress?.viewedAt || '',
         completedAt: progress?.completedAt || '',
         updatedAt: progress?.updatedAt || ''
@@ -15860,6 +15890,23 @@ app.post("/api/learning/progress", requireAuth, requireRole(['student', 'siswa',
   const key = learningProgressKey(req, authUser.id, materialId);
   const requestedStatus = String(req.body?.status || '').toLowerCase();
   const progressPercent = Math.max(0, Math.min(100, Math.floor(Number(req.body?.progressPercent ?? (requestedStatus === 'completed' ? 100 : 10)) || 0)));
+  const activeSeconds = Math.max(0, Math.min(24 * 3600, Math.floor(Number(req.body?.activeSeconds || 0) || 0)));
+  const viewedBlockIds = Array.isArray(req.body?.viewedBlockIds)
+    ? Array.from(new Set(req.body.viewedBlockIds.map((value: any) => String(value).trim().slice(0, 256)).filter(Boolean))).slice(0, 200)
+    : [];
+  if (requestedStatus === 'completed' || progressPercent >= 100) {
+    const policy = learningEngagementPolicy(resolved.material);
+    if (activeSeconds < policy.minActiveSeconds) {
+      return res.status(423).json({ success: false, message: `Baca materi minimal ${policy.minActiveSeconds} detik aktif sebelum selesai.` });
+    }
+    if (policy.requireAllBlocks) {
+      const requiredBlockIds = learningBlockIds(resolved.material);
+      const seen = new Set(viewedBlockIds.map(String));
+      if (requiredBlockIds.length > 0 && !requiredBlockIds.every((id: string) => seen.has(id))) {
+        return res.status(423).json({ success: false, message: 'Semua bagian materi harus terlihat sebelum selesai.' });
+      }
+    }
+  }
   const finalStatus = progressPercent >= 100 || requestedStatus === 'completed'
     ? 'completed'
     : (progressPercent > 0 || requestedStatus === 'viewed' ? 'in_progress' : 'not_started');
@@ -15880,6 +15927,8 @@ app.post("/api/learning/progress", requireAuth, requireRole(['student', 'siswa',
     classId: String(own.student.classId || own.student.class_id || ''),
     status: finalStatus,
     progressPercent: finalStatus === 'completed' ? 100 : Math.max(progressPercent, Number(existing.progressPercent || 0)),
+    activeSeconds: Math.max(activeSeconds, Number(existing.activeSeconds || 0)),
+    viewedBlockIds: viewedBlockIds.length > 0 ? viewedBlockIds : (Array.isArray(existing.viewedBlockIds) ? existing.viewedBlockIds : []),
     viewedAt: existing.viewedAt || nowIso,
     completedAt: finalStatus === 'completed' ? (existing.completedAt || nowIso) : (existing.completedAt || ''),
     updatedAt: nowIso,
