@@ -2992,6 +2992,172 @@ const app = express();
 export const appExport = app;
 export default app;
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+const offlineHttpsRequested = !isTrustedCloudRunRuntime && isOfflineMode && /^(1|true|yes|on)$/i.test(String(process.env.USE_HTTPS || '').trim());
+
+type OfflineHttpsRuntimeOptions = {
+  key: string | Buffer;
+  cert: string | Buffer;
+  generated: boolean;
+  certPath: string;
+  trustCertPath?: string;
+};
+
+function resolveRuntimePath(rawPath: string): string {
+  return path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
+}
+
+function collectOfflineHttpsAltNames(): any[] {
+  const dnsNames = new Set<string>(['localhost']);
+  const ipNames = new Set<string>(['127.0.0.1']);
+
+  try {
+    const host = String(os.hostname() || '').trim();
+    if (host) dnsNames.add(host);
+
+    const ifaces = os.networkInterfaces();
+    for (const entries of Object.values(ifaces)) {
+      for (const iface of entries || []) {
+        if (iface.family === 'IPv4' && !iface.internal && iface.address) {
+          ipNames.add(String(iface.address));
+        }
+      }
+    }
+  } catch (_) {}
+
+  String(process.env.OFFLINE_HTTPS_HOSTNAMES || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean)
+    .forEach(name => dnsNames.add(name));
+
+  return [
+    ...Array.from(dnsNames).map(value => ({ type: 2, value })),
+    ...Array.from(ipNames).map(ip => ({ type: 7, ip }))
+  ];
+}
+
+async function getOfflineHttpsRuntimeOptions(): Promise<OfflineHttpsRuntimeOptions | null> {
+  // SECURITY/COMPATIBILITY BOUNDARY: local HTTPS is strictly for a LOCAL OFFLINE runtime.
+  // Trusted Cloud Run always keeps the normal HTTP listener behind the platform TLS terminator,
+  // even if APP_MODE=offline or USE_HTTPS=true is accidentally configured there.
+  if (!offlineHttpsRequested) return null;
+
+  const customKeyPath = String(process.env.OFFLINE_HTTPS_KEY_PATH || '').trim();
+  const customCertPath = String(process.env.OFFLINE_HTTPS_CERT_PATH || '').trim();
+  if (Boolean(customKeyPath) !== Boolean(customCertPath)) {
+    throw new Error('OFFLINE_HTTPS_KEY_PATH dan OFFLINE_HTTPS_CERT_PATH harus diisi berpasangan.');
+  }
+
+  if (customKeyPath && customCertPath) {
+    const keyPath = resolveRuntimePath(customKeyPath);
+    const certPath = resolveRuntimePath(customCertPath);
+    if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+      throw new Error('File sertifikat HTTPS offline tidak ditemukan. Periksa OFFLINE_HTTPS_KEY_PATH/OFFLINE_HTTPS_CERT_PATH.');
+    }
+    return {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+      generated: false,
+      certPath
+    };
+  }
+
+  const secretsDir = path.join(process.cwd(), '.madrasah-secrets');
+  const caKeyPath = path.join(secretsDir, 'offline-https-ca-key.pem');
+  const caCertPath = path.join(secretsDir, 'offline-https-ca-cert.pem');
+  const keyPath = path.join(secretsDir, 'offline-https-key.pem');
+  const certPath = path.join(secretsDir, 'offline-https-cert.pem');
+  const metaPath = path.join(secretsDir, 'offline-https-meta.json');
+  fs.mkdirSync(secretsDir, { recursive: true });
+
+  let caKey: string;
+  let caCert: string;
+
+  if (fs.existsSync(caKeyPath) && fs.existsSync(caCertPath)) {
+    caKey = fs.readFileSync(caKeyPath, 'utf8');
+    caCert = fs.readFileSync(caCertPath, 'utf8');
+  } else {
+    const caNotAfterDate = new Date();
+    caNotAfterDate.setFullYear(caNotAfterDate.getFullYear() + 10);
+    const caPems = await selfsigned.generate(
+      [{ name: 'commonName', value: 'Madrasah Bisa Offline Local CA' }],
+      {
+        algorithm: 'sha256',
+        keyType: 'rsa',
+        keySize: 2048,
+        notAfterDate: caNotAfterDate,
+        extensions: [
+          { name: 'basicConstraints', cA: true, critical: true },
+          { name: 'keyUsage', keyCertSign: true, cRLSign: true, digitalSignature: true, critical: true }
+        ] as any
+      }
+    );
+    caKey = caPems.private;
+    caCert = caPems.cert;
+    fs.writeFileSync(caKeyPath, caKey, { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(caCertPath, caCert, { encoding: 'utf8', mode: 0o644 });
+  }
+
+  const altNames = collectOfflineHttpsAltNames();
+  const sanSignature = altNames
+    .map((entry: any) => entry.type === 7 ? `IP:${entry.ip}` : `DNS:${entry.value}`)
+    .sort()
+    .join('|');
+  const caFingerprint = new crypto.X509Certificate(caCert).fingerprint256;
+
+  let reuseLeaf = false;
+  if (fs.existsSync(keyPath) && fs.existsSync(certPath) && fs.existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      const leafCert = new crypto.X509Certificate(fs.readFileSync(certPath));
+      const validToMs = Date.parse(leafCert.validTo);
+      reuseLeaf =
+        meta?.sanSignature === sanSignature &&
+        meta?.caFingerprint === caFingerprint &&
+        Number.isFinite(validToMs) &&
+        validToMs > Date.now() + (24 * 60 * 60 * 1000);
+    } catch (_) {
+      reuseLeaf = false;
+    }
+  }
+
+  if (!reuseLeaf) {
+    const leafNotAfterDate = new Date();
+    leafNotAfterDate.setFullYear(leafNotAfterDate.getFullYear() + 2);
+    const leafPems = await selfsigned.generate(
+      [{ name: 'commonName', value: 'Madrasah Bisa Offline' }],
+      {
+        algorithm: 'sha256',
+        keyType: 'rsa',
+        keySize: 2048,
+        notAfterDate: leafNotAfterDate,
+        ca: { key: caKey, cert: caCert },
+        extensions: [
+          { name: 'basicConstraints', cA: false, critical: true },
+          { name: 'keyUsage', digitalSignature: true, keyEncipherment: true, critical: true },
+          { name: 'extKeyUsage', serverAuth: true },
+          { name: 'subjectAltName', altNames }
+        ] as any
+      }
+    );
+
+    fs.writeFileSync(keyPath, leafPems.private, { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(certPath, leafPems.cert, { encoding: 'utf8', mode: 0o644 });
+    fs.writeFileSync(metaPath, JSON.stringify({ sanSignature, caFingerprint }, null, 2), { encoding: 'utf8' });
+  }
+
+  const leafKey = fs.readFileSync(keyPath);
+  const leafCert = fs.readFileSync(certPath, 'utf8');
+
+  return {
+    key: leafKey,
+    cert: leafCert + '\n' + caCert,
+    generated: true,
+    certPath,
+    trustCertPath: caCertPath
+  };
+}
 if (isOnlineMode) app.set('trust proxy', 1);
 
 // ONLINE persistence gate: never acknowledge a mutating API request when Cloud SQL is unavailable.
@@ -19686,11 +19852,14 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, "0.0.0.0", 1024, () => {
+  const offlineHttpsOptions = await getOfflineHttpsRuntimeOptions();
+  const localProtocol = offlineHttpsOptions ? 'https' : 'http';
+
+  const onServerListening = () => {
     console.log(`\n======================================================`);
     console.log(`  MADRASAH BISA CBT & MANAJEMEN SERVER SIAP`);
     console.log(`======================================================`);
-    console.log(`  > Akses Lokal Laptop : http://localhost:${PORT}`);
+    console.log(`  > Akses Lokal Laptop : ${localProtocol}://localhost:${PORT}`);
     
     let hasLan = false;
     try {
@@ -19700,7 +19869,7 @@ async function startServer() {
       for (const name of Object.keys(ifaces)) {
         for (const iface of ifaces[name] || []) {
           if (iface.family === 'IPv4' && !iface.internal) {
-            console.log(`  > Akses HP Siswa (LAN/Wi-Fi): http://${iface.address}:${PORT}`);
+            console.log(`  > Akses HP Siswa (LAN/Wi-Fi): ${localProtocol}://${iface.address}:${PORT}`);
             hasLan = true;
           }
         }
@@ -19709,11 +19878,24 @@ async function startServer() {
       console.warn('[Startup] Network interface enumeration unavailable:', networkErr?.code || 'UNKNOWN_ERROR');
     }
     if (!hasLan) {
-      console.log(`  > Akses Jaringan: http://0.0.0.0:${PORT}`);
+      console.log(`  > Akses Jaringan: ${localProtocol}://0.0.0.0:${PORT}`);
+    }
+    if (offlineHttpsOptions?.generated) {
+      console.log(`  > HTTPS Offline: sertifikat lokal aktif. Perangkat siswa harus mempercayai sertifikat agar kamera/WebRTC diizinkan browser.`);
+      console.log(`  > CA lokal untuk dipercaya perangkat: ${offlineHttpsOptions.trustCertPath || offlineHttpsOptions.certPath}`);
+    } else if (offlineHttpsOptions) {
+      console.log(`  > HTTPS Offline: memakai sertifikat yang dikonfigurasi administrator.`);
     }
     console.log(`  > Connection Backlog: 1024 connections max`);
     console.log(`======================================================\n`);
-  });
+  };
+
+  // Online/Cloud Run intentionally keeps the existing HTTP listener because TLS is
+  // terminated by Cloud Run. HTTPS is created only for explicitly-enabled OFFLINE runtime.
+  const server = offlineHttpsOptions
+    ? https.createServer({ key: offlineHttpsOptions.key, cert: offlineHttpsOptions.cert }, app)
+        .listen(PORT, "0.0.0.0", 1024, onServerListening)
+    : app.listen(PORT, "0.0.0.0", 1024, onServerListening);
 
   // High-performance WebSocket Signaling Server for WebRTC P2P
   try {
