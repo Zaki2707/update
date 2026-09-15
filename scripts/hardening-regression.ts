@@ -95,6 +95,8 @@ function testServerGuards() {
   assert.match(server, /hasHydratedPersistentState = true;[\s\S]*await runOneTimeMigrations\(\)/);
   assert.match(server, /reason,[\s\S]*readyAt: onlineRuntimeReadyAt/);
   assert.match(server, /if \(!isOnlineMode && connection\.host !== 'localhost'\)/);
+assert.equal(server.includes("connection.host === 'localhost' ? 2000"), false, 'offline localhost PostgreSQL must not use the legacy 2s timeout');
+assert.match(server, /connectionTimeoutMillis,/);
 assert.match(server, /const offlineHttpsRequested = !isTrustedCloudRunRuntime && isOfflineMode &&/);
 assert.match(server, /https\.createServer\(\{ key: offlineHttpsOptions\.key, cert: offlineHttpsOptions\.cert \}, app\)/);
 assert.equal(server.includes('const offlineHttpsRequested = isOnlineMode'), false, 'offline HTTPS must never be enabled by online mode');
