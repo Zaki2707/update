@@ -456,15 +456,14 @@ export default function () {
     }, headers, 'POST /api/exam/attempt/finish [finalization]');
 
     finishRequestCount.add(1);
+    const transportLikeFailure = isRetryableStatus(finishRes.status);
+    finishTransportFail.add(transportLikeFailure);
 
     if (finishRes.status === 200) {
       finishOk = true;
       finishDirectSuccessCount.add(1);
       break;
     }
-
-    const transportLikeFailure = isRetryableStatus(finishRes.status);
-    finishTransportFail.add(transportLikeFailure);
 
     // A lost finish response is ambiguous: the server may already have committed
     // completion. Reconcile authoritative state BEFORE deciding to submit again.
