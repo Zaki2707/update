@@ -1,4 +1,5 @@
 import './securityConsoleGuard.js';
+import './realtimeExamSnapshotGuard.js';
 
 // Robust fetch response .json() fallback for non-JSON or HTML responses
 const originalFetchJson = Response.prototype.json;
