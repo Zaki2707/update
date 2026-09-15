@@ -95,6 +95,9 @@ function testServerGuards() {
   assert.match(server, /hasHydratedPersistentState = true;[\s\S]*await runOneTimeMigrations\(\)/);
   assert.match(server, /reason,[\s\S]*readyAt: onlineRuntimeReadyAt/);
   assert.match(server, /if \(!isOnlineMode && connection\.host !== 'localhost'\)/);
+assert.match(server, /const offlineHttpsRequested = isOfflineMode &&/);
+assert.match(server, /https\.createServer\(\{ key: offlineHttpsOptions\.key, cert: offlineHttpsOptions\.cert \}, app\)/);
+assert.equal(server.includes('const offlineHttpsRequested = isOnlineMode'), false, 'offline HTTPS must never be enabled by online mode');
   for (const source of [server, drizzleConfig, drizzleDb]) {
     assert.match(source, /resolveSqlConnection\(/);
     assert.equal(source.includes('process.env.DATABASE_URL'), false);
@@ -124,7 +127,7 @@ function testServerGuards() {
   assert.match(app, /getPhotoHtmlSrc/);
   assert.match(mainEntry, /madrasah:runtime-ready/);
   assert.match(indexHtml, /id="app-initial-loader-status"/);
-  const listenIndex = server.indexOf('const server = app.listen(PORT, "0.0.0.0"');
+  const listenIndex = server.indexOf('app.listen(PORT, "0.0.0.0"');
   const backgroundInitIndex = server.lastIndexOf('startOnlineRuntimeInitializationLoop();');
   assert.equal(listenIndex >= 0, true, 'server listen marker missing');
   assert.equal(backgroundInitIndex > listenIndex, true, 'online DB initialization must run after the port is listening');
