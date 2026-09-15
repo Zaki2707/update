@@ -233,6 +233,30 @@ function toggleStudentDashboardView(view) {
 }
 window.toggleStudentDashboardView = toggleStudentDashboardView;
 
+function isStudentDashboardFeatureEnabled(feature) {
+    const settings = appState.settings || {};
+    const studentFeatures = settings.studentFeatures || {};
+    if (feature === 'learning' && settings.learningModuleEnabled === false) return false;
+    if (feature === 'games' && settings.gameModuleEnabled === false) return false;
+    return studentFeatures[feature] === undefined ? true : studentFeatures[feature] !== false;
+}
+
+function renderStudentDashboardCard({ route, buttonClass, iconClass, titleClass, actionClass, icon, title, description, action }) {
+    return `
+        <button type="button" onclick="navigateTo('${route}')" class="${buttonClass}">
+            <div class="${iconClass}">
+                <i class="fa-solid ${icon} text-2xl"></i>
+            </div>
+            <h3 class="${titleClass}">${title}</h3>
+            <p class="text-xs text-slate-500 mt-2 leading-relaxed">${description}</p>
+            <div class="${actionClass}">
+                <span>${action}</span>
+                <i class="fa-solid fa-arrow-right group-hover:translate-x-1 transition-transform"></i>
+            </div>
+        </button>
+    `;
+}
+
 function renderStudentProfile(container) {
     const st = appState.currentUser && appState.currentUser.id 
         ? (appState.students.find(s => String(s.id) === String(appState.currentUser.id)) || appState.currentUser)
@@ -250,6 +274,52 @@ function renderStudentProfile(container) {
     if (window._studentDashboardView === 'dashboard') {
         const todayStr = new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
         const runningText = moduleEscapeHtml((appState.settings && appState.settings.runningText) ? appState.settings.runningText : 'Selamat Datang di Portal Sistem Informasi Madrasah Terintegrasi! Tetap Semangat Berprestasi.');
+        const dashboardCards = [
+            isStudentDashboardFeatureEnabled('attendance') ? renderStudentDashboardCard({
+                route: 'absen_siswa',
+                buttonClass: 'group p-6 bg-white hover:bg-slate-50 border border-slate-200 hover:border-blue-500 rounded-3xl text-left transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer',
+                iconClass: 'w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300',
+                titleClass: 'font-bold text-lg text-slate-850 leading-snug group-hover:text-blue-600 transition-colors',
+                actionClass: 'mt-4 flex items-center gap-1.5 text-xs font-bold text-blue-600',
+                icon: 'fa-camera-retro',
+                title: 'Absen Selfie & GPS',
+                description: 'Lakukan pencatatan kehadiran mandiri Anda menggunakan verifikasi kamera depan dan lokasi GPS secara akurat.',
+                action: 'Mulai Absensi'
+            }) : '',
+            isStudentDashboardFeatureEnabled('learning') ? renderStudentDashboardCard({
+                route: 'learning_student',
+                buttonClass: 'group p-6 bg-white hover:bg-slate-50 border border-slate-200 hover:border-sky-500 rounded-3xl text-left transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer',
+                iconClass: 'w-14 h-14 bg-sky-50 text-sky-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300',
+                titleClass: 'font-bold text-lg text-slate-850 leading-snug group-hover:text-sky-600 transition-colors',
+                actionClass: 'mt-4 flex items-center gap-1.5 text-xs font-bold text-sky-600',
+                icon: 'fa-book-open-reader',
+                title: 'Belajar / Materi',
+                description: 'Buka materi yang dipublikasikan guru, ikuti alur belajar, lalu lanjutkan LKPD atau asesmen yang tersedia.',
+                action: 'Mulai Belajar'
+            }) : '',
+            isStudentDashboardFeatureEnabled('cbt') ? renderStudentDashboardCard({
+                route: 'asesmen_siswa',
+                buttonClass: 'group p-6 bg-white hover:bg-slate-50 border border-slate-200 hover:border-indigo-500 rounded-3xl text-left transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer',
+                iconClass: 'w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300',
+                titleClass: 'font-bold text-lg text-slate-850 leading-snug group-hover:text-indigo-600 transition-colors',
+                actionClass: 'mt-4 flex items-center gap-1.5 text-xs font-bold text-indigo-600',
+                icon: 'fa-file-shield',
+                title: 'CBT / Ujian Online',
+                description: 'Akses daftar ujian, asesmen, atau penilaian madrasah online yang sedang aktif dan kerjakan langsung di sini.',
+                action: 'Buka CBT'
+            }) : '',
+            isStudentDashboardFeatureEnabled('games') ? renderStudentDashboardCard({
+                route: 'game_edukasi_siswa',
+                buttonClass: 'group p-6 bg-white hover:bg-slate-50 border border-slate-200 hover:border-emerald-500 rounded-3xl text-left transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer',
+                iconClass: 'w-14 h-14 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300',
+                titleClass: 'font-bold text-lg text-slate-850 leading-snug group-hover:text-emerald-600 transition-colors',
+                actionClass: 'mt-4 flex items-center gap-1.5 text-xs font-bold text-emerald-600',
+                icon: 'fa-gamepad',
+                title: 'Game Edukasi',
+                description: 'Mainkan 15 tantangan game interaktif, petualangan belajar, dan tingkatkan poin XP & peringkat madrasah.',
+                action: 'Mulai Mainkan'
+            }) : ''
+        ].filter(Boolean);
         
         container.innerHTML = `
             <div class="space-y-6 max-w-4xl mx-auto pb-8">
@@ -290,53 +360,8 @@ function renderStudentProfile(container) {
                 </div>
 
                 <!-- Main Large Dashboard Buttons -->
-                <div class="grid grid-cols-1 ${appState.settings?.gameModuleEnabled !== false ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-6">
-                    <!-- Button 1: Absen Mandiri (Selfie & GPS) -->
-                    <button type="button" onclick="navigateTo('absen_siswa')" class="group p-6 bg-white hover:bg-slate-50 border border-slate-200 hover:border-blue-500 rounded-3xl text-left transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">
-                        <div class="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300">
-                            <i class="fa-solid fa-camera-retro text-2xl"></i>
-                        </div>
-                        <h3 class="font-bold text-lg text-slate-850 leading-snug group-hover:text-blue-600 transition-colors">Absen Selfie & GPS</h3>
-                        <p class="text-xs text-slate-500 mt-2 leading-relaxed">
-                            Lakukan pencatatan kehadiran mandiri Anda menggunakan verifikasi kamera depan dan lokasi GPS secara akurat.
-                        </p>
-                        <div class="mt-4 flex items-center gap-1.5 text-xs font-bold text-blue-600">
-                            <span>Mulai Absensi</span>
-                            <i class="fa-solid fa-arrow-right group-hover:translate-x-1 transition-transform"></i>
-                        </div>
-                    </button>
-
-                    <!-- Button 2: CBT / Ujian Online -->
-                    <button type="button" onclick="navigateTo('asesmen_siswa')" class="group p-6 bg-white hover:bg-slate-50 border border-slate-200 hover:border-indigo-500 rounded-3xl text-left transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer">
-                        <div class="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300">
-                            <i class="fa-solid fa-file-shield text-2xl"></i>
-                        </div>
-                        <h3 class="font-bold text-lg text-slate-850 leading-snug group-hover:text-indigo-600 transition-colors">CBT / Ujian Online</h3>
-                        <p class="text-xs text-slate-500 mt-2 leading-relaxed">
-                            Akses daftar ujian, asesmen, atau penilaian madrasah online yang sedang aktif dan kerjakan langsung di sini.
-                        </p>
-                        <div class="mt-4 flex items-center gap-1.5 text-xs font-bold text-indigo-600">
-                            <span>Buka CBT</span>
-                            <i class="fa-solid fa-arrow-right group-hover:translate-x-1 transition-transform"></i>
-                        </div>
-                    </button>
-
-                    <!-- Button 3: Game Edukasi Interaktif (Conditional) -->
-                    ${appState.settings?.gameModuleEnabled !== false ? `
-                    <button type="button" onclick="navigateTo('game_edukasi_siswa')" class="group p-6 bg-white hover:bg-slate-50 border border-slate-200 hover:border-emerald-500 rounded-3xl text-left transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer">
-                        <div class="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300">
-                            <i class="fa-solid fa-gamepad text-2xl"></i>
-                        </div>
-                        <h3 class="font-bold text-lg text-slate-850 leading-snug group-hover:text-emerald-600 transition-colors">Game Edukasi</h3>
-                        <p class="text-xs text-slate-500 mt-2 leading-relaxed">
-                            Mainkan 15 tantangan game interaktif, petualangan belajar, dan tingkatkan poin XP & peringkat madrasah.
-                        </p>
-                        <div class="mt-4 flex items-center gap-1.5 text-xs font-bold text-emerald-600">
-                            <span>Mulai Mainkan</span>
-                            <i class="fa-solid fa-arrow-right group-hover:translate-x-1 transition-transform"></i>
-                        </div>
-                    </button>
-                    ` : ''}
+                <div class="grid grid-cols-1 ${dashboardCards.length >= 3 ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-6">
+                    ${dashboardCards.join('')}
                 </div>
             </div>
         `;
