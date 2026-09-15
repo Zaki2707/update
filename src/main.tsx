@@ -32,6 +32,7 @@ import './calendarModule.js';
 import './bossModule.js';
 import './gameModule.js';
 import './lkpdModule.js';
+import './learningModule.js';
 
 // Smoothly dismiss the initial preloader once all styles and scripts are loaded
 function removeInitialPreloader() {
