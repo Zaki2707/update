@@ -13342,6 +13342,134 @@ app.post("/api/exam-monitoring-state", requireAuth, requireRole(['teacher', 'gur
   res.json({ success: true });
 });
 
+// Dedicated cleanup for synthetic CBT load/soak tests.
+// This endpoint intentionally refuses normal exams and never deletes the exam definition or student accounts.
+function isDedicatedLoadTestExam(exam: any): boolean {
+  if (!exam || typeof exam !== 'object') return false;
+  if (exam.loadTest === true || exam.isLoadTest === true || String(exam.testMode || '').toLowerCase() === 'load') return true;
+  const label = [exam.title, exam.name, exam.code, exam.bankCode]
+    .filter(Boolean)
+    .map((value: any) => String(value))
+    .join(' ');
+  return /\bload[\s_-]*test\b/i.test(label);
+}
+
+function cleanupExamStateKeyMatches(req: any, rawKey: string, examId: string): boolean {
+  const parsed = parseExamStateKeyForRequest(req, rawKey);
+  return Boolean(parsed && String(parsed.examId) === String(examId));
+}
+
+app.post("/api/load-test/cleanup-exam", requireAuth, requireRole(['admin', 'bos', 'superadmin']), async (req: any, res) => {
+  const examId = String(req.body?.examId || '').trim();
+  const confirmation = String(req.body?.confirm || '');
+  if (!examId) return res.status(400).json({ success: false, message: "examId wajib diisi." });
+  if (confirmation !== 'DELETE_LOAD_TEST_STATE') {
+    return res.status(400).json({ success: false, message: "Konfirmasi cleanup load test tidak valid." });
+  }
+
+  const examSource = getMemoryKeyValue('exams') || exams || [];
+  const resolved = resolveTenantItemIndexById(examSource, examId, req);
+  if (resolved.ambiguous) {
+    return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant." });
+  }
+  const exam = resolved.item;
+  if (!exam) return res.status(404).json({ success: false, message: "Ujian load test tidak ditemukan pada tenant ini." });
+  if (!isDedicatedLoadTestExam(exam)) {
+    return res.status(403).json({
+      success: false,
+      message: "Cleanup ditolak: endpoint ini hanya boleh digunakan untuk ujian khusus LOAD TEST."
+    });
+  }
+
+  const stores: Array<{ name: string; store: Record<string, any> }> = [
+    { name: 'activeExamSessions', store: activeExamSessions },
+    { name: 'completedExams', store: completedExams },
+    { name: 'forceFinishedExams', store: forceFinishedExams },
+    { name: 'studentExamAnswers', store: studentExamAnswers },
+    { name: 'studentExamQuestions', store: studentExamQuestions },
+    { name: 'studentExamMasterQuestions', store: studentExamMasterQuestions },
+    { name: 'studentTabSwitches', store: studentTabSwitches },
+    { name: 'studentOutOfTab', store: studentOutOfTab },
+    { name: 'blockedStudents', store: blockedStudents },
+    { name: 'studentLivecamFrames', store: studentLivecamFrames },
+    { name: 'studentExamGrades', store: studentExamGrades }
+  ];
+
+  const deltaDeletes: DeltaBatchWrite[] = [];
+  const memoryDeleteIndex = new Map<string, Record<string, any>>();
+  const deletedByStore: Record<string, number> = {};
+
+  for (const entry of stores) {
+    for (const key of Object.keys(entry.store || {})) {
+      if (!cleanupExamStateKeyMatches(req, key, examId)) continue;
+      deltaDeletes.push({ storeName: entry.name, itemKey: key, value: null });
+      memoryDeleteIndex.set(entry.name + '\u0000' + key, entry.store);
+      deletedByStore[entry.name] = (deletedByStore[entry.name] || 0) + 1;
+    }
+  }
+
+  const messageKeys = Object.keys(examMessages || {}).filter((key) => {
+    if (cleanupExamStateKeyMatches(req, key, examId)) return true;
+    const broadcast = parseNamespacedExamBroadcastKey(key);
+    if (broadcast && String(broadcast.examId) === examId) {
+      const expectedTenant = examStateTenant(req, undefined, examId);
+      return canonicalRealtimeTenant(broadcast.tenant) === expectedTenant;
+    }
+    return key === 'broadcast_' + examId && legacyExamIdIsUnambiguous(req, examId);
+  });
+
+  const violationKeys = Array.from(new Set([
+    resolveExamViolationLogKey(req, examId),
+    examBroadcastStateKey(req, examId),
+    legacyExamIdIsUnambiguous(req, examId) ? examId : ''
+  ].filter(Boolean))).filter((key) => Object.prototype.hasOwnProperty.call(examViolationLogs || {}, key));
+
+  try {
+    // Keep cleanup batches bounded so even a large soak run cannot create an oversized
+    // PostgreSQL parameter list or monopolize the small Cloud SQL pool.
+    const chunkSize = 400;
+    for (let offset = 0; offset < deltaDeletes.length; offset += chunkSize) {
+      const chunk = deltaDeletes.slice(offset, offset + chunkSize);
+      await saveDeltaBatchDb(chunk);
+      for (const item of chunk) {
+        const mapKey = item.storeName + '\u0000' + item.itemKey;
+        const store = memoryDeleteIndex.get(mapKey);
+        if (store) delete store[item.itemKey];
+      }
+    }
+
+    for (const key of messageKeys) delete examMessages[key];
+    for (const key of violationKeys) {
+      delete examViolationLogs[key];
+      await saveDeltaDb('examViolationLogs', key, null);
+    }
+
+    // These stores also have legacy whole-map persistence paths. Rewrite once after
+    // cleanup so an old base snapshot cannot resurrect synthetic test state.
+    await Promise.all([
+      saveData('examMessages', examMessages, true),
+      saveData('studentExamGrades', studentExamGrades, true)
+    ]);
+  } catch (err: any) {
+    return res.status(503).json({
+      success: false,
+      message: safeServerError(err, 'Cleanup state load test belum dapat disimpan. Silakan coba lagi.')
+    });
+  }
+
+  pruneStaleLivecamFrames();
+  broadcastStateUpdate('activeExamSessions');
+
+  return res.json({
+    success: true,
+    examId,
+    deletedStateEntries: deltaDeletes.length,
+    deletedMessages: messageKeys.length,
+    deletedViolationLogs: violationKeys.length,
+    deletedByStore
+  });
+});
+
 // Reset Individual Student Exam Progress API
 app.post("/api/reset-student-exam", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
   const { studentId, examId } = req.body;
