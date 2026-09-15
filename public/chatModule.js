@@ -8,6 +8,14 @@ function getChatAuthToken() {
     return currentToken ? String(currentToken) : '';
 }
 
+function getChatAuthHeaders(extra = {}) {
+    const token = getChatAuthToken();
+    return {
+        ...extra,
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+}
+
 function chatEscape(value) {
     return window.escapeHtml ? window.escapeHtml(value) : String(value ?? '').replace(/[&<>"']/g, '');
 }
@@ -40,7 +48,9 @@ window.hasAuthenticatedChatSession = hasAuthenticatedChatSession;
 async function loadChats() {
     if (!hasAuthenticatedChatSession()) return false;
     try {
-        const res = await fetch('/api/chats');
+        const res = await fetch('/api/chats', {
+            headers: getChatAuthHeaders()
+        });
         if (res.ok) {
             const json = await res.json();
             if (json.success) {
@@ -160,7 +170,7 @@ window.markChatAsRead = async function(senderId, receiverId) {
     try {
         await fetch('/api/chats/read', {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getChatAuthHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ senderId, receiverId })
         });
         
@@ -310,7 +320,7 @@ window.clearAllChats = async function(senderId, receiverId) {
         try {
             await fetch('/api/chats/clear', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getChatAuthHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ senderId, receiverId })
             });
             window.appState.chats = (window.appState.chats || []).filter(c => !(
@@ -331,7 +341,12 @@ window.clearAllChats = async function(senderId, receiverId) {
 window.deleteChatMessage = async function(msgId, senderId, receiverId) {
     showConfirmModal("Apakah Anda yakin ingin menghapus pesan ini?", async () => {
         try {
-            await fetch('/api/chats/' + msgId, { method: 'DELETE' });
+            const res = await fetch('/api/chats/' + encodeURIComponent(msgId), {
+                method: 'DELETE',
+                headers: getChatAuthHeaders()
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok || !payload?.success) throw new Error(payload?.message || 'Gagal menghapus pesan.');
             window.appState.chats = (window.appState.chats || []).filter(c => String(c.id) !== String(msgId));
             const currentModal = document.getElementById('chat-messages-container');
             if (currentModal) {
@@ -464,7 +479,7 @@ window.sendChatMessage = async function(e, senderId, receiverId, targetId, targe
     try {
         const res = await fetch('/api/chats', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getChatAuthHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(newMsg)
         });
         const payload = await res.json().catch(() => null);

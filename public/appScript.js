@@ -2191,7 +2191,8 @@ function startSession(isRefresh = false) {
     const nameEl = document.getElementById('user-display-name');
     if (nameEl) {
         if (isStudent || isTeacher) {
-            nameEl.classList.add('cursor-pointer', 'hover:text-emerald-600', 'transition-colors', 'underline', 'decoration-dotted', 'decoration-emerald-400');
+            nameEl.classList.add('cursor-pointer', 'transition-colors');
+            nameEl.classList.remove('underline', 'decoration-dotted', 'decoration-emerald-400', 'decoration-blue-400');
             nameEl.setAttribute('title', isStudent ? 'Klik untuk melihat profil saya' : 'Klik untuk melihat dan mengedit profil guru');
         } else {
             nameEl.classList.remove('cursor-pointer', 'hover:text-emerald-600', 'hover:text-blue-600', 'transition-colors', 'underline', 'decoration-dotted', 'decoration-emerald-400', 'decoration-blue-400');
@@ -2235,7 +2236,9 @@ function startSession(isRefresh = false) {
     updateSchoolLogoUI();
 
     if (nameEl && appState.currentUser) {
-        nameEl.innerText = appState.currentUser.name || '';
+        if (!renderStudentHeaderProfile()) {
+            nameEl.innerText = appState.currentUser.name || '';
+        }
     }
 
     const badge = document.getElementById('user-role-badge');
@@ -2342,6 +2345,41 @@ function logout() {
     showToast('Berhasil keluar sistem.', 'info');
 }
 window.logout = logout;
+
+function getCurrentStudentForHeader() {
+    if (!appState.currentUser) return null;
+    const role = String(appState.role || appState.currentUser.role || '').toLowerCase().trim();
+    if (!['student', 'murid', 'class_leader', 'ketua_kelas'].includes(role)) return null;
+    const current = appState.currentUser;
+    return (appState.students || []).find(s =>
+        (current.id && String(s.id) === String(current.id)) ||
+        (current.username && String(s.username || '').toLowerCase() === String(current.username).toLowerCase()) ||
+        (current.nis && String(s.nis || '') === String(current.nis))
+    ) || current;
+}
+
+function renderStudentHeaderProfile() {
+    const nameEl = document.getElementById('user-display-name');
+    const student = getCurrentStudentForHeader();
+    if (!nameEl || !student) return false;
+    const name = escapeHtml(student.name || appState.currentUser?.name || 'Murid');
+    const photo = student.photo || appState.currentUser?.photo || '';
+    const photoSrc = photo && window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(photo) : '';
+    nameEl.innerHTML = `
+        <span class="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-2.5 py-1.5 shadow-sm hover:border-blue-300 hover:bg-blue-50/70 transition">
+            <span class="w-9 h-9 rounded-full overflow-hidden bg-blue-100 text-blue-700 flex items-center justify-center border border-blue-200 shadow-xs">
+                ${photoSrc ? `<img src="${photoSrc}" class="w-full h-full object-cover" alt="Foto profil ${name}" referrerPolicy="no-referrer">` : `<i class="fa-solid fa-user-graduate text-sm"></i>`}
+            </span>
+            <span class="text-left leading-tight">
+                <span class="block text-sm font-black text-slate-900">${name}</span>
+                <span class="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Profil Siswa</span>
+            </span>
+        </span>
+    `;
+    nameEl.setAttribute('title', 'Klik untuk membuka pengaturan profil siswa');
+    return true;
+}
+window.renderStudentHeaderProfile = renderStudentHeaderProfile;
 
 function toggleSidebar() {
     const sidebar = document.getElementById('sidebar');

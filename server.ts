@@ -13911,7 +13911,7 @@ app.delete("/api/chats/:id", requireAuth, async (req: any, res) => {
   }
 });
 
-app.post("/api/chats/clear", async (req: any, res) => {
+app.post("/api/chats/clear", requireAuth, async (req: any, res) => {
   const { senderId, receiverId } = req.body;
   const authUser = req.user || getAuthUser(req);
   const authRole = String(authUser?.role || '').toLowerCase();
