@@ -389,6 +389,36 @@ function renderSettingModule(container) {
                         </div>
                     </div>
 
+                    <div class="border-t border-slate-100 pt-6 space-y-4">
+                        <h3 class="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                            <i class="fa-solid fa-toggle-on text-emerald-600"></i>
+                            <span>Tampilan Menu Siswa</span>
+                        </h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            ${[
+                                ['set-student-attendance-enabled', 'attendance', 'Absensi Siswa', 'Absen selfie/GPS dan absensi kelas ketua kelas.'],
+                                ['set-learning-enabled', 'learning', 'Belajar / Materi', 'Materi pembelajaran yang dipublikasikan guru.'],
+                                ['set-student-cbt-enabled', 'cbt', 'CBT dan LKPD', 'Jadwal ujian, asesmen CBT, dan LKPD interaktif.'],
+                                ['set-student-games-enabled', 'games', 'Game Edukasi', 'Game pembelajaran untuk siswa.']
+                            ].map(([id, key, title, desc]) => {
+                                const featureMap = appState.settings.studentFeatures || {};
+                                const checked = featureMap[key] === undefined ? true : featureMap[key] !== false;
+                                return `
+                                    <div class="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-2xl gap-3">
+                                        <div>
+                                            <span class="block text-xs font-bold text-slate-800">${title}</span>
+                                            <span class="text-[11px] text-slate-500">${desc}</span>
+                                        </div>
+                                        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                            <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} class="sr-only peer">
+                                            <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                                        </label>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+
                     <!-- Konfigurasi LiveKit SFU (WebRTC Server) -->
                     <div class="border-t border-slate-100 pt-6 space-y-4">
                         <h3 class="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
@@ -1248,6 +1278,15 @@ function saveSettings(e) {
     if (chatEnabledEl) {
         appState.settings.chatEnabled = chatEnabledEl.checked;
     }
+    appState.settings.studentFeatures = {
+        ...(appState.settings.studentFeatures || {}),
+        attendance: document.getElementById('set-student-attendance-enabled')?.checked !== false,
+        learning: document.getElementById('set-learning-enabled')?.checked !== false,
+        cbt: document.getElementById('set-student-cbt-enabled')?.checked !== false,
+        games: document.getElementById('set-student-games-enabled')?.checked !== false
+    };
+    appState.settings.learningModuleEnabled = appState.settings.studentFeatures.learning !== false;
+    appState.settings.gameModuleEnabled = appState.settings.studentFeatures.games !== false;
     if (appState.tempLogo) {
         appState.settings.schoolLogo = appState.tempLogo;
     }

@@ -2315,7 +2315,7 @@ const persistedSnapshotKeys = [
   'studentTabSwitches', 'studentOutOfTab', 'blockedStudents', 'examMessages',
   'examViolationLogs', 'settings', 'childguardRules', 'childguardLogs',
   'childguardLocations', 'childguardStatus', 'importGroups', 'photoCloudinaryMap',
-  'eduGames', 'gameAttempts', 'madrasahs', 'tokenRequests', 'usedActivationKeys'
+  'eduGames', 'gameAttempts', 'learningProgress', 'madrasahs', 'tokenRequests', 'usedActivationKeys'
 ];
 
 function cloneStateSnapshot(value: any): any {
@@ -2885,6 +2885,7 @@ function updateMemoryKey(key: string, value: any) {
   else if (key === 'photoCloudinaryMap') photoCloudinaryMap = value;
   else if (key === 'eduGames') eduGames = value;
   else if (key === 'gameAttempts') gameAttempts = value;
+  else if (key === 'learningProgress') learningProgress = value;
   else if (key === 'madrasahs') madrasahs = value;
   else if (key === 'tokenRequests') tokenRequests = value;
   else if (key === 'usedActivationKeys') usedActivationKeys = value;
@@ -2936,6 +2937,7 @@ function getMemoryKeyValue(key: string) {
   if (key === 'photoCloudinaryMap') return photoCloudinaryMap;
   if (key === 'eduGames') return eduGames;
   if (key === 'gameAttempts') return gameAttempts;
+  if (key === 'learningProgress') return learningProgress;
   if (key === 'madrasahs') return madrasahs;
   if (key === 'tokenRequests') return tokenRequests;
   if (key === 'usedActivationKeys') return usedActivationKeys;
@@ -3586,6 +3588,7 @@ let examViolationLogs: Record<string, any[]> = bootStore['examViolationLogs'] ||
 let importGroups: any[] = bootStore['importGroups'] || [];
 let eduGames: any[] = bootStore['eduGames'] || [];
 let gameAttempts: any[] = bootStore['gameAttempts'] || [];
+let learningProgress: any[] = bootStore['learningProgress'] || [];
 let childguardRules = bootStore['childguardRules'] || {};
 let childguardLogs = bootStore['childguardLogs'] || [];
 let childguardLocations = bootStore['childguardLocations'] || {};
@@ -5200,6 +5203,165 @@ function studentCanAccessLkpd(student: any, lkpd: any): boolean {
   return targets.some((target: string) => studentClasses.includes(target));
 }
 
+function isLearningMaterialRecord(item: any): boolean {
+  return Boolean(item && (String(item.recordType || '').toLowerCase() === 'learning_material' ||
+    String(item.type || '').toLowerCase() === 'learning_material'));
+}
+
+function classTargetsFromLearningMaterial(material: any): string[] {
+  const targets = [
+    ...(Array.isArray(material?.classes) ? material.classes : []),
+    ...(Array.isArray(material?.targetClasses) ? material.targetClasses : []),
+    material?.classId,
+    material?.class_id,
+    material?.className,
+    material?.targetClass
+  ].filter((value: any) => value !== undefined && value !== null && String(value).trim() !== '');
+  return Array.from(new Set(targets.map((value: any) => String(value).trim())));
+}
+
+function studentCanAccessLearningMaterial(student: any, material: any): boolean {
+  if (!student || !material || !isLearningMaterialRecord(material)) return false;
+  if (String(material.status || 'draft').toLowerCase() !== 'published') return false;
+  const targets = classTargetsFromLearningMaterial(material);
+  if (targets.length === 0 || targets.some((value: string) => ['ALL', 'SEMUA KELAS'].includes(value.toUpperCase()))) return true;
+  const studentClasses = [student.classId, student.class_id, student.className, student.class]
+    .filter(Boolean).map((value: any) => String(value).trim());
+  const normalizedStudentClasses = new Set(studentClasses.map((value: string) => value.toLowerCase()));
+  return targets.some((target: string) => normalizedStudentClasses.has(String(target).toLowerCase()));
+}
+
+function teacherCanUseLearningMaterialPayload(req: any, material: any): boolean {
+  if (!isTeacherRequest(req)) return true;
+  if (!material || typeof material !== 'object') return false;
+  const subjectRef = material.subjectId || material.subjectName || material.subject || material.mapel;
+  return Boolean(subjectRef && teacherCanAccessSubjectRef(req, subjectRef));
+}
+
+function learningMaterialsForStaffRequest(req: any): any[] {
+  const tenantMaterials = filterLessonPlansForRequest(req).filter(isLearningMaterialRecord);
+  return isTeacherRequest(req)
+    ? tenantMaterials.filter((material: any) => teacherCanUseLearningMaterialPayload(req, material))
+    : tenantMaterials;
+}
+
+function resolveLearningMaterialForRequest(req: any, materialId: any): { material: any | null; index: number; ambiguous: boolean } {
+  const matches: number[] = [];
+  for (let i = 0; i < (lessonPlans || []).length; i++) {
+    if (String((lessonPlans as any[])[i]?.id || '') === String(materialId) &&
+        isLearningMaterialRecord((lessonPlans as any[])[i]) &&
+        lessonPlanBelongsToRequest((lessonPlans as any[])[i], req)) {
+      matches.push(i);
+    }
+  }
+  if (matches.length === 1) return { material: (lessonPlans as any[])[matches[0]], index: matches[0], ambiguous: false };
+  if (matches.length > 1) return { material: null, index: -1, ambiguous: true };
+  return { material: null, index: -1, ambiguous: false };
+}
+
+function sanitizeLearningBlocks(rawBlocks: any): any[] {
+  const source = Array.isArray(rawBlocks) ? rawBlocks : [];
+  const blocks: any[] = [];
+  for (const raw of source.slice(0, 24)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const type = String(raw.type || 'text').toLowerCase();
+    if (type === 'text') {
+      const content = String(raw.content || raw.text || '').slice(0, 120000);
+      if (content.trim()) blocks.push({ type: 'text', content });
+      continue;
+    }
+    if (type === 'video' || type === 'link') {
+      const url = String(raw.url || '').trim().slice(0, 2048);
+      if (/^https?:\/\//i.test(url)) blocks.push({ type, url });
+      continue;
+    }
+  }
+  return blocks;
+}
+
+function sanitizeLearningMaterialForStudent(material: any): any {
+  const {
+    identitasModul, kompetensiAwal, profilPancasila, saranaPrasarana, targetPeserta,
+    modelPembelajaran, tujuanPembelajaran, pemahamanBermakna, pertanyaanPemantik,
+    persiapanPembelajaran, kegiatanPembelajaran, asesmen, pengayaanRemedial, lkpd,
+    lembarKerja, glosarium, daftarPustaka, teacherNotes, internalNotes, ...safe
+  } = material || {};
+  return {
+    ...safe,
+    recordType: 'learning_material',
+    status: 'published',
+    blocks: sanitizeLearningBlocks(safe.blocks)
+  };
+}
+
+function sanitizeLearningMaterialMutation(req: any, raw: any, existing: any = {}): any {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Payload materi tidak valid.');
+  }
+  const title = String(raw.title || existing.title || '').trim().slice(0, 240);
+  if (!title) throw new Error('Judul materi wajib diisi.');
+  const statusRaw = String(raw.status || existing.status || 'draft').toLowerCase();
+  const status = statusRaw === 'published' ? 'published' : 'draft';
+  const classId = String(raw.classId ?? raw.class_id ?? existing.classId ?? '').trim().slice(0, 160);
+  const classes = Array.isArray(raw.classes)
+    ? raw.classes.map((value: any) => String(value).trim().slice(0, 160)).filter(Boolean).slice(0, 80)
+    : (classId ? [classId] : []);
+  const subjectId = String(raw.subjectId ?? raw.subject ?? existing.subjectId ?? '').trim().slice(0, 160);
+  const lkpdId = String(raw.lkpdId || '').trim().slice(0, 256);
+  const examId = String(raw.examId || '').trim().slice(0, 256);
+
+  if (isTeacherRequest(req) && !teacherCanUseLearningMaterialPayload(req, { ...existing, ...raw, subjectId })) {
+    throw new Error('Guru hanya dapat membuat materi untuk mata pelajaran yang diampu.');
+  }
+  if (lkpdId) {
+    const linkedLkpd = (lkpdList || []).find((item: any) => String(item.id) === lkpdId && isItemForCurrentMadrasah(item, req));
+    if (!linkedLkpd) throw new Error('LKPD tertaut tidak ditemukan pada madrasah ini.');
+    if (isTeacherRequest(req) && !teacherCanUseLkpdPayload(req, linkedLkpd)) {
+      throw new Error('Guru hanya dapat menautkan LKPD mata pelajaran yang diampu.');
+    }
+  }
+  if (examId) {
+    const linkedExam = (exams || []).find((item: any) => String(item.id) === examId && isItemForCurrentMadrasah(item, req));
+    if (!linkedExam) throw new Error('Asesmen/CBT tertaut tidak ditemukan pada madrasah ini.');
+    if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, linkedExam)) {
+      throw new Error('Guru hanya dapat menautkan asesmen mata pelajaran/bank soal yang diampu.');
+    }
+  }
+
+  return tagNewRecord({
+    ...existing,
+    id: String(raw.id || existing.id || ('MAT_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex'))).slice(0, 256),
+    recordType: 'learning_material',
+    type: 'learning_material',
+    title,
+    topic: String(raw.topic ?? existing.topic ?? '').trim().slice(0, 500),
+    subjectId,
+    subjectName: String(raw.subjectName ?? existing.subjectName ?? '').trim().slice(0, 240),
+    classId,
+    classes,
+    blocks: sanitizeLearningBlocks(raw.blocks || existing.blocks || []),
+    lkpdId,
+    examId,
+    prerequisiteMaterialIds: Array.isArray(raw.prerequisiteMaterialIds)
+      ? raw.prerequisiteMaterialIds.map((value: any) => String(value).trim().slice(0, 256)).filter(Boolean).slice(0, 20)
+      : (Array.isArray(existing.prerequisiteMaterialIds) ? existing.prerequisiteMaterialIds : []),
+    requiresCompletionForLinks: raw.requiresCompletionForLinks === false ? false : true,
+    status,
+    teacherId: String((req as any).user?.id || raw.teacherId || existing.teacherId || '').slice(0, 160),
+    updatedAt: new Date().toISOString(),
+    createdAt: existing.createdAt || new Date().toISOString()
+  }, req);
+}
+
+function learningProgressKey(req: any, studentId: any, materialId: any): string {
+  const tenant = canonicalRealtimeTenant(getRequestMadrasahId(req) || req?.user?.madrasahId || req?.user?.madrasahSlug || 'default');
+  return `learningv1::${encodeExamStatePart(tenant)}::${encodeExamStatePart(studentId)}::${encodeExamStatePart(materialId)}`;
+}
+
+function learningProgressForRequest(req: any): any[] {
+  return (learningProgress || []).filter((item: any) => isItemForCurrentMadrasah(item, req));
+}
+
 function effectiveSettingsForRequest(req: any): any {
   const base = globalSettingsBase();
   if (!isOnlineMode) return base;
@@ -5237,6 +5399,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
   let filteredLessonPlans = lessonPlans;
   let filteredGeneratedExams = generatedExams;
   let filteredImportGroups = importGroups || [];
+  let filteredLearningProgress = learningProgress || [];
 
   if (mId && mId !== 'default' && mId !== 'BOSS') {
     const matchM = madrasahs.find(m => String(m.id) === mId || String(m.slug) === mId);
@@ -5268,6 +5431,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     filteredLessonPlans = lessonPlans.filter(matchesFilter);
     filteredGeneratedExams = generatedExams.filter(matchesFilter);
     filteredImportGroups = (importGroups || []).filter(matchesFilter);
+    filteredLearningProgress = (learningProgress || []).filter(matchesFilter);
   } else {
     const defaultM = madrasahs.find(m => m.id === 'default' || m.slug === 'default') || madrasahs[0];
     const defId = defaultM ? defaultM.id : 'default';
@@ -5295,6 +5459,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     filteredLessonPlans = lessonPlans.filter(defaultFilter);
     filteredGeneratedExams = generatedExams.filter(defaultFilter);
     filteredImportGroups = (importGroups || []).filter(defaultFilter);
+    filteredLearningProgress = (learningProgress || []).filter(defaultFilter);
   }
 
   filteredLessonPlans = filterLessonPlansForRequest(req);
@@ -5315,6 +5480,13 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     filteredQGroups = filteredQGroups.filter((group: any) => questionBankGroupAllowedForTeacher(req, group));
     filteredQuestions = filteredQuestions.filter((question: any) => questionAllowedForTeacher(req, question));
     filteredExams = filteredExams.filter((exam: any) => teacherCanUseExamPayload(req, exam));
+    filteredLessonPlans = filteredLessonPlans.filter((material: any) =>
+      !isLearningMaterialRecord(material) || teacherCanUseLearningMaterialPayload(req, material)
+    );
+    const allowedLearningMaterialIds = new Set(filteredLessonPlans.filter(isLearningMaterialRecord).map((material: any) => String(material.id)));
+    filteredLearningProgress = filteredLearningProgress.filter((progress: any) =>
+      allowedLearningMaterialIds.has(String(progress.materialId || ''))
+    );
   }
 
   // Students only receive the minimum data required by their own UI.
@@ -5353,8 +5525,11 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     filteredTeachers = filteredTeachers.map(sanitizeTeacherForStudent).filter(Boolean);
     filteredStudents = filteredStudents.map(sanitizeStudentPeerProfile).filter(Boolean);
     filteredJournals = [];
-    filteredLessonPlans = [];
     filteredGeneratedExams = [];
+    filteredLessonPlans = filteredLessonPlans
+      .filter((material: any) => studentCanAccessLearningMaterial(selfStudent, material))
+      .map(sanitizeLearningMaterialForStudent);
+    filteredLearningProgress = filteredLearningProgress.filter((item: any) => String(item.studentId || '') === ownId);
   }
 
   // Sanitasi sensitif (hilangkan password dan adminPass)
@@ -5408,6 +5583,7 @@ app.get("/api/all-data", requireAuth, (req, res) => {
     generatedExams: filteredGeneratedExams,
     settings: sanitizedSettings,
     lessonPlans: filteredLessonPlans,
+    learningProgress: filteredLearningProgress,
     importGroups: isStudent ? [] : filteredImportGroups,
     grades: filteredGrades,
     teacherAttendance: isStudent ? [] : filterByMadrasah(teacherAttendance || [], req),
@@ -15514,6 +15690,205 @@ app.post("/api/lesson-plans/recover-legacy-bundle", requireAuth, requireRole(['a
       message: safeServerError(err, 'Recovery modul ajar legacy gagal.')
     });
   }
+});
+
+app.get("/api/learning/materials", requireAuth, (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const isStudentRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+
+  if (isStudentRole) {
+    const own = findStudentForRequest(req, authUser?.id);
+    if (own.ambiguous) return res.status(409).json({ success: false, message: 'Identitas siswa ambigu pada tenant ini.' });
+    if (!own.student) return res.status(404).json({ success: false, message: 'Identitas siswa tidak ditemukan pada tenant ini.' });
+    const ownProgress = learningProgressForRequest(req)
+      .filter((item: any) => String(item.studentId || '') === String(authUser.id));
+    const progressByMaterial = new Map(ownProgress.map((item: any) => [String(item.materialId || ''), item]));
+    const completedIds = new Set(ownProgress
+      .filter((item: any) => item.status === 'completed' || Number(item.progressPercent || 0) >= 100)
+      .map((item: any) => String(item.materialId || '')));
+    const materials = filterLessonPlansForRequest(req)
+      .filter((material: any) => studentCanAccessLearningMaterial(own.student, material))
+      .map((material: any) => {
+        const prereq = Array.isArray(material.prerequisiteMaterialIds) ? material.prerequisiteMaterialIds.map(String) : [];
+        const locked = prereq.some((id: string) => !completedIds.has(id));
+        return {
+          ...sanitizeLearningMaterialForStudent(material),
+          progress: progressByMaterial.get(String(material.id || '')) || null,
+          locked,
+          lockedBy: locked ? prereq.filter((id: string) => !completedIds.has(id)) : []
+        };
+      });
+    return res.json({ success: true, materials, progress: ownProgress });
+  }
+
+  if (!staffRoles.has(role)) {
+    return res.status(403).json({ success: false, message: 'Akses materi hanya untuk warga madrasah.' });
+  }
+
+  const materials = learningMaterialsForStaffRequest(req);
+  res.json({ success: true, materials, data: materials });
+});
+
+app.post("/api/learning/materials", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const requestedId = req.body?.id;
+    const resolved = requestedId ? resolveLearningMaterialForRequest(req, requestedId) : { material: null, index: -1, ambiguous: false };
+    if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID materi ambigu lintas tenant.' });
+    if (resolved.material && isTeacherRequest(req) && !teacherCanUseLearningMaterialPayload(req, resolved.material)) {
+      return res.status(403).json({ success: false, message: 'Guru tidak dapat mengubah materi di luar mata pelajaran yang diampu.' });
+    }
+    const material = sanitizeLearningMaterialMutation(req, req.body || {}, resolved.material || {});
+    if (resolved.index >= 0) (lessonPlans as any[])[resolved.index] = { ...(lessonPlans as any[])[resolved.index], ...material };
+    else (lessonPlans as any[]).push(material);
+    await saveData('lessonPlans', lessonPlans);
+    res.json({ success: true, material, data: material, lessonPlans: learningMaterialsForStaffRequest(req) });
+  } catch (err: any) {
+    const message = safeServerError(err, 'Materi gagal disimpan.');
+    const status = /tidak ditemukan|tidak dapat|hanya dapat|wajib|tidak valid/i.test(message) ? 400 : 500;
+    res.status(status).json({ success: false, message });
+  }
+});
+
+app.put("/api/learning/materials/:id/publish", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  const resolved = resolveLearningMaterialForRequest(req, req.params.id);
+  if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID materi ambigu lintas tenant.' });
+  if (!resolved.material || resolved.index < 0) return res.status(404).json({ success: false, message: 'Materi tidak ditemukan pada madrasah ini.' });
+  if (isTeacherRequest(req) && !teacherCanUseLearningMaterialPayload(req, resolved.material)) {
+    return res.status(403).json({ success: false, message: 'Guru tidak dapat menerbitkan materi di luar mata pelajaran yang diampu.' });
+  }
+  const status = req.body?.status === 'draft' || req.body?.published === false ? 'draft' : 'published';
+  (lessonPlans as any[])[resolved.index] = { ...resolved.material, status, updatedAt: new Date().toISOString() };
+  await saveData('lessonPlans', lessonPlans);
+  res.json({ success: true, material: (lessonPlans as any[])[resolved.index] });
+});
+
+app.delete("/api/learning/materials/:id", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  const resolved = resolveLearningMaterialForRequest(req, req.params.id);
+  if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID materi ambigu lintas tenant.' });
+  if (!resolved.material || resolved.index < 0) return res.status(404).json({ success: false, message: 'Materi tidak ditemukan pada madrasah ini.' });
+  if (isTeacherRequest(req) && !teacherCanUseLearningMaterialPayload(req, resolved.material)) {
+    return res.status(403).json({ success: false, message: 'Guru tidak dapat menghapus materi di luar mata pelajaran yang diampu.' });
+  }
+  (lessonPlans as any[]).splice(resolved.index, 1);
+  learningProgress = learningProgress.filter((item: any) =>
+    !(String(item.materialId || '') === String(req.params.id) && isItemForCurrentMadrasah(item, req))
+  );
+  await saveDataBatch([
+    { key: 'lessonPlans', value: lessonPlans },
+    { key: 'learningProgress', value: learningProgress }
+  ]);
+  res.json({ success: true, materials: learningMaterialsForStaffRequest(req) });
+});
+
+app.get("/api/learning/progress", requireAuth, (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const role = String(authUser?.role || '').toLowerCase();
+  const materialId = String(req.query?.materialId || '').trim();
+  const isStudentRole = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+
+  if (isStudentRole) {
+    const progress = learningProgressForRequest(req)
+      .filter((item: any) => String(item.studentId || '') === String(authUser?.id || ''))
+      .filter((item: any) => !materialId || String(item.materialId || '') === materialId);
+    return res.json({ success: true, progress });
+  }
+
+  if (!staffRoles.has(role)) {
+    return res.status(403).json({ success: false, message: 'Akses progress hanya untuk siswa/guru.' });
+  }
+  if (materialId) {
+    const resolved = resolveLearningMaterialForRequest(req, materialId);
+    if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID materi ambigu lintas tenant.' });
+    if (!resolved.material) return res.status(404).json({ success: false, message: 'Materi tidak ditemukan pada madrasah ini.' });
+    if (isTeacherRequest(req) && !teacherCanUseLearningMaterialPayload(req, resolved.material)) {
+      return res.status(403).json({ success: false, message: 'Guru hanya dapat memonitor materi mata pelajaran yang diampu.' });
+    }
+    const classTargets = classTargetsFromLearningMaterial(resolved.material);
+    const targetStudents = filterByMadrasah(students || [], req).filter((student: any) => {
+      if (classTargets.length === 0 || classTargets.some((value: string) => ['ALL', 'SEMUA KELAS'].includes(value.toUpperCase()))) return true;
+      const refs = [student.classId, student.class_id, student.className, student.class].filter(Boolean).map((value: any) => String(value).toLowerCase());
+      return classTargets.some((target: string) => refs.includes(String(target).toLowerCase()));
+    });
+    const progressRows = learningProgressForRequest(req).filter((item: any) => String(item.materialId || '') === materialId);
+    const byStudent = new Map(progressRows.map((item: any) => [String(item.studentId || ''), item]));
+    const rows = targetStudents.map((student: any) => {
+      const progress = byStudent.get(String(student.id || '')) || null;
+      return {
+        studentId: String(student.id || ''),
+        studentName: String(student.name || ''),
+        nis: String(student.nis || ''),
+        classId: String(student.classId || student.class_id || ''),
+        className: String(student.className || ''),
+        status: progress?.status || 'not_started',
+        progressPercent: Number(progress?.progressPercent || 0),
+        viewedAt: progress?.viewedAt || '',
+        completedAt: progress?.completedAt || '',
+        updatedAt: progress?.updatedAt || ''
+      };
+    });
+    const completed = rows.filter((row: any) => row.status === 'completed' || row.progressPercent >= 100).length;
+    return res.json({ success: true, material: resolved.material, rows, summary: { total: rows.length, completed, inProgress: rows.length - completed } });
+  }
+
+  res.json({ success: true, progress: learningProgressForRequest(req) });
+});
+
+app.post("/api/learning/progress", requireAuth, requireRole(['student', 'siswa', 'class_leader', 'ketua_kelas']), async (req: any, res) => {
+  const authUser = req.user || getAuthUser(req);
+  const materialId = String(req.body?.materialId || '').trim();
+  if (!materialId || materialId.length > 256) return res.status(400).json({ success: false, message: 'materialId tidak valid.' });
+  const own = findStudentForRequest(req, authUser?.id);
+  if (own.ambiguous) return res.status(409).json({ success: false, message: 'Identitas siswa ambigu pada tenant ini.' });
+  if (!own.student) return res.status(404).json({ success: false, message: 'Identitas siswa tidak ditemukan pada tenant ini.' });
+  const resolved = resolveLearningMaterialForRequest(req, materialId);
+  if (resolved.ambiguous) return res.status(409).json({ success: false, message: 'ID materi ambigu lintas tenant.' });
+  if (!resolved.material || !studentCanAccessLearningMaterial(own.student, resolved.material)) {
+    return res.status(403).json({ success: false, message: 'Materi tidak tersedia untuk akun siswa ini.' });
+  }
+
+  const prereq = Array.isArray(resolved.material.prerequisiteMaterialIds) ? resolved.material.prerequisiteMaterialIds.map(String) : [];
+  const completedIds = new Set(learningProgressForRequest(req)
+    .filter((item: any) => String(item.studentId || '') === String(authUser.id) && (item.status === 'completed' || Number(item.progressPercent || 0) >= 100))
+    .map((item: any) => String(item.materialId || '')));
+  const lockedBy = prereq.filter((id: string) => !completedIds.has(id));
+  if (lockedBy.length > 0) {
+    return res.status(423).json({ success: false, message: 'Materi prasyarat belum selesai.', lockedBy });
+  }
+
+  const nowIso = new Date().toISOString();
+  const key = learningProgressKey(req, authUser.id, materialId);
+  const requestedStatus = String(req.body?.status || '').toLowerCase();
+  const progressPercent = Math.max(0, Math.min(100, Math.floor(Number(req.body?.progressPercent ?? (requestedStatus === 'completed' ? 100 : 10)) || 0)));
+  const finalStatus = progressPercent >= 100 || requestedStatus === 'completed'
+    ? 'completed'
+    : (progressPercent > 0 || requestedStatus === 'viewed' ? 'in_progress' : 'not_started');
+  const existingIndex = (learningProgress || []).findIndex((item: any) =>
+    String(item.id || '') === key ||
+    (String(item.studentId || '') === String(authUser.id) &&
+      String(item.materialId || '') === materialId &&
+      isItemForCurrentMadrasah(item, req))
+  );
+  const existing = existingIndex >= 0 ? learningProgress[existingIndex] : {};
+  const record = tagNewRecord({
+    ...existing,
+    id: key,
+    materialId,
+    studentId: String(authUser.id),
+    studentName: String(own.student.name || authUser.name || ''),
+    nis: String(own.student.nis || ''),
+    classId: String(own.student.classId || own.student.class_id || ''),
+    status: finalStatus,
+    progressPercent: finalStatus === 'completed' ? 100 : Math.max(progressPercent, Number(existing.progressPercent || 0)),
+    viewedAt: existing.viewedAt || nowIso,
+    completedAt: finalStatus === 'completed' ? (existing.completedAt || nowIso) : (existing.completedAt || ''),
+    updatedAt: nowIso,
+    source: 'server-authoritative'
+  }, req);
+  if (existingIndex >= 0) learningProgress[existingIndex] = record;
+  else learningProgress.push(record);
+  await saveData('learningProgress', learningProgress);
+  res.json({ success: true, progress: record });
 });
 
 app.get("/api/lesson-plans", (req, res) => {

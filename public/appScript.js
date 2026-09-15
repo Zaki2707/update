@@ -2432,6 +2432,10 @@ function buildSidebar() {
                 <i class="fa-solid fa-scroll w-5 text-emerald-400"></i>
                 <span>Modul Ajar</span>
             </button>
+            <button type="button" data-learning-menu="1" onclick="navigateTo('learning_teacher')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
+                <i class="fa-solid fa-book-open w-5 text-emerald-400"></i>
+                <span>Materi Pembelajaran</span>
+            </button>
             <button type="button" onclick="navigateTo('jurnal')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-book-bookmark w-5 text-emerald-400"></i>
                 <span>Jurnal Mengajar</span>
@@ -2456,20 +2460,31 @@ function buildSidebar() {
             </button>` : ''}
         `;
     } else if (role === 'student' || role === 'murid') {
-        const isGameEnabled = appState.settings?.gameModuleEnabled !== false;
+        const studentFeatures = appState.settings?.studentFeatures || {};
+        const isAttendanceEnabled = studentFeatures.attendance === undefined ? true : studentFeatures.attendance !== false;
+        const isLearningEnabled = appState.settings?.learningModuleEnabled === false ? false : (studentFeatures.learning === undefined ? true : studentFeatures.learning !== false);
+        const isCbtEnabled = studentFeatures.cbt === undefined ? true : studentFeatures.cbt !== false;
+        const isGameEnabled = appState.settings?.gameModuleEnabled === false ? false : (studentFeatures.games === undefined ? true : studentFeatures.games !== false);
         html = `
             <button type="button" onclick="navigateTo('profil_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-house w-5 text-blue-400"></i>
                 <span>Dashboard Utama</span>
             </button>
+            ${isAttendanceEnabled ? `
             <button type="button" onclick="navigateTo('absen_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-camera-retro w-5 text-blue-400"></i>
                 <span>Absen Selfie & GPS</span>
-            </button>
+            </button>` : ''}
+            ${isLearningEnabled ? `
+            <button type="button" data-learning-menu="1" onclick="navigateTo('learning_student')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
+                <i class="fa-solid fa-book-open-reader w-5 text-blue-400"></i>
+                <span>Belajar</span>
+            </button>` : ''}
+            ${isCbtEnabled ? `
             <button type="button" onclick="navigateTo('asesmen_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-file-shield w-5 text-blue-400"></i>
                 <span>CBT / Ujian Online</span>
-            </button>
+            </button>` : ''}
             ${isGameEnabled ? `
             <button type="button" onclick="navigateTo('game_edukasi_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-gamepad w-5 text-blue-400"></i>
@@ -2486,12 +2501,17 @@ function buildSidebar() {
             </button>` : ''}
         `;
     } else if (role === 'class_leader' || role === 'ketua_kelas') {
-        const isGameEnabled = appState.settings?.gameModuleEnabled !== false;
+        const studentFeatures = appState.settings?.studentFeatures || {};
+        const isAttendanceEnabled = studentFeatures.attendance === undefined ? true : studentFeatures.attendance !== false;
+        const isLearningEnabled = appState.settings?.learningModuleEnabled === false ? false : (studentFeatures.learning === undefined ? true : studentFeatures.learning !== false);
+        const isCbtEnabled = studentFeatures.cbt === undefined ? true : studentFeatures.cbt !== false;
+        const isGameEnabled = appState.settings?.gameModuleEnabled === false ? false : (studentFeatures.games === undefined ? true : studentFeatures.games !== false);
         html = `
             <button type="button" onclick="navigateTo('profil_ketua')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-id-card w-5 text-amber-400"></i>
                 <span>Profil Ketua Kelas</span>
             </button>
+            ${isAttendanceEnabled ? `
             <button type="button" onclick="navigateTo('absen_ketua')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-camera-retro w-5 text-amber-400"></i>
                 <span>Absen Selfie & GPS</span>
@@ -2499,11 +2519,17 @@ function buildSidebar() {
             <button type="button" onclick="navigateTo('absen_kelas')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-clipboard-user w-5 text-amber-400"></i>
                 <span>Absensi Kelas</span>
-            </button>
+            </button>` : ''}
+            ${isLearningEnabled ? `
+            <button type="button" data-learning-menu="1" onclick="navigateTo('learning_student')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
+                <i class="fa-solid fa-book-open-reader w-5 text-amber-400"></i>
+                <span>Belajar</span>
+            </button>` : ''}
+            ${isCbtEnabled ? `
             <button type="button" onclick="navigateTo('asesmen_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-file-shield w-5 text-amber-400"></i>
                 <span>CBT / Ujian Online</span>
-            </button>
+            </button>` : ''}
             ${isGameEnabled ? `
             <button type="button" onclick="navigateTo('game_edukasi_siswa')" class="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl hover:bg-slate-800 transition text-left">
                 <i class="fa-solid fa-gamepad w-5 text-amber-400"></i>
@@ -2558,6 +2584,30 @@ function navigateTo(route) {
         } catch(e) {}
         window.teacherAttendanceStream = null;
     }
+
+    const studentRoleActive = appState.role === 'student' || appState.role === 'murid' || appState.role === 'class_leader' || appState.role === 'ketua_kelas';
+    if (studentRoleActive) {
+        const studentFeatures = appState.settings?.studentFeatures || {};
+        const attendanceEnabled = studentFeatures.attendance === undefined ? true : studentFeatures.attendance !== false;
+        const learningEnabled = appState.settings?.learningModuleEnabled === false ? false : (studentFeatures.learning === undefined ? true : studentFeatures.learning !== false);
+        const cbtEnabled = studentFeatures.cbt === undefined ? true : studentFeatures.cbt !== false;
+        const gamesEnabled = appState.settings?.gameModuleEnabled === false ? false : (studentFeatures.games === undefined ? true : studentFeatures.games !== false);
+        const fallbackRoute = appState.role === 'class_leader' || appState.role === 'ketua_kelas' ? 'profil_ketua' : 'profil_siswa';
+        if ((route === 'absen_siswa' || route === 'absen_ketua' || route === 'absen_kelas') && !attendanceEnabled) {
+            showToast('Menu Absensi sedang dinonaktifkan oleh administrator.', 'info');
+            route = fallbackRoute;
+        } else if (route === 'learning_student' && !learningEnabled) {
+            showToast('Menu Belajar sedang dinonaktifkan oleh administrator.', 'info');
+            route = fallbackRoute;
+        } else if ((route === 'asesmen_siswa' || route === 'lkpd_worksheet') && !cbtEnabled) {
+            showToast('Menu CBT/LKPD sedang dinonaktifkan oleh administrator.', 'info');
+            route = fallbackRoute;
+        } else if (route === 'game_edukasi_siswa' && !gamesEnabled) {
+            showToast('Modul Game Edukasi sedang dinonaktifkan oleh administrator.', 'info');
+            route = fallbackRoute;
+        }
+    }
+
     localStorage.setItem('madrasah_last_route', route);
     appState.currentRoute = route;
     const container = document.getElementById('view-container');
@@ -2591,6 +2641,14 @@ function navigateTo(route) {
     }
     else if (route === 'jurnal') renderJournalModule(container);
     else if (route === 'setting') renderSettingModule(container);
+    else if (route === 'learning_teacher') {
+        if (window.renderLearningTeacher) window.renderLearningTeacher(container);
+        else if (container) container.innerHTML = '<div class="p-8 text-center text-slate-400">Modul materi sedang dimuat...</div>';
+    }
+    else if (route === 'learning_student') {
+        if (window.renderLearningStudent) window.renderLearningStudent(container);
+        else if (container) container.innerHTML = '<div class="p-8 text-center text-slate-400">Modul belajar sedang dimuat...</div>';
+    }
     else if (route === 'kalender') {
         if (window.renderCalendarModule) window.renderCalendarModule(container);
         else if (typeof renderCalendarModule === 'function') renderCalendarModule(container);
