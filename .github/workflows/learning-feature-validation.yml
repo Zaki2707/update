@@ -1,0 +1,37 @@
+name: Learning Feature Validation
+
+on:
+  push:
+    branches: [feat/learning-materials-monitoring]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/learningModule.js'
+      - 'src/main.tsx'
+      - 'server.ts'
+      - 'package.json'
+      - '.github/workflows/learning-feature-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify learning module is included
+        run: |
+          test -f src/learningModule.js
+          grep -q "import './learningModule.js'" src/main.tsx
+          test -f public/learningModule.js
+          cmp -s src/learningModule.js public/learningModule.js
+      - name: Run existing hardening regression suite
+        run: npm run test:hardening
