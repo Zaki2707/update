@@ -3,13 +3,29 @@ param(
     [string]$Tenant = "default",
     [Parameter(Mandatory = $true)]
     [string]$ExamId,
-    [string]$AccountsPath = (Join-Path $PSScriptRoot "accounts.loadtest.local.json"),
+    [string]$AccountsPath = "",
     [int]$AccountOffset = 0,
     [int]$Count = 0
 )
 
 $ErrorActionPreference = "Stop"
 $BaseUrl = $BaseUrl.TrimEnd('/')
+
+if ([string]::IsNullOrWhiteSpace($AccountsPath)) {
+    $ScriptDir = [string]$PSScriptRoot
+    if ([string]::IsNullOrWhiteSpace($ScriptDir)) {
+        $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    }
+    $PreferredAccounts = Join-Path $ScriptDir "accounts.loadtest.local.json"
+    $FallbackAccounts = Join-Path $ScriptDir "accounts.local.json"
+    if (Test-Path $PreferredAccounts) {
+        $AccountsPath = $PreferredAccounts
+    } elseif (Test-Path $FallbackAccounts) {
+        $AccountsPath = $FallbackAccounts
+    } else {
+        $AccountsPath = $PreferredAccounts
+    }
+}
 
 if (-not (Test-Path $AccountsPath)) {
     throw "File akun load-test tidak ditemukan: $AccountsPath"
