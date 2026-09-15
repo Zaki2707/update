@@ -226,10 +226,14 @@ async function loadLearningLinks() {
         fetch('/api/lkpds', { cache: 'no-store' }).then(r => r.json()).catch(() => ({})),
         fetch('/api/exams', { cache: 'no-store' }).then(r => r.json()).catch(() => ({}))
     ]);
-    return {
+    const links = {
         lkpds: lkpdResponse.lkpdList || lkpdResponse.data || [],
         exams: examResponse.exams || examResponse.data || []
     };
+    const state = learningState();
+    state.lkpdList = Array.isArray(links.lkpds) ? links.lkpds : [];
+    state.exams = Array.isArray(links.exams) ? links.exams : [];
+    return links;
 }
 async function postLearningProgress(payload) {
     const optimistic = {
@@ -304,7 +308,12 @@ window.renderLearningTeacher = async function(container) {
         const [materials, links] = await Promise.all([loadLearningMaterials(), loadLearningLinks()]);
         window.__learningLinks = links;
         window.__learningMaterials = materials;
-        const cards = materials.map(material => `
+        const cards = materials.map(material => {
+            const linkedLkpd = links.lkpds.find(item => String(item.id) === String(material.lkpdId || ''));
+            const linkedExam = links.exams.find(item => String(item.id) === String(material.examId || ''));
+            const lkpdDraft = linkedLkpd && ['inactive', 'draft'].includes(String(linkedLkpd.status || '').toLowerCase());
+            const examDraft = linkedExam && ['inactive', 'draft'].includes(String(linkedExam.status || '').toLowerCase());
+            return `
             <div class="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm space-y-4">
                 <div class="flex items-start justify-between gap-3">
                     <div>
@@ -318,10 +327,13 @@ window.renderLearningTeacher = async function(container) {
                     <button type="button" onclick="openLearningMaterial(${learningInlineArg(material.id)}, true)" class="px-3 py-2 rounded-xl bg-slate-100 text-xs font-bold">Lihat</button>
                     <button type="button" onclick="showLearningEditorById(${learningInlineArg(material.id)})" class="px-3 py-2 rounded-xl bg-blue-50 text-blue-700 text-xs font-bold">Edit</button>
                     <button type="button" onclick="openLearningMonitor(${learningInlineArg(material.id)})" class="px-3 py-2 rounded-xl bg-violet-50 text-violet-700 text-xs font-bold"><i class="fa-solid fa-chart-line mr-1"></i>Monitoring</button>
+                    ${material.lkpdId ? `<button type="button" onclick="openLearningLinkedActivityEditor('lkpd', ${learningInlineArg(material.lkpdId)})" class="px-3 py-2 rounded-xl ${lkpdDraft ? 'bg-amber-50 text-amber-700' : 'bg-cyan-50 text-cyan-700'} text-xs font-bold"><i class="fa-solid fa-clipboard-list mr-1"></i>${lkpdDraft ? 'Lengkapi Draft LKPD' : 'Kelola LKPD'}</button>` : ''}
+                    ${material.examId ? `<button type="button" onclick="openLearningLinkedActivityEditor('exam', ${learningInlineArg(material.examId)})" class="px-3 py-2 rounded-xl ${examDraft ? 'bg-amber-50 text-amber-700' : 'bg-indigo-50 text-indigo-700'} text-xs font-bold"><i class="fa-solid fa-file-circle-check mr-1"></i>${examDraft ? 'Lengkapi & Aktifkan Asesmen' : 'Kelola Asesmen'}</button>` : ''}
                     <button type="button" onclick="deleteLearningMaterial(${learningInlineArg(material.id)})" class="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 text-xs font-bold"><i class="fa-solid fa-trash-can mr-1"></i>Hapus</button>
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
         container.innerHTML = `
             <div class="max-w-6xl mx-auto space-y-5 pb-10">
                 <div class="flex items-center justify-between gap-3">
@@ -354,12 +366,20 @@ window.showLearningEditor = async function(existing = null) {
     const subjectOpts = ['<option value="">Pilih Mapel</option>', ...subjects.map(subject =>
         `<option value="${learningAttr(subject.id)}" ${String(material.subjectId || '') === String(subject.id) ? 'selected' : ''}>${learningEsc(subject.name || subject.id)}</option>`
     )].join('');
-    const lkpdOpts = ['<option value="">Tanpa LKPD</option>', ...links.lkpds.map(lkpd =>
-        `<option value="${learningAttr(lkpd.id)}" ${String(material.lkpdId || '') === String(lkpd.id) ? 'selected' : ''}>${learningEsc(lkpd.title || lkpd.name || lkpd.id)}</option>`
-    )].join('');
-    const examOpts = ['<option value="">Tanpa Asesmen</option>', ...links.exams.filter(ex => ex.recordType !== 'EVENT').map(exam =>
-        `<option value="${learningAttr(exam.id)}" ${String(material.examId || '') === String(exam.id) ? 'selected' : ''}>${learningEsc(exam.title || exam.name || exam.id)}</option>`
-    )].join('');
+    const lkpdOpts = [
+        '<option value="">Tanpa LKPD</option>',
+        '<option value="__CREATE_DRAFT__">+ Buat draft LKPD otomatis</option>',
+        ...links.lkpds.map(lkpd =>
+            `<option value="${learningAttr(lkpd.id)}" ${String(material.lkpdId || '') === String(lkpd.id) ? 'selected' : ''}>${learningEsc(lkpd.title || lkpd.name || lkpd.id)}${['inactive', 'draft'].includes(String(lkpd.status || '').toLowerCase()) ? ' (Draft)' : ''}</option>`
+        )
+    ].join('');
+    const examOpts = [
+        '<option value="">Tanpa Asesmen</option>',
+        '<option value="__CREATE_DRAFT__">+ Buat draft asesmen otomatis</option>',
+        ...links.exams.filter(ex => ex.recordType !== 'EVENT').map(exam =>
+            `<option value="${learningAttr(exam.id)}" ${String(material.examId || '') === String(exam.id) ? 'selected' : ''}>${learningEsc(exam.title || exam.name || exam.id)}${['inactive', 'draft'].includes(String(exam.status || '').toLowerCase()) ? ' (Draft)' : ''}</option>`
+        )
+    ].join('');
     const textBlock = (material.blocks || []).find(block => block.type === 'text')?.content || material.content || '';
     const video = (material.blocks || []).find(block => block.type === 'video')?.url || '';
     const resource = (material.blocks || []).find(block => block.type === 'link')?.url || '';
@@ -368,7 +388,7 @@ window.showLearningEditor = async function(existing = null) {
         <div id="learning-editor-modal" class="fixed inset-0 z-[120] bg-slate-950/70 backdrop-blur-sm p-4 overflow-y-auto">
             <div class="max-w-3xl mx-auto my-6 bg-white rounded-3xl p-6 shadow-2xl space-y-4">
                 <div class="flex justify-between gap-3">
-                    <div><h2 class="text-xl font-black">${material.id ? 'Edit' : 'Buat'} Materi</h2><p class="text-xs text-slate-500">Hubungkan materi dengan LKPD/asesmen yang sudah ada.</p></div>
+                    <div><h2 class="text-xl font-black">${material.id ? 'Edit' : 'Buat'} Materi</h2><p class="text-xs text-slate-500">Hubungkan aktivitas yang sudah ada atau buat draft baru yang tetap tersembunyi dari siswa sampai guru mengaktifkannya.</p></div>
                     <button type="button" onclick="document.getElementById('learning-editor-modal')?.remove()" class="w-9 h-9 rounded-xl bg-slate-100">x</button>
                 </div>
                 <input id="learning-id" type="hidden" value="${learningAttr(material.id || '')}">
@@ -406,10 +426,20 @@ window.showLearningEditor = async function(existing = null) {
         </div>`);
 };
 window.saveLearningMaterial = async function(status) {
-    const id = document.getElementById('learning-id')?.value || '';
+    const idEl = document.getElementById('learning-id');
+    let id = idEl?.value || '';
+    if (!id) {
+        const randomPart = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+            ? globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+            : Math.random().toString(36).slice(2, 14);
+        id = `MAT_WEB_${Date.now()}_${randomPart}`;
+        if (idEl) idEl.value = id;
+    }
     const subjectId = document.getElementById('learning-subject')?.value || '';
     const subjectName = (learningState().subjects || []).find(subject => String(subject.id) === String(subjectId))?.name || '';
     const classId = document.getElementById('learning-class')?.value || 'ALL';
+    const lkpdSelection = document.getElementById('learning-lkpd')?.value || '';
+    const examSelection = document.getElementById('learning-exam')?.value || '';
     const payload = {
         id,
         title: document.getElementById('learning-title')?.value?.trim() || '',
@@ -419,8 +449,10 @@ window.saveLearningMaterial = async function(status) {
         classId,
         classes: classId ? [classId] : [],
         blocks: safeBlocksFromForm(),
-        lkpdId: document.getElementById('learning-lkpd')?.value || '',
-        examId: document.getElementById('learning-exam')?.value || '',
+        lkpdId: lkpdSelection === '__CREATE_DRAFT__' ? '' : lkpdSelection,
+        examId: examSelection === '__CREATE_DRAFT__' ? '' : examSelection,
+        createLkpdDraft: lkpdSelection === '__CREATE_DRAFT__',
+        createExamDraft: examSelection === '__CREATE_DRAFT__',
         requiresCompletionForLinks: document.getElementById('learning-require-complete')?.checked !== false,
         engagementPolicy: {
             minActiveSeconds: Math.max(0, Math.min(3600, Number(document.getElementById('learning-min-active-seconds')?.value || 0) || 0)),
@@ -438,12 +470,36 @@ window.saveLearningMaterial = async function(status) {
         const data = await response.json();
         if (!response.ok || data.success === false) throw new Error(data.message || 'Gagal menyimpan materi.');
         document.getElementById('learning-editor-modal')?.remove();
-        learningToast(status === 'published' ? 'Materi dipublikasikan.' : 'Draft materi disimpan.', 'success');
+        window.__learningLinks = null;
+        const created = [];
+        if (data.createdDrafts?.lkpdId) created.push('draft LKPD');
+        if (data.createdDrafts?.examId) created.push('draft asesmen');
+        const baseMessage = status === 'published' ? 'Materi dipublikasikan.' : 'Draft materi disimpan.';
+        learningToast(created.length ? `${baseMessage} ${created.join(' dan ')} dibuat dan belum terlihat oleh siswa.` : baseMessage, 'success');
         window.renderLearningTeacher(document.getElementById('view-container'));
     } catch (err) {
         learningToast(err.message || 'Gagal menyimpan materi.', 'error');
     }
 };
+window.openLearningLinkedActivityEditor = async function(kind, id) {
+    try {
+        const links = await loadLearningLinks();
+        window.__learningLinks = links;
+        if (kind === 'lkpd') {
+            const found = links.lkpds.find(item => String(item.id) === String(id));
+            if (!found) return learningToast('LKPD tertaut tidak ditemukan.', 'warning');
+            if (typeof window.openCreateLkpdModal === 'function') return window.openCreateLkpdModal(id);
+            return learningToast('Editor LKPD belum siap.', 'warning');
+        }
+        const found = links.exams.find(item => String(item.id) === String(id));
+        if (!found) return learningToast('Asesmen tertaut tidak ditemukan.', 'warning');
+        if (typeof window.openExamModal === 'function') return window.openExamModal(id);
+        learningToast('Editor asesmen belum siap.', 'warning');
+    } catch (err) {
+        learningToast(err.message || 'Gagal membuka aktivitas tertaut.', 'error');
+    }
+};
+
 window.deleteLearningMaterial = async function(id) {
     if (!confirm('Hapus materi ini? Progress siswa untuk materi ini juga akan dihapus.')) return;
     try {
@@ -547,25 +603,38 @@ function learningNextActions(material) {
         return '<div class="text-center text-xs text-slate-500 font-bold py-3">Tandai materi selesai untuk membuka aktivitas lanjutan.</div>';
     }
     const actions = [];
-    if (material.lkpdId) actions.push(`<button type="button" onclick="openLinkedLearningLkpd(${learningInlineArg(material.lkpdId)})" class="w-full mt-2 py-3 rounded-2xl bg-blue-600 text-white font-bold text-sm"><i class="fa-solid fa-clipboard-list mr-2"></i>Lanjut Kerjakan LKPD</button>`);
-    if (material.examId) actions.push(`<button type="button" onclick="openLinkedLearningExam(${learningInlineArg(material.examId)})" class="w-full mt-2 py-3 rounded-2xl bg-violet-600 text-white font-bold text-sm"><i class="fa-solid fa-file-circle-check mr-2"></i>Lanjut ke Asesmen</button>`);
+    const readiness = material.linkedActivities || {};
+    if (material.lkpdId) {
+        actions.push(readiness.lkpdReady === false
+            ? '<div class="w-full mt-2 py-3 px-4 rounded-2xl bg-amber-50 text-amber-700 font-bold text-xs text-center"><i class="fa-solid fa-clock mr-2"></i>LKPD sedang disiapkan guru</div>'
+            : `<button type="button" onclick="openLinkedLearningLkpd(${learningInlineArg(material.lkpdId)})" class="w-full mt-2 py-3 rounded-2xl bg-blue-600 text-white font-bold text-sm"><i class="fa-solid fa-clipboard-list mr-2"></i>Lanjut Kerjakan LKPD</button>`);
+    }
+    if (material.examId) {
+        actions.push(readiness.examReady === false
+            ? '<div class="w-full mt-2 py-3 px-4 rounded-2xl bg-amber-50 text-amber-700 font-bold text-xs text-center"><i class="fa-solid fa-clock mr-2"></i>Asesmen sedang disiapkan guru</div>'
+            : `<button type="button" onclick="openLinkedLearningExam(${learningInlineArg(material.examId)})" class="w-full mt-2 py-3 rounded-2xl bg-violet-600 text-white font-bold text-sm"><i class="fa-solid fa-file-circle-check mr-2"></i>Lanjut ke Asesmen</button>`);
+    }
     return actions.join('') || '<div class="text-center text-xs text-emerald-700 font-bold py-3">Pembelajaran selesai</div>';
 }
 window.openLinkedLearningLkpd = async function(lkpdId) {
     if (!featureEnabled('cbt')) return learningToast('Menu CBT/LKPD sedang dinonaktifkan.', 'info');
     if (!Array.isArray(learningState().lkpdList) || !learningState().lkpdList.some(item => String(item.id) === String(lkpdId))) {
-        const data = await fetch('/api/lkpds').then(r => r.json()).catch(() => ({}));
+        const data = await fetch('/api/lkpds', { cache: 'no-store' }).then(r => r.json()).catch(() => ({}));
         if (data.lkpdList) learningState().lkpdList = data.lkpdList;
     }
+    const found = (learningState().lkpdList || []).find(item => String(item.id) === String(lkpdId));
+    if (!found) return learningToast('LKPD belum diaktifkan oleh guru.', 'info');
     if (typeof window.openStudentLkpdWorksheetModal === 'function') window.openStudentLkpdWorksheetModal(lkpdId, currentStudentId());
     else window.navigateTo('asesmen_siswa');
 };
 window.openLinkedLearningExam = async function(examId) {
     if (!featureEnabled('cbt')) return learningToast('Menu CBT sedang dinonaktifkan.', 'info');
     if (!Array.isArray(learningState().exams) || !learningState().exams.some(item => String(item.id) === String(examId))) {
-        const data = await fetch('/api/exams').then(r => r.json()).catch(() => ({}));
+        const data = await fetch('/api/exams', { cache: 'no-store' }).then(r => r.json()).catch(() => ({}));
         if (data.exams) learningState().exams = data.exams;
     }
+    const found = (learningState().exams || []).find(item => String(item.id) === String(examId));
+    if (!found) return learningToast('Asesmen belum diaktifkan oleh guru.', 'info');
     if (typeof window.confirmStartStudentExam === 'function') window.confirmStartStudentExam(examId);
     else if (typeof window.startStudentExam === 'function') window.startStudentExam(examId);
     else window.navigateTo('asesmen_siswa');
