@@ -98,6 +98,7 @@ function stopLearningTracker() {
     window.removeEventListener('focus', tracker.onFocus);
     window.removeEventListener('blur', tracker.onBlur);
     document.removeEventListener('visibilitychange', tracker.onVisibility);
+    learningState().__activeLearningTracker = null;
 }
 function startLearningTracker(material) {
     stopLearningTracker();
@@ -105,7 +106,7 @@ function startLearningTracker(material) {
         materialId: String(material.id),
         activeMs: 0,
         lastStartedAt: Date.now(),
-        active: !document.hidden,
+        active: !document.hidden && document.hasFocus(),
         viewedBlockIds: new Set(),
         observer: null,
         onScroll: null,
@@ -119,7 +120,7 @@ function startLearningTracker(material) {
         tracker.active = false;
     };
     const resume = () => {
-        if (tracker.active || document.hidden) return;
+        if (tracker.active || document.hidden || !document.hasFocus()) return;
         tracker.lastStartedAt = Date.now();
         tracker.active = true;
     };
@@ -513,7 +514,7 @@ window.openLearningMaterial = async function(id, staffPreview = false) {
                 <div class="mt-7 space-y-5">${renderMaterialBlocks(material.blocks || [])}</div>
                 ${!staffPreview ? `<div class="mt-8 pt-6 border-t">
                     ${!completed ? `<div id="learning-engagement-status" class="mb-3 text-center text-xs font-bold text-slate-500">Aktif membaca 0/${policy.minActiveSeconds} detik${policy.requireAllBlocks ? ' • bagian terlihat 0/' + Math.max(1, materialBlockIds(material).length) : ''}</div>` : ''}
-                    <button id="learning-complete-button" type="button" onclick="completeLearningMaterial(${learningInlineArg(material.id)})" class="w-full py-3 rounded-2xl ${completed ? 'bg-emerald-50 text-emerald-700' : 'bg-emerald-600 text-white'} font-black text-sm">${completed ? 'Materi telah dipelajari' : 'Saya Sudah Mempelajari Materi'}</button>
+                    <button id="learning-complete-button" type="button" ${completed ? 'disabled aria-disabled="true"' : ''} onclick="completeLearningMaterial(${learningInlineArg(material.id)})" class="w-full py-3 rounded-2xl ${completed ? 'bg-emerald-50 text-emerald-700' : 'bg-emerald-600 text-white'} font-black text-sm">${completed ? 'Materi telah dipelajari' : 'Saya Sudah Mempelajari Materi'}</button>
                     <div id="learning-next-actions" class="mt-3">${completed ? learningNextActions(material) : ''}</div>
                 </div>` : ''}
             </article>
@@ -532,7 +533,9 @@ window.completeLearningMaterial = async function(id) {
     if (actionContainer) actionContainer.innerHTML = learningNextActions(material);
     const button = document.getElementById('learning-complete-button');
     if (button) {
-        button.disabled = false;
+        button.disabled = true;
+        button.setAttribute('aria-disabled', 'true');
+        button.removeAttribute('onclick');
         button.classList.remove('opacity-60', 'cursor-not-allowed');
         button.classList.add('bg-emerald-50', 'text-emerald-700');
         button.textContent = 'Materi telah dipelajari';

@@ -5306,8 +5306,11 @@ function learningEngagementPolicy(material: any): { minActiveSeconds: number; re
 }
 
 function learningBlockIds(material: any): string[] {
-  const blocks = Array.isArray(material?.blocks) ? material.blocks : [];
-  return blocks.map((block: any, index: number) => String(block?.id || `block_${index + 1}`));
+  // Match the exact block list/IDs exposed to students after sanitization.
+  // sanitizeLearningBlocks intentionally drops raw IDs and unsupported block types,
+  // so completion checks must use the same canonical block_N identifiers.
+  const blocks = sanitizeLearningBlocks(material?.blocks);
+  return blocks.map((_block: any, index: number) => `block_${index + 1}`);
 }
 
 function sanitizeLearningMaterialMutation(req: any, raw: any, existing: any = {}): any {
