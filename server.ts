@@ -6107,7 +6107,7 @@ app.post("/api/game/active-sessions", (req: any, res) => {
   try {
     const authUser = req.user || getAuthUser(req);
     const role = String(authUser?.role || '').toLowerCase();
-      const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
+    const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
     const requested = String(req.body?.studentId || '');
     const studentId = self ? String(authUser?.id || '') : requested;
     const sessionData = req.body?.sessionData;
