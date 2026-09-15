@@ -6143,7 +6143,6 @@ app.post("/api/game/active-sessions", (req: any, res) => {
 
 app.get("/api/game/messages", (req: any, res) => {
   const authUser = req.user || getAuthUser(req);
-  const role = String(authUser?.role || '').toLowerCase();
   const self = ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(role);
   const requested = String(req.query.studentId || '');
   const studentId = self ? String(authUser?.id || '') : requested;
