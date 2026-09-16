@@ -6430,7 +6430,29 @@ app.get("/api/db-status", async (req, res) => {
       await Promise.race([cloudinary.api.ping(), timeoutPromise]);
       status.cloudinary.connected = true;
       status.cloudinary.message = "Terhubung sukses ke Cloudinary!";
-      status.cloudinary.details = `Penyimpanan foto Cloudinary (${process.env.CLOUDINARY_CLOUD_NAME}) aktif. ${Object.keys(photoCloudinaryMap).length} entri mapping foto tersedia.`;
+      let capacityDetails = '';
+      try {
+        const usage: any = await Promise.race([
+          cloudinary.api.usage(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Cloudinary usage timeout')), 3000))
+        ]);
+        const usedBytes = Number(usage?.storage?.usage ?? usage?.storage?.used ?? 0);
+        const limitBytes = Number(usage?.storage?.limit ?? usage?.storage_limit ?? 0);
+        const formatBytes = (bytes: number) => {
+          if (!Number.isFinite(bytes) || bytes < 0) return '';
+          if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+          if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+          return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+        };
+        if (limitBytes > 0) {
+          const remainingBytes = Math.max(0, limitBytes - usedBytes);
+          const usedPercent = Math.min(100, Math.max(0, (usedBytes / limitBytes) * 100));
+          capacityDetails = ` Kapasitas foto: ${formatBytes(remainingBytes)} tersisa dari ${formatBytes(limitBytes)} (${usedPercent.toFixed(1)}% terpakai).`;
+        }
+      } catch (usageErr: any) {
+        console.warn('[Cloudinary Status] Kapasitas tidak dapat dibaca:', usageErr?.message || usageErr);
+      }
+      status.cloudinary.details = `Penyimpanan foto Cloudinary (${process.env.CLOUDINARY_CLOUD_NAME}) aktif. ${Object.keys(photoCloudinaryMap).length} entri mapping foto tersedia.${capacityDetails}`;
     }
   } catch (err: any) {
     status.cloudinary.connected = false;
