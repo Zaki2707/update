@@ -1006,7 +1006,7 @@ await test('Game Arena: rate limiting and stale-room cleanup are executable', ()
   });
   vm.runInContext(cleanup, context);
   context.cleanupGameArenaRooms(now);
-  assert.equal(rooms.stale.players.length, 0);
+  assert.equal(rooms.stale, undefined);
   assert.equal(rooms.finished, undefined);
 });
 
