@@ -6524,6 +6524,19 @@ function ensureGameArenaQuestion(req: any, room: GameArenaRoom, student: any, fo
   else delete room.questions[studentId];
 }
 
+
+function startHostedOrQuickArenaRoom(req: any, room: GameArenaRoom): boolean {
+  if (room.players.length < 2) return false;
+  resetGameArenaRoom(room);
+  room.status = 'playing';
+  for (const player of room.players) {
+    const resolved = findStudentForRequest(req, player.id);
+    if (resolved.student) ensureGameArenaQuestion(req, room, resolved.student);
+  }
+  touchGameArenaRoom(room);
+  return true;
+}
+
 function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
   const me = room.players.find(player => player.id === viewerId) || null;
   const shouldShowQuestion = room.status === 'playing' &&
@@ -6709,15 +6722,21 @@ app.post("/api/game-arena/join", (req: any, res) => {
       return res.status(400).json({ success: false, message: "Mode arena tidak valid." });
     }
 
-    if (!getGameArenaGamePool(req, student).length) {
-      return res.status(409).json({
-        success: false,
-        message: "Belum ada game aktif yang kompatibel untuk kelasmu. Guru perlu menyiapkan Tebak Kata, Tebak Gambar, Susun Kata, atau Benar/Salah."
-      });
+    const modeConfig = getArenaTenantConfig(req).modes[mode] || defaultArenaModeConfig();
+    const classKey = getGameArenaClassKey(student);
+    const className = getGameArenaClassName(student);
+    if (!modeConfig.enabled || !arenaClassAllowed(modeConfig, classKey, className)) {
+      return res.status(403).json({ success: false, message: "Mode Arena ini tidak diaktifkan untuk kelasmu." });
+    }
+
+    const sourceIds = normalizeArenaList(modeConfig.gameIds);
+    const basePool = getGameArenaGamePool(req, student);
+    const usablePool = sourceIds.length ? basePool.filter((item: any) => sourceIds.includes(String(item?.id || ''))) : basePool;
+    if (!usablePool.length) {
+      return res.status(409).json({ success: false, message: "Belum ada sumber soal Arena yang kompatibel untuk kelasmu." });
     }
 
     const tenantId = gameTenantNamespace(req);
-    const classKey = getGameArenaClassKey(student);
     const studentId = String(student.id);
     const now = Date.now();
 
@@ -6733,8 +6752,24 @@ app.post("/api/game-arena/join", (req: any, res) => {
       room = Object.values(gameArenaRoomsServer).find(item =>
         item.tenantId === tenantId &&
         item.classKey === classKey &&
+        item.mode === mode &&
+        Boolean((item as any).hosted) &&
         canJoinGameArenaRoom(item, mode)
       );
+    }
+
+    if (!room && modeConfig.quickMatch) {
+      room = Object.values(gameArenaRoomsServer).find(item =>
+        item.tenantId === tenantId &&
+        item.classKey === classKey &&
+        item.mode === mode &&
+        !Boolean((item as any).hosted) &&
+        canJoinGameArenaRoom(item, mode)
+      );
+    }
+
+    if (!room && !modeConfig.quickMatch) {
+      return res.status(409).json({ success: false, message: "Guru belum membuat Hosted Room untuk kelasmu." });
     }
 
     if (!room) {
@@ -6742,7 +6777,7 @@ app.post("/api/game-arena/join", (req: any, res) => {
         id: `ARENA_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
         tenantId,
         classKey,
-        className: getGameArenaClassName(student),
+        className,
         mode,
         status: 'waiting',
         position: 50,
@@ -6753,9 +6788,11 @@ app.post("/api/game-arena/join", (req: any, res) => {
         baseBHp: 100,
         baseAShield: 0,
         baseBShield: 0,
+        hosted: false,
+        sourceGameIds: sourceIds,
         createdAt: now,
         updatedAt: now
-      };
+      } as GameArenaRoom;
       gameArenaRoomsServer[room.id] = room;
     }
 
@@ -6766,22 +6803,15 @@ app.post("/api/game-arena/join", (req: any, res) => {
     const joiningPlayer = room.players.find(player => player.id === studentId);
     if (joiningPlayer) joiningPlayer.lastSeenAt = now;
 
-    const wasWaiting = room.status === 'waiting';
-    if (room.players.length >= 2) room.status = 'playing';
-
-    if (wasWaiting && room.status === 'playing') {
-      resetGameArenaRoom(room);
-      room.status = 'playing';
+    if (!Boolean((room as any).hosted) && room.status === 'waiting' && room.players.length >= 2) {
+      startHostedOrQuickArenaRoom(req, room);
+    } else if (room.status === 'playing') {
+      ensureGameArenaQuestion(req, room, student);
+      touchGameArenaRoom(room);
+    } else {
+      touchGameArenaRoom(room);
     }
 
-    if (room.status === 'playing') {
-      for (const player of room.players) {
-        const playerResolution = findStudentForRequest(req, player.id);
-        if (playerResolution.student) ensureGameArenaQuestion(req, room, playerResolution.student);
-      }
-    }
-
-    touchGameArenaRoom(room);
     res.json({ success: true, state: sanitizeGameArenaState(room, studentId) });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err, "Gagal masuk ke Game Arena.") });
