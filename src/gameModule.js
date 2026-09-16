@@ -4491,12 +4491,13 @@ function renderTugArenaStage(state) {
 
 function renderBattleRoyaleArenaStage(state) {
     const me = getArenaMePlayer(state);
+    const isMonitorView = !state?.me?.id;
     const activeCount = (state.players || []).filter(player => !player.eliminated && Number(player.hp || 0) > 0).length;
     return `
         <div class="rounded-3xl bg-gradient-to-br from-violet-950 via-fuchsia-950 to-slate-950 border border-fuchsia-400/20 p-4 sm:p-5 text-white overflow-hidden">
             <div class="flex items-center justify-between gap-3 mb-4">
                 <div><p class="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">Battle Royale Energi</p><h3 class="font-black">${activeCount} shield masih aktif</h3></div>
-                <div class="text-right"><p class="text-[10px] text-slate-400">Energi kamu</p><p class="font-black text-amber-300">⚡ ${Number(me?.energy || 0)}/6</p></div>
+                <div class="text-right">${isMonitorView ? `<p class="text-[10px] text-slate-400">Teacher View</p><p class="font-black text-fuchsia-200">${(state.players || []).length} pemain</p>` : `<p class="text-[10px] text-slate-400">Energi kamu</p><p class="font-black text-amber-300">⚡ ${Number(me?.energy || 0)}/6</p>`}</div>
             </div>
             <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                 ${(state.players || []).map(player => `
