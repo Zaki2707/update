@@ -2921,6 +2921,7 @@ function updateMemoryKey(key: string, value: any) {
   else if (key === 'photoCloudinaryMap') photoCloudinaryMap = value;
   else if (key === 'eduGames') eduGames = value;
   else if (key === 'gameAttempts') gameAttempts = value;
+  else if (key === 'gameArenaConfigs') gameArenaConfigs = value;
   else if (key === 'learningProgress') learningProgress = value;
   else if (key === 'madrasahs') madrasahs = value;
   else if (key === 'tokenRequests') tokenRequests = value;
@@ -2973,6 +2974,7 @@ function getMemoryKeyValue(key: string) {
   if (key === 'photoCloudinaryMap') return photoCloudinaryMap;
   if (key === 'eduGames') return eduGames;
   if (key === 'gameAttempts') return gameAttempts;
+  if (key === 'gameArenaConfigs') return gameArenaConfigs;
   if (key === 'learningProgress') return learningProgress;
   if (key === 'madrasahs') return madrasahs;
   if (key === 'tokenRequests') return tokenRequests;
@@ -3641,6 +3643,7 @@ let examViolationLogs: Record<string, any[]> = bootStore['examViolationLogs'] ||
 let importGroups: any[] = bootStore['importGroups'] || [];
 let eduGames: any[] = bootStore['eduGames'] || [];
 let gameAttempts: any[] = bootStore['gameAttempts'] || [];
+let gameArenaConfigs: Record<string, any> = bootStore['gameArenaConfigs'] || {};
 let learningProgress: any[] = bootStore['learningProgress'] || [];
 let childguardRules = bootStore['childguardRules'] || {};
 let childguardLogs = bootStore['childguardLogs'] || [];
