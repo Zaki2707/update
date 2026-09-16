@@ -12395,7 +12395,7 @@ app.get("/api/exam/my-review", requireAuth, requireRole(['student', 'siswa', 'cl
 });
 
 // Corrected student result for downloadable PDF.
-// Answer keys/correctness/explanations are available only after final grading
+// Detailed correction data is available only after final grading
 // and only when the teacher explicitly enabled result downloads on the exam schedule.
 app.get("/api/exam/my-result-download", requireAuth, requireRole(['student', 'siswa', 'class_leader', 'ketua_kelas']), async (req: any, res) => {
   try {
