@@ -10001,12 +10001,6 @@ async function startStudentLiveKit() { return; }
 function stopStudentLiveKit() { return; }
 
 
-// LIVEKIT_CLIENT_CAPABILITY_V4: server resolves URL/key/secret and exposes
-// only a safe boolean. Runtime failure switches this browser tab to P2P.
-function isLiveKitConfigured() {
-    const s = appState && appState.settings;
-    return Boolean(s && s.livekitConfigured === true && window._liveKitRuntimeUnavailable !== true);
-}
 
 setInterval(() => {
     if (appState.lastAssessmentSubTab === 'monitoring' && appState.activeMonitoringExamId) {
