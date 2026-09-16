@@ -1030,6 +1030,25 @@ await test('Game Arena: teacher host controls and visual arena monitoring are wi
   assert.match(gameSource, /gameArenaStudentConfig/);
 });
 
+
+await test('Game Arena: visual FX engine covers all five modes without server coupling', () => {
+  assert.match(gameSource, /GAME_ARENA_FX_LEVELS/);
+  assert.match(gameSource, /renderGameArenaFxControl/);
+  assert.match(gameSource, /playGameArenaAnswerFx/);
+  assert.match(gameSource, /playGameArenaActionFx/);
+  assert.match(gameSource, /playGameArenaStateDeltaFx/);
+  assert.match(gameSource, /data-arena-stage="laser_duel"/);
+  assert.match(gameSource, /data-arena-stage="tug_war"/);
+  assert.match(gameSource, /data-arena-stage="battle_royale"/);
+  assert.match(gameSource, /data-arena-stage="quiz_race"/);
+  assert.match(gameSource, /data-arena-stage="base_battle"/);
+  assert.match(gameSource, /arena-race-smoke/);
+  assert.match(gameSource, /arena-tug-dust/);
+  assert.match(gameSource, /arena-laser-impact/);
+  assert.match(gameSource, /arena-shield-active/);
+  assert.match(gameSource, /arena-character-core/);
+});
+
 if (process.env.SKIP_RUNTIME_SMOKE !== '1') {
   await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
     execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
