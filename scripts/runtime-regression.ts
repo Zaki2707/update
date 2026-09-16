@@ -938,6 +938,40 @@ await test('Temporary student credentials are hidden from teachers and purged on
   assert.ok(appSource.includes("sessionStorage.removeItem('cbt_print_credentials')"));
 });
 
+
+await test('Game Arena: all five modes are wired through the student and server paths', () => {
+  for (const mode of ['laser_duel', 'tug_war', 'battle_royale', 'quiz_race', 'base_battle']) {
+    assert.match(gameSource, new RegExp(`id: ['"]${mode}['"]`));
+    assert.match(serverSource, new RegExp(`['"]${mode}['"]`));
+  }
+  assert.match(gameSource, /Soal menjadi sumber daya gameplay/);
+  assert.match(gameSource, /tidak meminta kamera maupun audio/);
+  assert.match(gameSource, /server/);
+});
+
+await test('Game Arena: answers are server-authoritative and sanitized per student', () => {
+  const sanitizeStart = serverSource.indexOf('function sanitizeGameArenaState');
+  const sanitizeEnd = serverSource.indexOf('\nfunction getGameArenaRoomForRequest', sanitizeStart);
+  const sanitizeFn = serverSource.slice(sanitizeStart, sanitizeEnd);
+  assert.ok(sanitizeStart >= 0 && sanitizeEnd > sanitizeStart);
+  assert.doesNotMatch(sanitizeFn, /answerKey|correctAnswer|correctOptionText/);
+  assert.match(serverSource, /function gameArenaValidateAnswer/);
+  assert.match(serverSource, /String\(req\.body\?\.questionId \|\| ''\) !== currentQuestion\.id/);
+  assert.match(serverSource, /getGameArenaGamePool\(req, student\)/);
+});
+
+await test('Game Arena: tenant/class isolation, player limits, rate limits and stale cleanup are enforced', () => {
+  assert.match(serverSource, /room\.tenantId === tenantId &&\s*room\.classKey === classKey/);
+  assert.match(serverSource, /function gameArenaTargetsStudentClass/);
+  assert.match(serverSource, /if \(mode === 'laser_duel'\) return 2/);
+  assert.match(serverSource, /if \(mode === 'battle_royale'\) return 24/);
+  assert.match(serverSource, /if \(mode === 'quiz_race'\) return 20/);
+  assert.match(serverSource, /GAME_ARENA_PLAYER_STALE_MS = 60 \* 1000/);
+  assert.match(serverSource, /GAME_ARENA_FINISHED_TTL_MS = 10 \* 60 \* 1000/);
+  assert.match(serverSource, /game-arena-answer:[^\n]*180/);
+  assert.match(serverSource, /game-arena-action:[^\n]*240/);
+});
+
 if (process.env.SKIP_RUNTIME_SMOKE !== '1') {
   await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
     execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
