@@ -725,33 +725,45 @@ window.saveLearningMaterial = async function(status) {
         id = `MAT_WEB_${Date.now()}_${randomPart}`;
         if (idEl) idEl.value = id;
     }
-    const subjectId = document.getElementById('learning-subject')?.value || '';
-    const subjectName = (learningState().subjects || []).find(subject => String(subject.id) === String(subjectId))?.name || '';
-    const classId = document.getElementById('learning-class')?.value || 'ALL';
-    const lkpdSelection = document.getElementById('learning-lkpd')?.value || '';
-    const examSelection = document.getElementById('learning-exam')?.value || '';
-    const payload = {
-        id,
-        title: document.getElementById('learning-title')?.value?.trim() || '',
-        topic: document.getElementById('learning-topic')?.value?.trim() || '',
-        subjectId,
-        subjectName,
-        classId,
-        classes: classId ? [classId] : [],
-        blocks: safeBlocksFromForm(),
-        lkpdId: lkpdSelection === '__CREATE_DRAFT__' ? '' : lkpdSelection,
-        examId: examSelection === '__CREATE_DRAFT__' ? '' : examSelection,
-        createLkpdDraft: lkpdSelection === '__CREATE_DRAFT__',
-        createExamDraft: examSelection === '__CREATE_DRAFT__',
-        requiresCompletionForLinks: document.getElementById('learning-require-complete')?.checked !== false,
-        engagementPolicy: {
-            minActiveSeconds: Math.max(0, Math.min(3600, Number(document.getElementById('learning-min-active-seconds')?.value || 0) || 0)),
-            requireAllBlocks: document.getElementById('learning-require-all-blocks')?.checked !== false
-        },
-        status
-    };
-    if (!payload.title) return learningToast('Judul materi wajib diisi.', 'warning');
+
+    const title = document.getElementById('learning-title')?.value?.trim() || '';
+    if (!title) return learningToast('Judul materi wajib diisi.', 'warning');
+
+    const saveButtons = Array.from(document.querySelectorAll('#learning-editor-modal button[onclick^="saveLearningMaterial"]'));
+    saveButtons.forEach(button => {
+        button.disabled = true;
+        button.classList.add('opacity-60', 'cursor-wait');
+    });
+
     try {
+        await uploadPendingLearningAssets();
+
+        const subjectId = document.getElementById('learning-subject')?.value || '';
+        const subjectName = (learningState().subjects || []).find(subject => String(subject.id) === String(subjectId))?.name || '';
+        const classId = document.getElementById('learning-class')?.value || 'ALL';
+        const lkpdSelection = document.getElementById('learning-lkpd')?.value || '';
+        const examSelection = document.getElementById('learning-exam')?.value || '';
+        const payload = {
+            id,
+            title,
+            topic: document.getElementById('learning-topic')?.value?.trim() || '',
+            subjectId,
+            subjectName,
+            classId,
+            classes: classId ? [classId] : [],
+            blocks: safeBlocksFromForm(),
+            lkpdId: lkpdSelection === '__CREATE_DRAFT__' ? '' : lkpdSelection,
+            examId: examSelection === '__CREATE_DRAFT__' ? '' : examSelection,
+            createLkpdDraft: lkpdSelection === '__CREATE_DRAFT__',
+            createExamDraft: examSelection === '__CREATE_DRAFT__',
+            requiresCompletionForLinks: document.getElementById('learning-require-complete')?.checked !== false,
+            engagementPolicy: {
+                minActiveSeconds: Math.max(0, Math.min(3600, Number(document.getElementById('learning-min-active-seconds')?.value || 0) || 0)),
+                requireAllBlocks: document.getElementById('learning-require-all-blocks')?.checked !== false
+            },
+            status
+        };
+
         const response = await fetch('/api/learning/materials', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -759,7 +771,9 @@ window.saveLearningMaterial = async function(status) {
         });
         const data = await response.json();
         if (!response.ok || data.success === false) throw new Error(data.message || 'Gagal menyimpan materi.');
+
         document.getElementById('learning-editor-modal')?.remove();
+        window.__learningEditorAssets = [];
         window.__learningLinks = null;
         const created = [];
         if (data.createdDrafts?.lkpdId) created.push('draft LKPD');
@@ -769,6 +783,10 @@ window.saveLearningMaterial = async function(status) {
         window.renderLearningTeacher(document.getElementById('view-container'));
     } catch (err) {
         learningToast(err.message || 'Gagal menyimpan materi.', 'error');
+        saveButtons.forEach(button => {
+            button.disabled = false;
+            button.classList.remove('opacity-60', 'cursor-wait');
+        });
     }
 };
 window.openLearningLinkedActivityEditor = async function(kind, id) {
