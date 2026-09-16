@@ -1013,6 +1013,9 @@ await test('Game Arena: rate limiting and stale-room cleanup are executable', ()
 
 await test('Game Arena: teacher host controls and visual arena monitoring are wired', () => {
   assert.match(serverSource, /\/api\/game-arena\/admin\/config/);
+  assert.match(serverSource, /visibleSections/);
+  assert.match(serverSource, /catalog.*arena.*treasure.*tower/);
+  assert.match(gameSource, /Pilih Kategori Siswa/);
   assert.match(serverSource, /\/api\/game-arena\/admin\/rooms/);
   assert.match(serverSource, /\/api\/game-arena\/admin\/room-action/);
   assert.match(serverSource, /app\.post\("\/api\/game-arena\/admin\/rooms", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
