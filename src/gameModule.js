@@ -388,7 +388,7 @@ export function renderGameAdminModule(container) {
                 </div>
                 <div class="bg-gradient-to-br from-slate-950 via-violet-950 to-slate-950 rounded-3xl p-5 sm:p-6 text-white border border-violet-500/30 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div><span class="text-[10px] font-black uppercase tracking-widest text-fuchsia-300">Teacher Arena View</span><h2 class="text-xl font-black mt-1">Monitoring Arena Siswa</h2><p class="text-xs text-slate-300 mt-1">Tampilan arena berasal dari state pertandingan yang sama dengan akun siswa. Semua avatar, posisi permainan, progress, dan status tim diperbarui otomatis.</p></div>
-                    <button type="button" onclick="refreshAdminGameArenaMonitoring(true)" class="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-arrows-rotate mr-1"></i> Refresh</button>
+                    <div class="flex items-center gap-2">${renderGameArenaFxControl()}<button type="button" onclick="refreshAdminGameArenaMonitoring(true)" class="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-arrows-rotate mr-1"></i> Refresh</button></div>
                 </div>
                 <div id="game-arena-monitoring-content" class="space-y-5"><div class="p-10 text-center text-slate-500 font-bold"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-fuchsia-500 block mb-2"></i>Menyiapkan arena live...</div></div>
             </div>
@@ -4580,7 +4580,7 @@ function renderAdminArenaRoomCard(room) {
     const meta = getGameArenaModeMeta(room.mode);
     const statusLabel = room.status === 'playing' ? 'LIVE' : room.status === 'waiting' ? 'LOBBY' : 'SELESAI';
     return `
-        <div class="rounded-3xl bg-slate-900 border border-slate-700 overflow-hidden shadow-xl">
+        <div data-arena-monitor-room="${gameEscapeAttr(room.id)}" class="rounded-3xl bg-slate-900 border border-slate-700 overflow-hidden shadow-xl">
             <div class="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800">
                 <div><div class="flex items-center gap-2"><h3 class="font-black text-white">${meta.icon} ${gameEscapeHtml(meta.title)}</h3><span class="px-2 py-0.5 rounded-full text-[9px] font-black ${room.status === 'playing' ? 'bg-emerald-500/20 text-emerald-300' : room.status === 'waiting' ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700 text-slate-300'}">${statusLabel}</span><span class="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 text-[9px] font-black">${room.hosted ? 'HOSTED' : 'QUICK'}</span></div><p class="text-[10px] text-slate-400 mt-1">${gameEscapeHtml(room.className || room.classKey || 'Kelas')} · ${room.playerCount}/${room.maxPlayers} siswa</p></div>
                 <div class="flex gap-2 flex-wrap">
@@ -4616,6 +4616,17 @@ window.refreshAdminGameArenaMonitoring = async function(showNotice = false) {
                 ${rooms.length ? rooms.map(renderAdminArenaRoomCard).join('') : `<div class="rounded-3xl border border-dashed border-slate-700 bg-slate-950/50 p-12 text-center"><div class="text-4xl mb-3">🎮</div><h3 class="font-black text-white">Belum ada Arena aktif</h3><p class="text-xs text-slate-400 mt-1">Buat Hosted Room dari tab Kelola Game & Mode, atau tunggu siswa memulai Quick Match.</p></div>`}
             </div>
         `;
+        requestAnimationFrame(() => {
+            rooms.forEach(room => {
+                const previous = adminArenaFxSnapshots[room.id] || null;
+                const card = container.querySelector(`[data-arena-monitor-room="${CSS.escape(String(room.id))}"]`);
+                if (previous && card) playGameArenaStateDeltaFx(previous, room.state, card);
+                adminArenaFxSnapshots[room.id] = room.state;
+            });
+            Object.keys(adminArenaFxSnapshots).forEach(roomId => {
+                if (!rooms.some(room => String(room.id) === String(roomId))) delete adminArenaFxSnapshots[roomId];
+            });
+        });
         if (showNotice) showToast('Monitoring Arena diperbarui.', 'success');
     } catch (err) {
         container.innerHTML = `<div class="rounded-2xl bg-rose-950/40 border border-rose-900 p-5 text-rose-200 text-xs font-bold">${gameEscapeHtml(err?.message || 'Gagal memuat Monitoring Arena.')}</div>`;
@@ -5125,7 +5136,10 @@ function mountGameArenaModal(mode) {
                         <div class="flex items-center gap-2"><h2 class="font-black text-lg">${meta.icon} ${gameEscapeHtml(meta.title)}</h2><span data-arena-status class="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 text-[9px] font-black uppercase">Menghubungkan</span></div>
                         <p class="text-[10px] text-slate-400 mt-0.5">Soal → resource → gameplay</p>
                     </div>
-                    <button type="button" onclick="closeGameArena()" class="w-10 h-10 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
+                    <div class="flex items-center gap-2">
+                        ${renderGameArenaFxControl()}
+                        <button type="button" onclick="closeGameArena()" class="w-10 h-10 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
                 </div>
                 <div data-arena-body class="p-4 sm:p-6"><div class="py-16 text-center text-slate-500"><i class="fa-solid fa-circle-notch fa-spin text-3xl text-indigo-500"></i><p class="text-xs font-bold mt-3">Menyiapkan arena...</p></div></div>
             </div>
@@ -5162,11 +5176,13 @@ window.pollGameArenaState = async function() {
             if (res.status === 404) await window.closeGameArena(false);
             return;
         }
+        const previousState = activeArenaSession.state;
         activeArenaSession.state = data.state;
         const nextVersion = Number(data.state?.version ?? -1);
         if (nextVersion !== activeArenaSession.lastVersion) {
             activeArenaSession.lastVersion = nextVersion;
             renderGameArenaModalState(data.state);
+            requestAnimationFrame(() => playGameArenaStateDeltaFx(previousState, data.state, document.getElementById('game-arena-modal')));
         }
     } catch (_) {}
 };
@@ -5196,9 +5212,11 @@ window.submitGameArenaAnswer = async function(answer) {
             }
             throw new Error(data.message || 'Jawaban tidak dapat diproses.');
         }
+        const previousState = activeArenaSession.state;
         activeArenaSession.state = data.state;
         activeArenaSession.lastVersion = Number(data.state?.version ?? -1);
         renderGameArenaModalState(data.state);
+        requestAnimationFrame(() => playGameArenaAnswerFx(previousState, data.state, Boolean(data.isCorrect), document.getElementById('game-arena-modal')));
         const nextFeedback = document.getElementById('game-arena-answer-feedback');
         if (nextFeedback && data.state?.status === 'playing') {
             nextFeedback.className = `min-h-5 text-center text-[11px] font-black ${data.isCorrect ? 'text-emerald-600' : 'text-rose-600'}`;
@@ -5234,9 +5252,11 @@ window.submitGameArenaAction = async function(action, targetId = '') {
             }
             throw new Error(data.message || 'Aksi tidak dapat diproses.');
         }
+        const previousState = activeArenaSession.state;
         activeArenaSession.state = data.state;
         activeArenaSession.lastVersion = Number(data.state?.version ?? -1);
         renderGameArenaModalState(data.state);
+        requestAnimationFrame(() => playGameArenaActionFx(previousState, data.state, action, targetId, document.getElementById('game-arena-modal')));
         const nextFeedback = document.getElementById('game-arena-action-feedback');
         if (nextFeedback) nextFeedback.textContent = data.eventText || 'Aksi berhasil.';
         else if (data.eventText && data.state?.status === 'playing') showToast(data.eventText, 'success');
