@@ -938,6 +938,78 @@ await test('Temporary student credentials are hidden from teachers and purged on
   assert.ok(appSource.includes("sessionStorage.removeItem('cbt_print_credentials')"));
 });
 
+
+await test('Game Arena: all five modes are wired through the student and server allowlist', () => {
+  const allowlistStart = serverSource.indexOf('const GAME_ARENA_MODES = new Set');
+  const allowlistEnd = serverSource.indexOf(';', allowlistStart);
+  const allowlist = serverSource.slice(allowlistStart, allowlistEnd);
+  assert.ok(allowlistStart >= 0 && allowlistEnd > allowlistStart);
+  for (const mode of ['laser_duel', 'tug_war', 'battle_royale', 'quiz_race', 'base_battle']) {
+    assert.match(gameSource, new RegExp(`id: ['"]${mode}['"]`));
+    assert.match(allowlist, new RegExp(`['"]${mode}['"]`));
+  }
+  assert.match(gameSource, /Soal menjadi sumber daya gameplay/);
+  assert.match(gameSource, /tidak meminta kamera maupun audio/);
+});
+
+await test('Game Arena: answers are server-authoritative and sanitized per student', () => {
+  const sanitizeStart = serverSource.indexOf('function sanitizeGameArenaState');
+  const sanitizeEnd = serverSource.indexOf('\nfunction getGameArenaRoomForRequest', sanitizeStart);
+  const sanitizeFn = serverSource.slice(sanitizeStart, sanitizeEnd);
+  const answerStart = serverSource.indexOf('app.post("/api/game-arena/answer"');
+  const answerEnd = serverSource.indexOf('\napp.post("/api/game-arena/action"', answerStart);
+  const answerRoute = serverSource.slice(answerStart, answerEnd);
+  assert.ok(sanitizeStart >= 0 && sanitizeEnd > sanitizeStart);
+  assert.doesNotMatch(sanitizeFn, /answerKey|correctAnswer(?!s)|correctOptionText/);
+  assert.match(answerRoute, /gameArenaValidateAnswer\(game, submitted\)/);
+  assert.match(answerRoute, /String\(req\.body\?\.questionId \|\| ''\) !== currentQuestion\.id/);
+  assert.match(answerRoute, /getGameArenaGamePool\(req, student\)/);
+});
+
+await test('Game Arena: tenant/class isolation and player limits are enforced', () => {
+  assert.match(serverSource, /item\.tenantId === tenantId &&\s*item\.classKey === classKey/);
+  assert.match(serverSource, /function gameArenaTargetsStudentClass/);
+  assert.match(serverSource, /if \(mode === 'laser_duel'\) return 2/);
+  assert.match(serverSource, /if \(mode === 'battle_royale'\) return 24/);
+  assert.match(serverSource, /if \(mode === 'quiz_race'\) return 20/);
+  assert.match(serverSource, /room\.players\.length >= gameArenaModeMaxPlayers\(mode\)/);
+});
+
+await test('Game Arena: rate limiting and stale-room cleanup are executable', () => {
+  assert.match(serverSource, /game-arena-answer:[^\n]*180/);
+  assert.match(serverSource, /game-arena-action:[^\n]*240/);
+  const cleanup = serverFunction('cleanupGameArenaRooms');
+  const now = Date.now();
+  const rooms: Record<string, any> = {
+    stale: {
+      status: 'waiting',
+      players: [{ id: 'stale-player', lastSeenAt: now - 61 * 1000 }],
+      questions: {},
+      updatedAt: now
+    },
+    finished: {
+      status: 'finished',
+      players: [],
+      questions: {},
+      finishedAt: now - 11 * 60 * 1000,
+      updatedAt: now - 11 * 60 * 1000
+    }
+  };
+  const context: any = vm.createContext({
+    gameArenaRoomsServer: rooms,
+    GAME_ARENA_PLAYER_STALE_MS: 60 * 1000,
+    GAME_ARENA_ROOM_TTL_MS: 30 * 60 * 1000,
+    GAME_ARENA_FINISHED_TTL_MS: 10 * 60 * 1000,
+    rebalanceGameArenaAfterLeave: () => {},
+    evaluateGameArenaWinner: () => {},
+    touchGameArenaRoom: () => {},
+  });
+  vm.runInContext(cleanup, context);
+  context.cleanupGameArenaRooms(now);
+  assert.equal(rooms.stale, undefined);
+  assert.equal(rooms.finished, undefined);
+});
+
 if (process.env.SKIP_RUNTIME_SMOKE !== '1') {
   await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
     execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
