@@ -6437,7 +6437,7 @@ app.post("/api/game-arena/join", (req: any, res) => {
       room = Object.values(gameArenaRoomsServer).find(item => {
         if (item.tenantId !== tenantId || item.classKey !== classKey || item.mode !== mode || item.status === 'finished') return false;
         if (mode === 'laser_duel') return item.status === 'waiting' && item.players.length < 2;
-        return item.players.length < 20;
+        return item.players.length < 40;
       });
     }
 
@@ -6566,20 +6566,22 @@ app.post("/api/game-arena/answer", (req: any, res) => {
       } else {
         pushPower = 4 + Math.min(3, Math.floor(Math.max(0, player.streak - 1) / 2));
       }
-      room.position += player.side === 'A' ? pushPower : -pushPower;
+      const direction = room.mode === 'tug_war'
+        ? (player.side === 'A' ? -1 : 1)
+        : (player.side === 'A' ? 1 : -1);
+      room.position += direction * pushPower;
       room.position = Math.max(0, Math.min(100, room.position));
     } else {
       player.streak = 0;
     }
 
-    if (room.position >= 95) {
+    const winningSide = room.mode === 'tug_war'
+      ? (room.position <= 5 ? 'A' : room.position >= 95 ? 'B' : null)
+      : (room.position >= 95 ? 'A' : room.position <= 5 ? 'B' : null);
+
+    if (winningSide) {
       room.status = 'finished';
-      room.winnerSide = 'A';
-      room.finishedAt = Date.now();
-      room.questions = {};
-    } else if (room.position <= 5) {
-      room.status = 'finished';
-      room.winnerSide = 'B';
+      room.winnerSide = winningSide;
       room.finishedAt = Date.now();
       room.questions = {};
     } else {
