@@ -2921,6 +2921,7 @@ function updateMemoryKey(key: string, value: any) {
   else if (key === 'photoCloudinaryMap') photoCloudinaryMap = value;
   else if (key === 'eduGames') eduGames = value;
   else if (key === 'gameAttempts') gameAttempts = value;
+  else if (key === 'gameArenaConfigs') gameArenaConfigs = value;
   else if (key === 'learningProgress') learningProgress = value;
   else if (key === 'madrasahs') madrasahs = value;
   else if (key === 'tokenRequests') tokenRequests = value;
@@ -2973,6 +2974,7 @@ function getMemoryKeyValue(key: string) {
   if (key === 'photoCloudinaryMap') return photoCloudinaryMap;
   if (key === 'eduGames') return eduGames;
   if (key === 'gameAttempts') return gameAttempts;
+  if (key === 'gameArenaConfigs') return gameArenaConfigs;
   if (key === 'learningProgress') return learningProgress;
   if (key === 'madrasahs') return madrasahs;
   if (key === 'tokenRequests') return tokenRequests;
@@ -3641,6 +3643,7 @@ let examViolationLogs: Record<string, any[]> = bootStore['examViolationLogs'] ||
 let importGroups: any[] = bootStore['importGroups'] || [];
 let eduGames: any[] = bootStore['eduGames'] || [];
 let gameAttempts: any[] = bootStore['gameAttempts'] || [];
+let gameArenaConfigs: Record<string, any> = bootStore['gameArenaConfigs'] || {};
 let learningProgress: any[] = bootStore['learningProgress'] || [];
 let childguardRules = bootStore['childguardRules'] || {};
 let childguardLogs = bootStore['childguardLogs'] || [];
@@ -6227,6 +6230,37 @@ const GAME_ARENA_AVATAR_PRESETS = new Set(['bintang', 'roket', 'buku', 'komet', 
 const GAME_ARENA_COMPATIBLE_TYPES = new Set(['tebak_kata', 'tebak_gambar', 'susun_kata', 'true_false']);
 const GAME_ARENA_MODES = new Set<GameArenaMode>(['laser_duel', 'tug_war', 'battle_royale', 'quiz_race', 'base_battle']);
 
+
+function normalizeArenaList(value: any, maxItems = 500): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((item: any) => String(item || '').trim()).filter(Boolean))).slice(0, maxItems);
+}
+
+function defaultArenaModeConfig() {
+  return { enabled: true, quickMatch: true, classIds: [] as string[], gameIds: [] as string[] };
+}
+
+function getArenaTenantConfig(req: any) {
+  const tenantId = gameTenantNamespace(req);
+  const raw = gameArenaConfigs?.[tenantId];
+  const modes: Record<string, any> = {};
+  for (const mode of GAME_ARENA_MODES) {
+    const item = raw?.modes?.[mode];
+    modes[mode] = {
+      enabled: item?.enabled !== false,
+      quickMatch: item?.quickMatch !== false,
+      classIds: normalizeArenaList(item?.classIds, 200),
+      gameIds: normalizeArenaList(item?.gameIds, 500)
+    };
+  }
+  return { version: 1, modes };
+}
+
+function arenaClassAllowed(config: any, classKey: string, className = '') {
+  const ids = Array.isArray(config?.classIds) ? config.classIds.map((x: any) => String(x)) : [];
+  return ids.length === 0 || ids.includes(String(classKey || '')) || ids.includes(String(className || ''));
+}
+
 function isGameArenaStudentRole(role: any): boolean {
   return ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(String(role || '').toLowerCase());
 }
@@ -6403,8 +6437,10 @@ function shuffleGameArenaItems<T>(items: T[]): T[] {
   return out;
 }
 
-function createGameArenaQuestion(req: any, student: any, previousGameId = ''): GameArenaQuestion | null {
-  const pool = getGameArenaGamePool(req, student);
+function createGameArenaQuestion(req: any, student: any, previousGameId = '', sourceGameIds: string[] = []): GameArenaQuestion | null {
+  const basePool = getGameArenaGamePool(req, student);
+  const allowed = new Set(normalizeArenaList(sourceGameIds));
+  const pool = allowed.size ? basePool.filter((game: any) => allowed.has(String(game?.id || ''))) : basePool;
   if (!pool.length) return null;
 
   const alternatives = pool.filter((game: any) => String(game.id) !== String(previousGameId));
@@ -6483,9 +6519,22 @@ function ensureGameArenaQuestion(req: any, room: GameArenaRoom, student: any, fo
 
   const previous = room.questions[studentId];
   if (!forceNew && previous) return;
-  const next = createGameArenaQuestion(req, student, previous?.gameId || '');
+  const next = createGameArenaQuestion(req, student, previous?.gameId || '', normalizeArenaList((room as any).sourceGameIds));
   if (next) room.questions[studentId] = next;
   else delete room.questions[studentId];
+}
+
+
+function startHostedOrQuickArenaRoom(req: any, room: GameArenaRoom): boolean {
+  if (room.players.length < 2) return false;
+  resetGameArenaRoom(room);
+  room.status = 'playing';
+  for (const player of room.players) {
+    const resolved = findStudentForRequest(req, player.id);
+    if (resolved.student) ensureGameArenaQuestion(req, room, resolved.student);
+  }
+  touchGameArenaRoom(room);
+  return true;
 }
 
 function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
@@ -6502,7 +6551,9 @@ function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
     status: room.status,
     position: Math.max(0, Math.min(100, Number(room.position || 50))),
     version: room.version,
+    classKey: room.classKey,
     className: room.className,
+    hosted: Boolean((room as any).hosted),
     winnerSide: room.winnerSide || null,
     winnerPlayerId: room.winnerPlayerId || null,
     base: {
@@ -6591,6 +6642,53 @@ function applyBaseBattleAction(room: GameArenaRoom, player: GameArenaPlayer, act
   throw new Error('Aksi Base Battle tidak valid.');
 }
 
+
+app.get("/api/game-arena/config", requireAuth, (req: any, res) => {
+  const config = getArenaTenantConfig(req);
+  const student = getGameArenaStudent(req);
+  const classKey = student ? getGameArenaClassKey(student) : '';
+  const className = student ? getGameArenaClassName(student) : '';
+  const modes: Record<string, any> = {};
+  for (const mode of GAME_ARENA_MODES) {
+    const item = config.modes[mode] || defaultArenaModeConfig();
+    modes[mode] = {
+      enabled: Boolean(item.enabled && (!student || arenaClassAllowed(item, classKey, className))),
+      quickMatch: Boolean(item.quickMatch)
+    };
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, config: { version: 1, modes } });
+});
+
+app.get("/api/game-arena/admin/config", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, config: getArenaTenantConfig(req) });
+});
+
+app.post("/api/game-arena/admin/config", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const tenantId = gameTenantNamespace(req);
+    const current = getArenaTenantConfig(req);
+    const incoming = req.body?.modes && typeof req.body.modes === 'object' ? req.body.modes : {};
+    const modes: Record<string, any> = {};
+    for (const mode of GAME_ARENA_MODES) {
+      const raw = incoming?.[mode] ?? current.modes[mode] ?? defaultArenaModeConfig();
+      modes[mode] = {
+        enabled: raw?.enabled !== false,
+        quickMatch: raw?.quickMatch !== false,
+        classIds: normalizeArenaList(raw?.classIds, 200),
+        gameIds: normalizeArenaList(raw?.gameIds, 500)
+      };
+    }
+    const next = { version: 1, modes };
+    gameArenaConfigs = { ...gameArenaConfigs, [tenantId]: next };
+    await saveData('gameArenaConfigs', gameArenaConfigs);
+    res.json({ success: true, config: next });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal menyimpan konfigurasi Arena.") });
+  }
+});
+
 app.post("/api/game-arena/avatar", async (req: any, res) => {
   try {
     const student = getGameArenaStudent(req);
@@ -6624,15 +6722,21 @@ app.post("/api/game-arena/join", (req: any, res) => {
       return res.status(400).json({ success: false, message: "Mode arena tidak valid." });
     }
 
-    if (!getGameArenaGamePool(req, student).length) {
-      return res.status(409).json({
-        success: false,
-        message: "Belum ada game aktif yang kompatibel untuk kelasmu. Guru perlu menyiapkan Tebak Kata, Tebak Gambar, Susun Kata, atau Benar/Salah."
-      });
+    const modeConfig = getArenaTenantConfig(req).modes[mode] || defaultArenaModeConfig();
+    const classKey = getGameArenaClassKey(student);
+    const className = getGameArenaClassName(student);
+    if (!modeConfig.enabled || !arenaClassAllowed(modeConfig, classKey, className)) {
+      return res.status(403).json({ success: false, message: "Mode Arena ini tidak diaktifkan untuk kelasmu." });
+    }
+
+    const sourceIds = normalizeArenaList(modeConfig.gameIds);
+    const basePool = getGameArenaGamePool(req, student);
+    const usablePool = sourceIds.length ? basePool.filter((item: any) => sourceIds.includes(String(item?.id || ''))) : basePool;
+    if (!usablePool.length) {
+      return res.status(409).json({ success: false, message: "Belum ada sumber soal Arena yang kompatibel untuk kelasmu." });
     }
 
     const tenantId = gameTenantNamespace(req);
-    const classKey = getGameArenaClassKey(student);
     const studentId = String(student.id);
     const now = Date.now();
 
@@ -6648,8 +6752,24 @@ app.post("/api/game-arena/join", (req: any, res) => {
       room = Object.values(gameArenaRoomsServer).find(item =>
         item.tenantId === tenantId &&
         item.classKey === classKey &&
+        item.mode === mode &&
+        Boolean((item as any).hosted) &&
         canJoinGameArenaRoom(item, mode)
       );
+    }
+
+    if (!room && modeConfig.quickMatch) {
+      room = Object.values(gameArenaRoomsServer).find(item =>
+        item.tenantId === tenantId &&
+        item.classKey === classKey &&
+        item.mode === mode &&
+        !Boolean((item as any).hosted) &&
+        canJoinGameArenaRoom(item, mode)
+      );
+    }
+
+    if (!room && !modeConfig.quickMatch) {
+      return res.status(409).json({ success: false, message: "Guru belum membuat Hosted Room untuk kelasmu." });
     }
 
     if (!room) {
@@ -6657,7 +6777,7 @@ app.post("/api/game-arena/join", (req: any, res) => {
         id: `ARENA_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
         tenantId,
         classKey,
-        className: getGameArenaClassName(student),
+        className,
         mode,
         status: 'waiting',
         position: 50,
@@ -6668,9 +6788,11 @@ app.post("/api/game-arena/join", (req: any, res) => {
         baseBHp: 100,
         baseAShield: 0,
         baseBShield: 0,
+        hosted: false,
+        sourceGameIds: sourceIds,
         createdAt: now,
         updatedAt: now
-      };
+      } as GameArenaRoom;
       gameArenaRoomsServer[room.id] = room;
     }
 
@@ -6681,22 +6803,15 @@ app.post("/api/game-arena/join", (req: any, res) => {
     const joiningPlayer = room.players.find(player => player.id === studentId);
     if (joiningPlayer) joiningPlayer.lastSeenAt = now;
 
-    const wasWaiting = room.status === 'waiting';
-    if (room.players.length >= 2) room.status = 'playing';
-
-    if (wasWaiting && room.status === 'playing') {
-      resetGameArenaRoom(room);
-      room.status = 'playing';
+    if (!Boolean((room as any).hosted) && room.status === 'waiting' && room.players.length >= 2) {
+      startHostedOrQuickArenaRoom(req, room);
+    } else if (room.status === 'playing') {
+      ensureGameArenaQuestion(req, room, student);
+      touchGameArenaRoom(room);
+    } else {
+      touchGameArenaRoom(room);
     }
 
-    if (room.status === 'playing') {
-      for (const player of room.players) {
-        const playerResolution = findStudentForRequest(req, player.id);
-        if (playerResolution.student) ensureGameArenaQuestion(req, room, playerResolution.student);
-      }
-    }
-
-    touchGameArenaRoom(room);
     res.json({ success: true, state: sanitizeGameArenaState(room, studentId) });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err, "Gagal masuk ke Game Arena.") });
@@ -6759,7 +6874,9 @@ app.post("/api/game-arena/answer", (req: any, res) => {
     }
 
     const pool = getGameArenaGamePool(req, student);
-    const game = pool.find((item: any) => String(item.id) === currentQuestion.gameId);
+    const sourceIds = normalizeArenaList((room as any).sourceGameIds);
+    const effectivePool = sourceIds.length ? pool.filter((item: any) => sourceIds.includes(String(item?.id || ''))) : pool;
+    const game = effectivePool.find((item: any) => String(item.id) === currentQuestion.gameId);
     if (!game) {
       delete room.questions[studentId];
       ensureGameArenaQuestion(req, room, student, true);
@@ -6913,6 +7030,133 @@ app.post("/api/game-arena/leave", (req: any, res) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err, "Gagal keluar dari arena.") });
+  }
+});
+
+
+app.get("/api/game-arena/admin/rooms", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  cleanupGameArenaRooms();
+  const tenantId = gameTenantNamespace(req);
+  const roomList = Object.values(gameArenaRoomsServer)
+    .filter(room => room.tenantId === tenantId)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+    .map(room => ({
+      id: room.id,
+      mode: room.mode,
+      status: room.status,
+      classKey: room.classKey,
+      className: room.className,
+      hosted: Boolean((room as any).hosted),
+      playerCount: room.players.length,
+      maxPlayers: gameArenaModeMaxPlayers(room.mode),
+      createdAt: room.createdAt,
+      updatedAt: room.updatedAt,
+      state: sanitizeGameArenaState(room, '')
+    }));
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, rooms: roomList });
+});
+
+app.post("/api/game-arena/admin/rooms", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  try {
+    cleanupGameArenaRooms();
+    const mode = String(req.body?.mode || '') as GameArenaMode;
+    if (!GAME_ARENA_MODES.has(mode)) return res.status(400).json({ success: false, message: "Mode Arena tidak valid." });
+
+    const config = getArenaTenantConfig(req).modes[mode] || defaultArenaModeConfig();
+    if (!config.enabled) return res.status(409).json({ success: false, message: "Aktifkan mode Arena ini terlebih dahulu." });
+
+    const requestedClass = String(req.body?.classKey || '').trim();
+    const scopedClasses = filterByMadrasah(classes || [], req);
+    const classRow = scopedClasses.find((item: any) =>
+      String(item?.id || '') === requestedClass ||
+      String(item?.name || '') === requestedClass ||
+      String(item?.code || '') === requestedClass
+    );
+    if (!classRow) return res.status(404).json({ success: false, message: "Kelas tidak ditemukan pada madrasah ini." });
+
+    const classKey = String(classRow.id || classRow.code || classRow.name);
+    const className = String(classRow.name || classRow.code || classKey);
+    if (!arenaClassAllowed(config, classKey, className)) {
+      return res.status(403).json({ success: false, message: "Mode Arena ini tidak aktif untuk kelas tersebut." });
+    }
+
+    const existing = Object.values(gameArenaRoomsServer).find(room =>
+      room.tenantId === gameTenantNamespace(req) &&
+      room.mode === mode &&
+      room.classKey === classKey &&
+      Boolean((room as any).hosted) &&
+      room.status !== 'finished'
+    );
+    if (existing) return res.status(409).json({ success: false, message: "Hosted Room aktif untuk mode dan kelas ini sudah ada.", roomId: existing.id });
+
+    const sourceIds = normalizeArenaList(config.gameIds);
+    const syntheticStudent = { classId: classKey, class_id: classKey, className, kelas: className };
+    const basePool = getGameArenaGamePool(req, syntheticStudent);
+    const usablePool = sourceIds.length ? basePool.filter((item: any) => sourceIds.includes(String(item?.id || ''))) : basePool;
+    if (!usablePool.length) {
+      return res.status(409).json({ success: false, message: "Tidak ada sumber soal Arena yang kompatibel untuk kelas ini." });
+    }
+
+    const authUser = req.user || getAuthUser(req);
+    const now = Date.now();
+    const room = {
+      id: `ARENA_HOST_${now}_${crypto.randomBytes(4).toString('hex')}`,
+      tenantId: gameTenantNamespace(req),
+      classKey,
+      className,
+      mode,
+      status: 'waiting',
+      position: 50,
+      players: [],
+      questions: {},
+      version: 0,
+      baseAHp: 100,
+      baseBHp: 100,
+      baseAShield: 0,
+      baseBShield: 0,
+      hosted: true,
+      hostedBy: String(authUser?.id || ''),
+      sourceGameIds: sourceIds,
+      createdAt: now,
+      updatedAt: now
+    } as GameArenaRoom;
+
+    gameArenaRoomsServer[room.id] = room;
+    res.json({ success: true, room: { id: room.id, state: sanitizeGameArenaState(room, '') } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal membuat Hosted Room Arena.") });
+  }
+});
+
+app.post("/api/game-arena/admin/room-action", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  try {
+    cleanupGameArenaRooms();
+    const room = getGameArenaRoomForRequest(req, req.body?.roomId);
+    if (!room) return res.status(404).json({ success: false, message: "Room Arena tidak ditemukan." });
+
+    const action = String(req.body?.action || '').trim().toLowerCase();
+    if (action === 'start') {
+      if (room.players.length < 2) return res.status(409).json({ success: false, message: "Minimal dua siswa harus masuk sebelum dimulai." });
+      startHostedOrQuickArenaRoom(req, room);
+    } else if (action === 'finish') {
+      finishGameArenaRoom(room);
+      touchGameArenaRoom(room);
+    } else if (action === 'reset') {
+      room.status = 'waiting';
+      resetGameArenaRoom(room);
+      touchGameArenaRoom(room);
+    } else if (action === 'delete') {
+      delete gameArenaRoomsServer[room.id];
+      return res.json({ success: true, deleted: true });
+    } else {
+      return res.status(400).json({ success: false, message: "Aksi Room Arena tidak valid." });
+    }
+
+    res.json({ success: true, room: { id: room.id, state: sanitizeGameArenaState(room, '') } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal mengontrol Room Arena.") });
   }
 });
 

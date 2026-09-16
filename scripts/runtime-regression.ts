@@ -1010,6 +1010,22 @@ await test('Game Arena: rate limiting and stale-room cleanup are executable', ()
   assert.equal(rooms.finished, undefined);
 });
 
+
+await test('Game Arena: teacher host controls and visual arena monitoring are wired', () => {
+  assert.match(serverSource, /\/api\/game-arena\/admin\/config/);
+  assert.match(serverSource, /\/api\/game-arena\/admin\/rooms/);
+  assert.match(serverSource, /\/api\/game-arena\/admin\/room-action/);
+  assert.match(serverSource, /requireRole\(\['teacher', 'guru', 'admin', 'bos', 'superadmin'\]\)/);
+  assert.match(serverSource, /Mode Arena ini tidak diaktifkan untuk kelasmu/);
+  assert.match(serverSource, /Guru belum membuat Hosted Room untuk kelasmu/);
+  assert.match(serverSource, /sourceGameIds/);
+  assert.match(gameSource, /renderAdminArenaManagementSection/);
+  assert.match(gameSource, /refreshAdminGameArenaMonitoring/);
+  assert.match(gameSource, /renderGameArenaStage\(state\)/);
+  assert.match(gameSource, /__adminGameSubTab='arena-monitoring'/);
+  assert.match(gameSource, /gameArenaStudentConfig/);
+});
+
 if (process.env.SKIP_RUNTIME_SMOKE !== '1') {
   await test('Built server HTTP smoke: OFFLINE fallback, ONLINE pending/ready and private backend assets', () => {
     execFileSync(process.execPath, ['scripts/runtime-smoke.cjs'], {
