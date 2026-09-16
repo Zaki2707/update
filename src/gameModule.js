@@ -518,6 +518,9 @@ export function renderGameAdminModule(container) {
                                     <div class="w-8 h-4.5 bg-slate-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-emerald-400"></div>
                                 </div>
                             </label>
+                            <button type="button" onclick="openGameEducationVisibilityModal()" class="inline-flex items-center gap-1.5 bg-indigo-950/80 hover:bg-indigo-900 px-3 py-1 rounded-full border border-indigo-400/40 text-[11px] font-bold text-indigo-200 transition cursor-pointer" title="Pilih kategori Game Edukasi yang tampil untuk siswa">
+                                <i class="fa-solid fa-filter"></i> Pilih Kategori Siswa
+                            </button>
                         </div>
                         <h1 class="text-2xl sm:text-3xl font-black tracking-tight">Manajemen Game Edukasi</h1>
                         <p class="text-xs sm:text-sm text-emerald-100 max-w-xl">
@@ -3758,6 +3761,12 @@ export function renderGameStudentModule(container) {
         return;
     }
 
+    if (!appState.gameArenaStudentConfig) {
+        ensureGameArenaStudentConfigLoaded();
+        container.innerHTML = '<div class="p-12 text-center text-slate-500 font-bold"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-indigo-500 block mb-3"></i>Menyiapkan pilihan Game Edukasi...</div>';
+        return;
+    }
+
     const currentStudent = appState.currentUser || {};
     const xp = currentStudent.gameXp || 0;
     const progress = getXpProgress(xp);
@@ -3769,18 +3778,28 @@ export function renderGameStudentModule(container) {
     const allModes = getGameModes();
     const activeAdventureModes = allModes.filter(m => m.modeType === 'adventure' && m.status !== 'inactive');
     const activeTowerModes = allModes.filter(m => m.modeType === 'tower' && m.status !== 'inactive');
-    const hasAdventure = activeAdventureModes.length > 0;
-    const hasTower = activeTowerModes.length > 0;
-    const hasArena = appState.settings?.gameArenaEnabled !== false;
+    const visibleSections = appState.gameArenaStudentConfig.visibleSections || {};
+    const sectionVisible = section => visibleSections[section]?.enabled !== false;
+    const hasCatalog = sectionVisible('catalog');
+    const hasAdventure = sectionVisible('treasure') && activeAdventureModes.length > 0;
+    const hasTower = sectionVisible('tower') && activeTowerModes.length > 0;
+    const hasArena = sectionVisible('arena') && appState.settings?.gameArenaEnabled !== false;
+    const firstVisibleSubTab = hasCatalog ? 'katalog' : hasArena ? 'arena' : hasAdventure ? 'adventure' : hasTower ? 'tower' : 'katalog';
 
-    let activeSubTab = window.__studentGameSubTab || 'katalog';
-    if (activeSubTab === 'adventure' && !hasAdventure) activeSubTab = 'katalog';
-    if (activeSubTab === 'tower' && !hasTower) activeSubTab = 'katalog';
-    if (activeSubTab === 'arena' && !hasArena) activeSubTab = 'katalog';
-    if (activeSubTab === 'escape') activeSubTab = 'katalog';
+    let activeSubTab = window.__studentGameSubTab || firstVisibleSubTab;
+    if (activeSubTab === 'katalog' && !hasCatalog) activeSubTab = firstVisibleSubTab;
+    if (activeSubTab === 'adventure' && !hasAdventure) activeSubTab = firstVisibleSubTab;
+    if (activeSubTab === 'tower' && !hasTower) activeSubTab = firstVisibleSubTab;
+    if (activeSubTab === 'arena' && !hasArena) activeSubTab = firstVisibleSubTab;
+    if (activeSubTab === 'escape') activeSubTab = firstVisibleSubTab;
     window.__studentGameSubTab = activeSubTab;
 
-    const showSubTabs = hasAdventure || hasTower || hasArena;
+    const visibleSectionCount = [hasCatalog, hasArena, hasAdventure, hasTower].filter(Boolean).length;
+    const showSubTabs = visibleSectionCount > 1;
+    if (!visibleSectionCount) {
+        container.innerHTML = '<div class="p-12 text-center text-slate-500 font-bold"><i class="fa-solid fa-gamepad text-3xl text-slate-300 block mb-3"></i>Belum ada kategori Game Edukasi yang diaktifkan untuk kelasmu.</div>';
+        return;
+    }
 
     container.innerHTML = `
         <div class="space-y-6 pb-16 animate-fade-in">
@@ -3850,9 +3869,11 @@ export function renderGameStudentModule(container) {
             <!-- Sub Tabs Navigation (Conditional: Only visible if modes are active) -->
             ${showSubTabs ? `
                 <div class="flex items-center space-x-2 border-b border-slate-200 pb-2 overflow-x-auto">
-                    <button type="button" onclick="window.__studentGameSubTab='katalog'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'katalog' ? 'bg-slate-900 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">
-                        🎮 Katalog Semua Game
-                    </button>
+                    ${hasCatalog ? `
+                        <button type="button" onclick="window.__studentGameSubTab='katalog'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'katalog' ? 'bg-slate-900 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">
+                            🎮 Katalog Semua Game
+                        </button>
+                    ` : ''}
                     ${hasArena ? `
                         <button type="button" onclick="window.__studentGameSubTab='arena'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'arena' ? 'bg-fuchsia-600 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">
                             ⚔️ Game Arena
@@ -3875,7 +3896,10 @@ export function renderGameStudentModule(container) {
             ${activeSubTab === 'arena' && hasArena ? renderStudentArenaTab(games) :
               activeSubTab === 'adventure' && hasAdventure ? renderStudentAdventureTab(games) :
               activeSubTab === 'tower' && hasTower ? renderStudentTowerTab(games) :
-              renderStudentKatalogTab(games)}
+              hasCatalog ? renderStudentKatalogTab(games) :
+              hasAdventure ? renderStudentAdventureTab(games) :
+              hasTower ? renderStudentTowerTab(games) :
+              renderStudentArenaTab(games)}
         </div>
     `;
 }
@@ -3949,7 +3973,16 @@ function defaultClientArenaConfig() {
     GAME_ARENA_MODE_META.forEach(mode => {
         modes[mode.id] = { enabled: true, quickMatch: true, classIds: [], gameIds: [] };
     });
-    return { version: 1, modes };
+    return {
+        version: 1,
+        modes,
+        visibleSections: {
+            catalog: { enabled: true, classIds: [] },
+            arena: { enabled: true, classIds: [] },
+            treasure: { enabled: true, classIds: [] },
+            tower: { enabled: true, classIds: [] }
+        }
+    };
 }
 
 function normalizeClientArenaConfig(raw) {
@@ -3962,6 +3995,14 @@ function normalizeClientArenaConfig(raw) {
             quickMatch: item.quickMatch !== false,
             classIds: Array.isArray(item.classIds) ? [...new Set(item.classIds.map(x => String(x || '')).filter(Boolean))] : [],
             gameIds: Array.isArray(item.gameIds) ? [...new Set(item.gameIds.map(x => String(x || '')).filter(Boolean))] : []
+        };
+    });
+    const sectionSource = source?.visibleSections || {};
+    ['catalog', 'arena', 'treasure', 'tower'].forEach(section => {
+        const item = sectionSource[section];
+        base.visibleSections[section] = {
+            enabled: typeof item === 'boolean' ? item : item?.enabled !== false,
+            classIds: Array.isArray(item?.classIds) ? [...new Set(item.classIds.map(x => String(x || '')).filter(Boolean))] : []
         };
     });
     return base;
@@ -4001,10 +4042,10 @@ async function loadGameArenaStudentConfig(force = false) {
     try {
         const res = await fetch('/api/game-arena/config', { cache: 'no-store' });
         const data = await res.json();
-        if (res.ok && data.success) {
-            appState.gameArenaStudentConfig = normalizeClientArenaConfig(data.config);
-        }
+        if (!res.ok || !data.success) throw new Error('Konfigurasi Game Edukasi tidak tersedia.');
+        appState.gameArenaStudentConfig = normalizeClientArenaConfig(data.config);
     } catch (_) {
+        appState.gameArenaStudentConfig = appState.gameArenaStudentConfig || defaultClientArenaConfig();
     } finally {
         arenaStudentConfigLoading = false;
     }
@@ -4014,10 +4055,8 @@ async function loadGameArenaStudentConfig(force = false) {
 function ensureGameArenaStudentConfigLoaded() {
     if (appState.gameArenaStudentConfig || arenaStudentConfigLoading) return;
     loadGameArenaStudentConfig(true).then(() => {
-        if (window.__studentGameSubTab === 'arena') {
-            const container = document.getElementById('view-container');
-            if (container) renderGameStudentModule(container);
-        }
+        const container = document.getElementById('view-container');
+        if (appState.currentRoute === 'game_edukasi_siswa' && container) renderGameStudentModule(container);
     });
 }
 
@@ -4087,12 +4126,62 @@ window.toggleGameArenaAdminMode = async function(modeId) {
     await saveGameArenaAdminConfig(config);
 };
 
+window.openGameEducationVisibilityModal = async function() {
+    const config = await loadGameArenaAdminConfig(true);
+    const sections = [
+        { id: 'catalog', icon: '🎮', title: 'Semua Katalog', desc: 'Game edukasi biasa yang tersedia.' },
+        { id: 'arena', icon: '⚔️', title: 'Game Arena', desc: 'Pertandingan Arena yang di-host admin.' },
+        { id: 'treasure', icon: '🗺️', title: 'Harta Karun', desc: 'Peta petualangan dan titik harta.' },
+        { id: 'tower', icon: '🏰', title: 'Menara', desc: 'Quest menara bertingkat.' }
+    ];
+    const classes = Array.isArray(appState.classes) ? appState.classes : [];
+    const modal = document.getElementById('modal-container');
+    if (!modal) return;
+    modal.innerHTML = `<div class="fixed inset-0 z-[125] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-3">
+        <div class="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-white rounded-3xl shadow-2xl">
+            <form onsubmit="saveGameEducationVisibility(event)">
+                <div class="sticky top-0 z-10 bg-slate-950 text-white p-5 flex items-center justify-between">
+                    <div><h3 class="font-black text-lg">🎮 Pilih Kategori Game untuk Siswa</h3><p class="text-[10px] text-slate-400">Kategori yang tidak dicentang tidak akan muncul di akun siswa.</p></div>
+                    <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="w-9 h-9 rounded-xl bg-slate-800 cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="p-5 space-y-4">
+                    ${sections.map(section => {
+                        const item = config.visibleSections?.[section.id] || { enabled: true, classIds: [] };
+                        const selected = new Set(Array.isArray(item.classIds) ? item.classIds.map(String) : []);
+                        return `<div class="rounded-2xl border border-slate-200 p-4 space-y-3">
+                            <label class="flex items-start gap-3 cursor-pointer"><input id="game-section-${section.id}" type="checkbox" class="mt-1 h-4 w-4 accent-indigo-600" ${item.enabled !== false ? 'checked' : ''}><span><b class="text-sm text-slate-800">${section.icon} ${section.title}</b><small class="block text-[10px] text-slate-500 mt-1">${section.desc}</small></span></label>
+                            <label class="block text-[10px] font-bold text-slate-500">Berlaku untuk kelas <select id="game-section-classes-${section.id}" multiple class="mt-1 w-full min-h-20 rounded-xl border border-slate-200 p-2 text-xs bg-slate-50"><option value="">Semua Kelas</option>${classes.map(item => { const id = String(item.id || item.code || item.name || ''); return id ? `<option value="${gameEscapeHtml(id)}" ${selected.has(id) ? 'selected' : ''}>${gameEscapeHtml(item.name || item.code || id)}</option>` : ''; }).join('')}</select><span class="font-normal text-slate-400">Kosongkan pilihan untuk semua kelas.</span></label>
+                        </div>`;
+                    }).join('')}
+                    <div class="flex justify-end gap-2 pt-2"><button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 cursor-pointer">Batal</button><button type="submit" class="px-5 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-black cursor-pointer">Simpan Tampilan Siswa</button></div>
+                </div>
+            </form>
+        </div>
+    </div>`;
+};
+
+window.saveGameEducationVisibility = async function(event) {
+    event.preventDefault();
+    const config = await loadGameArenaAdminConfig(true);
+    config.visibleSections = {};
+    for (const id of ['catalog', 'arena', 'treasure', 'tower']) {
+        const select = document.getElementById(`game-section-classes-${id}`);
+        config.visibleSections[id] = {
+            enabled: Boolean(document.getElementById(`game-section-${id}`)?.checked),
+            classIds: select ? [...select.selectedOptions].map(option => option.value).filter(Boolean) : []
+        };
+    }
+    await saveGameArenaAdminConfig(config);
+    const modal = document.getElementById('modal-container');
+    if (modal) modal.innerHTML = '';
+};
+
 async function saveGameArenaAdminConfig(config) {
     try {
         const res = await fetch('/api/game-arena/admin/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modes: config.modes })
+            body: JSON.stringify({ modes: config.modes, visibleSections: config.visibleSections })
         });
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.message || 'Gagal menyimpan konfigurasi Arena.');
