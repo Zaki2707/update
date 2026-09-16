@@ -755,6 +755,15 @@ await test('Livecam: browser runtime is P2P-only, video-only, bounded and spotli
   assert.match(cameraHelper, /P2P_ONLY_LIVECAM_V5/);
   assert.doesNotMatch(cameraHelper, /audio:\s*true/);
   assert.ok((cameraHelper.match(/audio:\s*false/g) || []).length >= 3);
+  assert.match(assessmentSource, /WebRTC connection failed\. Keeping snapshot fallback active/);
+});
+
+await test('Learning materials: explicit multi-class targets override legacy class fields', () => {
+  const start = serverSource.indexOf('function classTargetsFromLearningMaterial');
+  const end = serverSource.indexOf('\nfunction studentCanAccessLearningMaterial', start);
+  const helper = serverSource.slice(start, end > start ? end : undefined);
+  assert.match(helper, /explicitTargets\.length > 0 \? explicitTargets/);
+  assert.match(helper, /material\?\.className/);
 });
 
 await test('CBT monitoring: legacy livecam frames use the same bounded raster validation', () => {
