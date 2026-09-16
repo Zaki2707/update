@@ -3732,14 +3732,16 @@ export function renderGameStudentModule(container) {
     const activeTowerModes = allModes.filter(m => m.modeType === 'tower' && m.status !== 'inactive');
     const hasAdventure = activeAdventureModes.length > 0;
     const hasTower = activeTowerModes.length > 0;
+    const hasArena = appState.settings?.gameArenaEnabled !== false;
 
     let activeSubTab = window.__studentGameSubTab || 'katalog';
     if (activeSubTab === 'adventure' && !hasAdventure) activeSubTab = 'katalog';
     if (activeSubTab === 'tower' && !hasTower) activeSubTab = 'katalog';
+    if (activeSubTab === 'arena' && !hasArena) activeSubTab = 'katalog';
     if (activeSubTab === 'escape') activeSubTab = 'katalog';
     window.__studentGameSubTab = activeSubTab;
 
-    const showSubTabs = hasAdventure || hasTower;
+    const showSubTabs = hasAdventure || hasTower || hasArena;
 
     container.innerHTML = `
         <div class="space-y-6 pb-16 animate-fade-in">
@@ -3812,6 +3814,11 @@ export function renderGameStudentModule(container) {
                     <button type="button" onclick="window.__studentGameSubTab='katalog'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'katalog' ? 'bg-slate-900 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">
                         🎮 Katalog Semua Game
                     </button>
+                    ${hasArena ? `
+                        <button type="button" onclick="window.__studentGameSubTab='arena'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'arena' ? 'bg-fuchsia-600 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">
+                            ⚔️ Game Arena
+                        </button>
+                    ` : ''}
                     ${hasAdventure ? `
                         <button type="button" onclick="window.__studentGameSubTab='adventure'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'adventure' ? 'bg-amber-500 text-slate-950 shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">
                             🗺️ Peta Petualangan Harta Karun (${activeAdventureModes.length})
@@ -3826,7 +3833,8 @@ export function renderGameStudentModule(container) {
             ` : ''}
 
             <!-- TAB CONTENT -->
-            ${activeSubTab === 'adventure' && hasAdventure ? renderStudentAdventureTab(games) :
+            ${activeSubTab === 'arena' && hasArena ? renderStudentArenaTab(games) :
+              activeSubTab === 'adventure' && hasAdventure ? renderStudentAdventureTab(games) :
               activeSubTab === 'tower' && hasTower ? renderStudentTowerTab(games) :
               renderStudentKatalogTab(games)}
         </div>
@@ -3834,6 +3842,343 @@ export function renderGameStudentModule(container) {
 }
 
 window.renderGameStudentModule = renderGameStudentModule;
+
+const GAME_ARENA_AVATARS = [
+    { id: 'bintang', name: 'Bintang', icon: 'fa-star', shell: 'from-amber-300 to-orange-500', accent: 'text-amber-950' },
+    { id: 'roket', name: 'Roket', icon: 'fa-rocket', shell: 'from-sky-300 to-indigo-600', accent: 'text-white' },
+    { id: 'buku', name: 'Buku', icon: 'fa-book-open', shell: 'from-emerald-300 to-teal-600', accent: 'text-white' },
+    { id: 'komet', name: 'Komet', icon: 'fa-meteor', shell: 'from-fuchsia-300 to-purple-700', accent: 'text-white' },
+    { id: 'bulan', name: 'Bulan', icon: 'fa-moon', shell: 'from-slate-300 to-slate-700', accent: 'text-white' },
+    { id: 'petir', name: 'Petir', icon: 'fa-bolt', shell: 'from-yellow-200 to-amber-500', accent: 'text-slate-900' }
+];
+
+let activeArenaSession = null;
+let activeArenaPollTimer = null;
+
+function getGameArenaAvatarPreset(presetId) {
+    return GAME_ARENA_AVATARS.find(item => item.id === presetId) || GAME_ARENA_AVATARS[0];
+}
+
+function renderGameArenaAvatar(presetId, sizeClass = 'w-16 h-16', extraClass = '') {
+    const avatar = getGameArenaAvatarPreset(presetId);
+    return `
+        <div class="${sizeClass} ${extraClass} rounded-[28%] bg-gradient-to-br ${avatar.shell} shadow-lg border-2 border-white/70 flex items-center justify-center relative overflow-hidden">
+            <div class="absolute inset-x-2 top-2 h-2 rounded-full bg-white/30"></div>
+            <i class="fa-solid ${avatar.icon} ${avatar.accent} text-[42%] drop-shadow"></i>
+        </div>
+    `;
+}
+
+function getCurrentGameArenaAvatarId() {
+    const currentId = String(appState.currentUser?.id || '');
+    const storedStudent = (Array.isArray(appState.students) ? appState.students : [])
+        .find(student => String(student?.id || '') === currentId);
+    return String(
+        appState.currentUser?.gameAvatar?.presetId ||
+        storedStudent?.gameAvatar?.presetId ||
+        'bintang'
+    ).toLowerCase();
+}
+
+function getArenaCompatibleClientGames(games) {
+    const allowed = new Set(['tebak_kata', 'tebak_gambar', 'susun_kata', 'true_false']);
+    const student = appState.currentUser || {};
+    const classKey = String(student.classId || student.class_id || student.className || student.kelas || '');
+    const className = String(student.className || student.kelas || classKey || '');
+    return (Array.isArray(games) ? games : []).filter(game => {
+        if (!game || game.status === 'inactive' || !allowed.has(String(game.gameType || ''))) return false;
+        const targets = Array.isArray(game.classIds) && game.classIds.length ? game.classIds : [game.classId || ''];
+        return targets.some(target => {
+            const raw = String(target || '');
+            const normalized = raw.trim().toLowerCase();
+            return !normalized || normalized === 'semua kelas' || normalized === 'all' || normalized === '*' || raw === classKey || raw === className;
+        });
+    });
+}
+
+function renderStudentArenaTab(games) {
+    const currentAvatarId = getCurrentGameArenaAvatarId();
+    const compatibleGames = getArenaCompatibleClientGames(games);
+    return `
+        <div class="space-y-6 animate-fade-in">
+            <div class="bg-gradient-to-br from-slate-950 via-indigo-950 to-purple-950 rounded-3xl p-6 sm:p-8 text-white shadow-2xl border border-indigo-500/30 relative overflow-hidden">
+                <div class="absolute -right-10 -top-10 w-52 h-52 rounded-full bg-indigo-500/10 blur-3xl"></div>
+                <div class="relative z-10 flex flex-col lg:flex-row gap-6 lg:items-center lg:justify-between">
+                    <div class="space-y-3 max-w-2xl">
+                        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-fuchsia-500/15 border border-fuchsia-400/30 text-[10px] font-black uppercase tracking-[0.18em] text-fuchsia-200"><i class="fa-solid fa-bolt"></i> Madrasah Game Arena</span>
+                        <h2 class="text-2xl sm:text-3xl font-black">Jawab soal untuk mendapatkan daya tempur.</h2>
+                        <p class="text-xs sm:text-sm text-indigo-100/80 leading-relaxed">Soal adalah sumber energi permainan. Jawaban benar mendorong laser atau menarik tali timmu. Arena berjalan terpisah dari CBT dan tidak menggunakan kamera maupun audio.</p>
+                        <div class="flex flex-wrap gap-2 text-[10px] font-extrabold">
+                            <span class="px-3 py-1.5 rounded-xl bg-white/10 border border-white/10"><i class="fa-solid fa-users mr-1"></i> PvP / Tim Kelas</span>
+                            <span class="px-3 py-1.5 rounded-xl bg-white/10 border border-white/10"><i class="fa-solid fa-book-open mr-1"></i> ${compatibleGames.length} tantangan kompatibel</span>
+                            <span class="px-3 py-1.5 rounded-xl bg-white/10 border border-white/10"><i class="fa-solid fa-shield-halved mr-1"></i> Kunci jawaban tetap di server</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-4 bg-white/10 border border-white/10 rounded-3xl p-4 shrink-0">
+                        ${renderGameArenaAvatar(currentAvatarId, 'w-20 h-20')}
+                        <div>
+                            <p class="text-[10px] uppercase tracking-wider text-indigo-300 font-black">Avatar Arena</p>
+                            <p class="font-black text-lg">${gameEscapeHtml(getGameArenaAvatarPreset(currentAvatarId).name)}</p>
+                            <p class="text-[10px] text-slate-400 mt-1">Kosmetik saja, tanpa bonus kekuatan.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <button type="button" onclick="openGameArenaMode('laser_duel')" class="text-left rounded-3xl overflow-hidden border border-cyan-200 bg-white shadow-sm hover:shadow-xl transition group cursor-pointer">
+                    <div class="h-44 bg-gradient-to-br from-slate-950 via-cyan-950 to-indigo-950 relative overflow-hidden p-5">
+                        <div class="absolute inset-x-8 top-1/2 h-1 -translate-y-1/2 bg-gradient-to-r from-cyan-400 via-white to-fuchsia-500 shadow-[0_0_24px_rgba(255,255,255,.55)]"></div>
+                        <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white border-4 border-cyan-300 shadow-[0_0_35px_rgba(103,232,249,.95)]"></div>
+                        <div class="absolute left-5 bottom-4">${renderGameArenaAvatar(currentAvatarId, 'w-14 h-14')}</div>
+                        <div class="absolute right-5 bottom-4 opacity-75">${renderGameArenaAvatar('komet', 'w-14 h-14')}</div>
+                        <span class="absolute top-4 left-4 px-3 py-1 rounded-full bg-cyan-400/15 border border-cyan-300/30 text-cyan-100 text-[10px] font-black uppercase">1 vs 1</span>
+                    </div>
+                    <div class="p-5">
+                        <h3 class="font-black text-lg text-slate-900 group-hover:text-cyan-700 transition">⚡ Laser Duel</h3>
+                        <p class="text-xs text-slate-500 mt-1 leading-relaxed">Setiap jawaban benar mendorong titik benturan laser ke arah lawan. Streak memberi dorongan ekstra.</p>
+                        <div class="mt-4 inline-flex items-center gap-2 text-xs font-black text-cyan-700">Masuk Arena <i class="fa-solid fa-arrow-right"></i></div>
+                    </div>
+                </button>
+
+                <button type="button" onclick="openGameArenaMode('tug_war')" class="text-left rounded-3xl overflow-hidden border border-amber-200 bg-white shadow-sm hover:shadow-xl transition group cursor-pointer">
+                    <div class="h-44 bg-gradient-to-b from-sky-200 via-emerald-100 to-emerald-300 relative overflow-hidden p-5">
+                        <div class="absolute inset-x-10 top-[55%] h-2 bg-amber-800 rounded-full shadow"></div>
+                        <div class="absolute left-1/2 top-[43%] -translate-x-1/2 h-20 w-1 bg-slate-700"></div>
+                        <div class="absolute left-1/2 top-[41%] -translate-x-1/2 text-3xl">🚩</div>
+                        <div class="absolute left-5 bottom-4">${renderGameArenaAvatar('roket', 'w-14 h-14')}</div>
+                        <div class="absolute right-5 bottom-4">${renderGameArenaAvatar('buku', 'w-14 h-14')}</div>
+                        <span class="absolute top-4 left-4 px-3 py-1 rounded-full bg-amber-900/10 border border-amber-900/20 text-amber-950 text-[10px] font-black uppercase">Tim Kelas</span>
+                    </div>
+                    <div class="p-5">
+                        <h3 class="font-black text-lg text-slate-900 group-hover:text-amber-700 transition">🪢 Tarik Tambang Ilmu</h3>
+                        <p class="text-xs text-slate-500 mt-1 leading-relaxed">Siswa kelas yang masuk dibagi otomatis ke dua tim. Jawaban benar bersama-sama menarik penanda kemenangan.</p>
+                        <div class="mt-4 inline-flex items-center gap-2 text-xs font-black text-amber-700">Masuk Arena <i class="fa-solid fa-arrow-right"></i></div>
+                    </div>
+                </button>
+            </div>
+
+            <div class="bg-white rounded-3xl border border-slate-100 p-5 sm:p-6 shadow-sm">
+                <div class="flex items-center justify-between gap-3 mb-4">
+                    <div>
+                        <h3 class="font-black text-slate-900">Pilih Avatar Arena</h3>
+                        <p class="text-[11px] text-slate-500 mt-1">Avatar tersimpan di akun siswa dan digunakan di semua mode Arena.</p>
+                    </div>
+                    <span class="text-[10px] font-black uppercase tracking-wider bg-slate-100 text-slate-600 px-3 py-1 rounded-full">Kosmetik</span>
+                </div>
+                <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                    ${GAME_ARENA_AVATARS.map(avatar => `
+                        <button type="button" onclick="saveGameArenaAvatar('${avatar.id}')" class="rounded-2xl border ${avatar.id === currentAvatarId ? 'border-indigo-500 ring-2 ring-indigo-100 bg-indigo-50' : 'border-slate-200 hover:border-indigo-300 bg-white'} p-3 flex flex-col items-center gap-2 transition cursor-pointer">
+                            ${renderGameArenaAvatar(avatar.id, 'w-12 h-12')}
+                            <span class="text-[10px] font-black text-slate-700">${gameEscapeHtml(avatar.name)}</span>
+                        </button>
+                    `).join('')}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+window.saveGameArenaAvatar = async function(presetId) {
+    if (!GAME_ARENA_AVATARS.some(item => item.id === presetId)) return;
+    try {
+        const res = await fetch('/api/game-arena/avatar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ presetId })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || 'Gagal menyimpan avatar.');
+        if (appState.currentUser) {
+            appState.currentUser.gameAvatar = data.avatar || { presetId };
+            safeSetLocalStorage('madrasah_current_user', appState.currentUser);
+        }
+        showToast('Avatar Arena diperbarui.', 'success');
+        if (window.__studentGameSubTab === 'arena') renderGameStudentModule(document.getElementById('view-container'));
+    } catch (err) {
+        showToast(err?.message || 'Gagal menyimpan avatar Arena.', 'error');
+    }
+};
+
+function getArenaSidePlayers(state, side) {
+    return (state?.players || []).filter(player => player.side === side);
+}
+
+function renderArenaPlayerChip(player, fallbackLabel = 'Menunggu...') {
+    if (!player) {
+        return `<div class="flex items-center gap-2 opacity-55"><div class="w-11 h-11 rounded-2xl border-2 border-dashed border-slate-400 flex items-center justify-center text-slate-400"><i class="fa-solid fa-user-plus"></i></div><span class="text-xs font-bold text-slate-400">${fallbackLabel}</span></div>`;
+    }
+    const preset = String(player.avatar?.presetId || 'bintang');
+    return `<div class="flex items-center gap-2 min-w-0">${renderGameArenaAvatar(preset, 'w-11 h-11', 'shrink-0')}<div class="min-w-0"><div class="font-black text-xs text-white truncate">${gameEscapeHtml(player.name || 'Siswa')}</div><div class="text-[10px] text-slate-300 font-bold">🔥 ${Number(player.streak || 0)} streak · ✓ ${Number(player.correctAnswers || 0)}</div></div></div>`;
+}
+
+function renderLaserArenaStage(state) {
+    const left = getArenaSidePlayers(state, 'A')[0] || null;
+    const right = getArenaSidePlayers(state, 'B')[0] || null;
+    const position = Math.max(5, Math.min(95, Number(state.position || 50)));
+    return `
+        <div class="rounded-3xl bg-gradient-to-br from-slate-950 via-cyan-950 to-purple-950 border border-cyan-400/20 p-4 sm:p-5 relative overflow-hidden">
+            <div class="absolute inset-0 opacity-20" style="background-image:radial-gradient(circle at 20% 20%,white 0 1px,transparent 1.5px);background-size:24px 24px"></div>
+            <div class="relative z-10 flex items-start justify-between gap-4">${renderArenaPlayerChip(left)}<div class="text-center shrink-0"><span class="px-2.5 py-1 rounded-full bg-white/10 text-[9px] font-black text-cyan-100 uppercase">${state.status === 'waiting' ? 'Lobby' : state.status === 'finished' ? 'Selesai' : 'Laser Duel'}</span></div><div class="text-right">${renderArenaPlayerChip(right)}</div></div>
+            <div class="relative h-28 mt-5 z-10">
+                <div class="absolute left-7 right-7 top-1/2 -translate-y-1/2 h-2 rounded-full bg-slate-800 overflow-hidden"><div class="absolute inset-y-0 left-0 bg-cyan-400/80" style="width:${position}%"></div><div class="absolute inset-y-0 right-0 bg-fuchsia-500/80" style="width:${100-position}%"></div></div>
+                <div class="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white border-4 border-cyan-200 shadow-[0_0_34px_rgba(255,255,255,.95)] transition-all duration-500" style="left:${position}%"><div class="absolute inset-2 rounded-full bg-gradient-to-br from-cyan-300 to-fuchsia-400 animate-pulse"></div></div>
+                <div class="absolute left-2 bottom-0 text-4xl">⚡</div><div class="absolute right-2 bottom-0 text-4xl scale-x-[-1]">⚡</div>
+            </div>
+        </div>`;
+}
+
+function renderTugArenaStage(state) {
+    const teamA = getArenaSidePlayers(state, 'A');
+    const teamB = getArenaSidePlayers(state, 'B');
+    const position = Math.max(5, Math.min(95, Number(state.position || 50)));
+    return `
+        <div class="rounded-3xl bg-gradient-to-b from-sky-200 via-emerald-100 to-emerald-300 border border-emerald-300 p-4 sm:p-5 relative overflow-hidden">
+            <div class="absolute left-5 top-5 px-3 py-1 rounded-full bg-blue-700 text-white text-[10px] font-black">TIM A · ${teamA.length}</div><div class="absolute right-5 top-5 px-3 py-1 rounded-full bg-rose-700 text-white text-[10px] font-black">TIM B · ${teamB.length}</div>
+            <div class="h-44 relative mt-5"><div class="absolute left-6 right-6 top-[58%] h-3 rounded-full bg-amber-900 shadow-lg"></div><div class="absolute top-[35%] -translate-x-1/2 transition-all duration-500" style="left:${position}%"><div class="text-4xl -ml-3">🚩</div><div class="w-1 h-20 bg-slate-800 mx-auto -mt-2"></div></div><div class="absolute left-2 bottom-1 flex -space-x-2">${teamA.slice(0, 5).map(player => renderGameArenaAvatar(player.avatar?.presetId || 'bintang', 'w-11 h-11', 'border-2 border-white')).join('')}</div><div class="absolute right-2 bottom-1 flex -space-x-2 flex-row-reverse">${teamB.slice(0, 5).map(player => renderGameArenaAvatar(player.avatar?.presetId || 'komet', 'w-11 h-11', 'border-2 border-white')).join('')}</div></div>
+            <div class="grid grid-cols-2 gap-2 text-[10px] font-bold"><div class="bg-white/70 rounded-xl p-2 text-blue-900">✓ ${teamA.reduce((sum,p)=>sum+Number(p.correctAnswers||0),0)} jawaban benar</div><div class="bg-white/70 rounded-xl p-2 text-right text-rose-900">✓ ${teamB.reduce((sum,p)=>sum+Number(p.correctAnswers||0),0)} jawaban benar</div></div>
+        </div>`;
+}
+
+function renderGameArenaQuestionPanel(state, preservedDraft = '') {
+    if (state.status === 'waiting') return `<div class="rounded-3xl bg-amber-50 border border-amber-200 p-6 text-center"><div class="text-3xl mb-2 animate-pulse">⏳</div><h3 class="font-black text-amber-900">Menunggu pemain lain dari ${gameEscapeHtml(state.className || 'kelasmu')}...</h3><p class="text-xs text-amber-700 mt-1">Pertandingan otomatis dimulai setelah minimal dua siswa bergabung.</p></div>`;
+    if (state.status === 'finished') {
+        const won = state.me?.side && state.winnerSide === state.me.side;
+        return `<div class="rounded-3xl ${won ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'} border p-6 text-center space-y-3"><div class="text-4xl">${won ? '🏆' : '🤝'}</div><h3 class="font-black text-xl ${won ? 'text-emerald-800' : 'text-slate-800'}">${won ? 'Tim kamu memenangkan ronde!' : 'Ronde selesai.'}</h3><p class="text-xs text-slate-500">Arena menilai ronde ini dari jawaban benar yang mendorong posisi permainan.</p><button type="button" onclick="rematchGameArena()" class="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-black cursor-pointer"><i class="fa-solid fa-rotate-right mr-1"></i> Cari Ronde Baru</button></div>`;
+    }
+    const question = state.question;
+    if (!question) return `<div class="rounded-3xl bg-rose-50 border border-rose-200 p-6 text-center"><h3 class="font-black text-rose-800">Belum ada soal kompatibel.</h3><p class="text-xs text-rose-600 mt-1">Minta guru menyiapkan game Tebak Kata, Tebak Gambar, Susun Kata, atau Benar/Salah.</p></div>`;
+
+    return `
+        <div class="rounded-3xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
+            <div class="flex items-center justify-between gap-3"><span class="px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-black uppercase tracking-wider"><i class="fa-solid fa-battery-three-quarters mr-1"></i> Recharge Knowledge</span><span class="text-[10px] font-bold text-slate-400">${gameEscapeHtml(question.title || 'Tantangan')}</span></div>
+            ${question.imageUrl ? `<img src="${gameSafeImageSrc(question.imageUrl)}" class="w-full max-h-44 object-cover rounded-2xl border border-slate-200">` : ''}
+            <p class="text-sm sm:text-base font-black text-slate-900 leading-relaxed">${gameEscapeHtml(question.prompt || '')}</p>
+            ${Array.isArray(question.scrambledLetters) && question.scrambledLetters.length ? `
+                <div class="flex flex-wrap items-center justify-center gap-2 rounded-2xl bg-violet-50 border border-violet-200 p-3">
+                    <span class="w-full text-center text-[10px] font-black uppercase tracking-wider text-violet-700">Susun huruf berikut</span>
+                    ${question.scrambledLetters.map(letter => `<span class="w-9 h-10 rounded-xl bg-white border border-violet-200 shadow-sm flex items-center justify-center text-base font-black text-violet-900">${gameEscapeHtml(letter)}</span>`).join('')}
+                </div>
+            ` : ''}
+            ${question.type === 'choice' ? `<div class="grid grid-cols-2 gap-2">${(question.options || []).map(option => `<button type="button" onclick="submitGameArenaAnswer(${gameInlineArg(option)})" class="px-4 py-3 rounded-2xl bg-slate-100 hover:bg-indigo-600 hover:text-white text-slate-800 text-xs font-black transition cursor-pointer">${gameEscapeHtml(option)}</button>`).join('')}</div>` : `<form onsubmit="submitGameArenaTextAnswer(event)" class="flex flex-col sm:flex-row gap-2"><input id="game-arena-answer-input" value="${gameEscapeAttr(preservedDraft)}" autocomplete="off" placeholder="Ketik jawaban..." class="flex-1 px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 text-sm font-black uppercase focus:outline-none focus:ring-2 focus:ring-indigo-400"><button type="submit" class="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-bolt mr-1"></i> Kirim Daya</button></form>`}
+            <div id="game-arena-answer-feedback" class="min-h-5 text-center text-[11px] font-black"></div>
+        </div>`;
+}
+
+function renderGameArenaModalState(state) {
+    const modal = document.getElementById('game-arena-modal');
+    if (!modal || !state) return;
+    const draft = document.getElementById('game-arena-answer-input')?.value || '';
+    const body = modal.querySelector('[data-arena-body]');
+    if (!body) return;
+    body.innerHTML = `<div class="space-y-4">${state.mode === 'tug_war' ? renderTugArenaStage(state) : renderLaserArenaStage(state)}${renderGameArenaQuestionPanel(state, draft)}</div>`;
+    const status = modal.querySelector('[data-arena-status]');
+    if (status) status.textContent = state.status === 'waiting' ? 'Mencari lawan' : state.status === 'finished' ? 'Ronde selesai' : 'LIVE';
+}
+
+function mountGameArenaModal(mode) {
+    document.getElementById('game-arena-modal')?.remove();
+    const title = mode === 'tug_war' ? 'Tarik Tambang Ilmu' : 'Laser Duel';
+    document.body.insertAdjacentHTML('beforeend', `<div id="game-arena-modal" class="fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-md p-2 sm:p-4 flex items-center justify-center"><div class="w-full max-w-4xl max-h-[96vh] overflow-y-auto rounded-[28px] bg-slate-100 border border-white/10 shadow-2xl"><div class="sticky top-0 z-20 bg-slate-950 text-white px-4 sm:px-6 py-4 flex items-center justify-between border-b border-slate-800"><div><div class="flex items-center gap-2"><h2 class="font-black text-lg">${gameEscapeHtml(title)}</h2><span data-arena-status class="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 text-[9px] font-black uppercase">Menghubungkan</span></div><p class="text-[10px] text-slate-400 mt-0.5">Soal → daya → dorong arena</p></div><button type="button" onclick="closeGameArena()" class="w-10 h-10 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"><i class="fa-solid fa-xmark"></i></button></div><div data-arena-body class="p-4 sm:p-6"><div class="py-16 text-center text-slate-500"><i class="fa-solid fa-circle-notch fa-spin text-3xl text-indigo-500"></i><p class="text-xs font-bold mt-3">Menyiapkan arena...</p></div></div></div></div>`);
+}
+
+window.openGameArenaMode = async function(mode) {
+    if (!['laser_duel', 'tug_war'].includes(mode)) return;
+    if (activeArenaSession?.roomId) await window.closeGameArena(false);
+    mountGameArenaModal(mode);
+    activeArenaSession = { mode, roomId: '', state: null, submitting: false, lastVersion: -1 };
+    try {
+        const res = await fetch('/api/game-arena/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || 'Gagal masuk Arena.');
+        activeArenaSession.roomId = data.state?.id || '';
+        activeArenaSession.state = data.state;
+        activeArenaSession.lastVersion = Number(data.state?.version ?? -1);
+        renderGameArenaModalState(data.state);
+        if (activeArenaPollTimer) clearInterval(activeArenaPollTimer);
+        activeArenaPollTimer = setInterval(window.pollGameArenaState, 1200);
+    } catch (err) {
+        const body = document.querySelector('#game-arena-modal [data-arena-body]');
+        if (body) body.innerHTML = `<div class="py-12 px-4 text-center"><div class="text-4xl mb-3">🛠️</div><h3 class="font-black text-slate-800">Arena belum bisa dimulai</h3><p class="text-xs text-slate-500 mt-2 max-w-lg mx-auto">${gameEscapeHtml(err?.message || 'Terjadi kesalahan saat masuk Arena.')}</p></div>`;
+    }
+};
+
+window.pollGameArenaState = async function() {
+    if (!activeArenaSession?.roomId) return;
+    try {
+        const res = await fetch(`/api/game-arena/state?roomId=${encodeURIComponent(activeArenaSession.roomId)}`, { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            if (res.status === 404) await window.closeGameArena(false);
+            return;
+        }
+        activeArenaSession.state = data.state;
+        const nextVersion = Number(data.state?.version ?? -1);
+        if (nextVersion !== activeArenaSession.lastVersion) {
+            activeArenaSession.lastVersion = nextVersion;
+            renderGameArenaModalState(data.state);
+        }
+    } catch (_) {}
+};
+
+window.submitGameArenaTextAnswer = function(event) {
+    event?.preventDefault?.();
+    const input = document.getElementById('game-arena-answer-input');
+    const answer = String(input?.value || '').trim();
+    if (answer) window.submitGameArenaAnswer(answer);
+};
+
+window.submitGameArenaAnswer = async function(answer) {
+    if (!activeArenaSession?.roomId || activeArenaSession.submitting) return;
+    const question = activeArenaSession.state?.question;
+    if (!question?.id) return;
+    activeArenaSession.submitting = true;
+    const feedback = document.getElementById('game-arena-answer-feedback');
+    if (feedback) { feedback.className = 'min-h-5 text-center text-[11px] font-black text-indigo-600'; feedback.textContent = 'Memeriksa jawaban...'; }
+    try {
+        const res = await fetch('/api/game-arena/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roomId: activeArenaSession.roomId, questionId: question.id, submittedAnswer: String(answer || '') }) });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            if (data.state) {
+                activeArenaSession.state = data.state;
+                activeArenaSession.lastVersion = Number(data.state?.version ?? -1);
+                renderGameArenaModalState(data.state);
+            }
+            throw new Error(data.message || 'Jawaban tidak dapat diproses.');
+        }
+        activeArenaSession.state = data.state;
+        activeArenaSession.lastVersion = Number(data.state?.version ?? -1);
+        renderGameArenaModalState(data.state);
+        const nextFeedback = document.getElementById('game-arena-answer-feedback');
+        if (nextFeedback && data.state?.status === 'playing') {
+            nextFeedback.className = `min-h-5 text-center text-[11px] font-black ${data.isCorrect ? 'text-emerald-600' : 'text-rose-600'}`;
+            nextFeedback.textContent = data.isCorrect ? `Benar! Daya +${Number(data.pushPower || 0)}` : 'Belum tepat. Streak kembali ke 0.';
+        }
+    } catch (err) {
+        const currentFeedback = document.getElementById('game-arena-answer-feedback');
+        if (currentFeedback) { currentFeedback.className = 'min-h-5 text-center text-[11px] font-black text-rose-600'; currentFeedback.textContent = err?.message || 'Gagal mengirim jawaban.'; }
+        else showToast(err?.message || 'Gagal mengirim jawaban Arena.', 'error');
+    } finally {
+        if (activeArenaSession) activeArenaSession.submitting = false;
+    }
+};
+
+window.closeGameArena = async function(removeModal = true) {
+    if (activeArenaPollTimer) { clearInterval(activeArenaPollTimer); activeArenaPollTimer = null; }
+    const roomId = activeArenaSession?.roomId;
+    activeArenaSession = null;
+    if (roomId) {
+        try { await fetch('/api/game-arena/leave', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roomId }) }); } catch (_) {}
+    }
+    if (removeModal) document.getElementById('game-arena-modal')?.remove();
+};
+
+window.rematchGameArena = async function() {
+    const mode = activeArenaSession?.mode;
+    if (!mode) return;
+    await window.closeGameArena(true);
+    await window.openGameArenaMode(mode);
+};
 
 function renderStudentKatalogTab(games) {
     const activeGames = games.filter(g => g.status === 'active');
