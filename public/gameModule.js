@@ -3779,10 +3779,11 @@ export function renderGameStudentModule(container) {
     const activeAdventureModes = allModes.filter(m => m.modeType === 'adventure' && m.status !== 'inactive');
     const activeTowerModes = allModes.filter(m => m.modeType === 'tower' && m.status !== 'inactive');
     const visibleSections = appState.gameArenaStudentConfig.visibleSections || {};
-    const hasCatalog = visibleSections.catalog !== false;
-    const hasAdventure = visibleSections.treasure !== false && activeAdventureModes.length > 0;
-    const hasTower = visibleSections.tower !== false && activeTowerModes.length > 0;
-    const hasArena = visibleSections.arena !== false && appState.settings?.gameArenaEnabled !== false;
+    const sectionVisible = section => visibleSections[section]?.enabled !== false;
+    const hasCatalog = sectionVisible('catalog');
+    const hasAdventure = sectionVisible('treasure') && activeAdventureModes.length > 0;
+    const hasTower = sectionVisible('tower') && activeTowerModes.length > 0;
+    const hasArena = sectionVisible('arena') && appState.settings?.gameArenaEnabled !== false;
     const firstVisibleSubTab = hasCatalog ? 'katalog' : hasArena ? 'arena' : hasAdventure ? 'adventure' : hasTower ? 'tower' : 'katalog';
 
     let activeSubTab = window.__studentGameSubTab || firstVisibleSubTab;
@@ -3795,6 +3796,10 @@ export function renderGameStudentModule(container) {
 
     const visibleSectionCount = [hasCatalog, hasArena, hasAdventure, hasTower].filter(Boolean).length;
     const showSubTabs = visibleSectionCount > 1;
+    if (!visibleSectionCount) {
+        container.innerHTML = '<div class="p-12 text-center text-slate-500 font-bold"><i class="fa-solid fa-gamepad text-3xl text-slate-300 block mb-3"></i>Belum ada kategori Game Edukasi yang diaktifkan untuk kelasmu.</div>';
+        return;
+    }
 
     container.innerHTML = `
         <div class="space-y-6 pb-16 animate-fade-in">
@@ -3971,7 +3976,12 @@ function defaultClientArenaConfig() {
     return {
         version: 1,
         modes,
-        visibleSections: { catalog: true, arena: true, treasure: true, tower: true }
+        visibleSections: {
+            catalog: { enabled: true, classIds: [] },
+            arena: { enabled: true, classIds: [] },
+            treasure: { enabled: true, classIds: [] },
+            tower: { enabled: true, classIds: [] }
+        }
     };
 }
 
@@ -3989,7 +3999,11 @@ function normalizeClientArenaConfig(raw) {
     });
     const sectionSource = source?.visibleSections || {};
     ['catalog', 'arena', 'treasure', 'tower'].forEach(section => {
-        base.visibleSections[section] = sectionSource[section]?.enabled !== false;
+        const item = sectionSource[section];
+        base.visibleSections[section] = {
+            enabled: typeof item === 'boolean' ? item : item?.enabled !== false,
+            classIds: Array.isArray(item?.classIds) ? [...new Set(item.classIds.map(x => String(x || '')).filter(Boolean))] : []
+        };
     });
     return base;
 }
@@ -4028,10 +4042,10 @@ async function loadGameArenaStudentConfig(force = false) {
     try {
         const res = await fetch('/api/game-arena/config', { cache: 'no-store' });
         const data = await res.json();
-        if (res.ok && data.success) {
-            appState.gameArenaStudentConfig = normalizeClientArenaConfig(data.config);
-        }
+        if (!res.ok || !data.success) throw new Error('Konfigurasi Game Edukasi tidak tersedia.');
+        appState.gameArenaStudentConfig = normalizeClientArenaConfig(data.config);
     } catch (_) {
+        appState.gameArenaStudentConfig = appState.gameArenaStudentConfig || defaultClientArenaConfig();
     } finally {
         arenaStudentConfigLoading = false;
     }
@@ -4042,7 +4056,7 @@ function ensureGameArenaStudentConfigLoaded() {
     if (appState.gameArenaStudentConfig || arenaStudentConfigLoading) return;
     loadGameArenaStudentConfig(true).then(() => {
         const container = document.getElementById('view-container');
-        if (container) renderGameStudentModule(container);
+        if (appState.currentRoute === 'game_edukasi_siswa' && container) renderGameStudentModule(container);
     });
 }
 
