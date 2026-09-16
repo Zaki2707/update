@@ -3861,11 +3861,18 @@ async function renderStudentCBTList(container, isRefresh = false) {
         if (isDone) {
             badgeHtml = `<span class="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-xl text-[10px] font-bold">Sudah Dikerjakan</span>`;
             let downloadBtnHtml = '';
-            if (ex.allowDownloadResult) {
+            const resultIsFinal = Boolean(gr && gr.isGraded === true && gr.finalScore !== null && gr.finalScore !== undefined);
+            if (ex.allowDownloadResult && resultIsFinal) {
                 downloadBtnHtml = `
                     <button type="button" onclick="downloadStudentExamPDF('${ex.id}')" class="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm">
                         <i class="fa-solid fa-file-pdf"></i> Download Hasil Ujian
                     </button>
+                `;
+            } else if (ex.allowDownloadResult && !resultIsFinal) {
+                downloadBtnHtml = `
+                    <div class="mt-2 w-full py-2.5 px-3 bg-amber-50 border border-amber-100 text-amber-700 font-semibold rounded-xl text-[11px] text-center">
+                        <i class="fa-solid fa-hourglass-half mr-1"></i> PDF hasil tersedia setelah koreksi selesai
+                    </div>
                 `;
             }
             actionBtnHtml = `
@@ -10473,7 +10480,7 @@ async function downloadStudentExamPDF(examId) {
     
     let reviewData = null;
     try {
-        const reviewResponse = await fetch(`/api/exam/my-review?examId=${encodeURIComponent(ex.id)}`, { cache: 'no-store' });
+        const reviewResponse = await fetch(`/api/exam/my-result-download?examId=${encodeURIComponent(ex.id)}`, { cache: 'no-store' });
         reviewData = await reviewResponse.json().catch(() => null);
         if (!reviewResponse.ok || !reviewData || reviewData.success !== true) {
             throw new Error(reviewData?.message || 'Gagal memuat jawaban ujian.');
@@ -10533,7 +10540,7 @@ async function downloadStudentExamPDF(examId) {
     doc.text("Nilai Ujian:", 105, 54);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(220, 38, 38); // red-600
-    const finalScoreStr = reviewData.showScore === false ? 'Disembunyikan Guru' : (reviewData.finalScore !== null && reviewData.finalScore !== undefined ? String(reviewData.finalScore) : 'Sedang Dikoreksi');
+    const finalScoreStr = reviewData.finalScore !== null && reviewData.finalScore !== undefined ? String(reviewData.finalScore) : 'Sedang Dikoreksi';
     doc.text(finalScoreStr, 135, 54);
 
     doc.setTextColor(51, 65, 85); // reset slate-700
@@ -10541,7 +10548,7 @@ async function downloadStudentExamPDF(examId) {
 
     // List of questions and answers
     doc.setFont("helvetica", "bold");
-    doc.text("DAFTAR SOAL DAN JAWABAN ANDA", 14, 68);
+    doc.text("DAFTAR SOAL, KUNCI, DAN HASIL KOREKSI", 14, 68);
     
     let y = 75;
     const pageHeight = doc.internal.pageSize.height;
@@ -10556,8 +10563,18 @@ async function downloadStudentExamPDF(examId) {
         const userAns = q.studentAnswer !== undefined && q.studentAnswer !== null && String(q.studentAnswer).trim() !== ''
             ? q.studentAnswer
             : 'Tidak dijawab';
-        const userAnsLines = doc.splitTextToSize(`Jawaban Anda: ${userAns}`, 175);
-        let blockHeight = (questionLines.length * 5) + (userAnsLines.length * 5) + 10;
+        const correctAns = q.correctAnswer !== undefined && q.correctAnswer !== null && String(q.correctAnswer).trim() !== ''
+            ? q.correctAnswer
+            : '-';
+        const userStatus = q.isCorrect === true ? 'Benar' : (q.isCorrect === false ? 'Salah' : 'Esai');
+        const userAnsLines = doc.splitTextToSize(`Jawaban Anda: ${userAns}${q.isCorrect === null ? '' : ` (${userStatus})`}`, 175);
+        const correctAnsLines = doc.splitTextToSize(`Kunci Jawaban: ${correctAns}`, 175);
+        const explanationText = q.explanation ? String(q.explanation) : 'Tidak ada pembahasan.';
+        const explanationLines = doc.splitTextToSize(`Pembahasan: ${explanationText}`, 175);
+        const essayScoreLines = q.isCorrect === null && q.essayScore !== null && q.essayScore !== undefined
+            ? doc.splitTextToSize(`Nilai Esai: ${q.essayScore}`, 175)
+            : [];
+        let blockHeight = (questionLines.length * 5) + (userAnsLines.length * 5) + (correctAnsLines.length * 5) + (explanationLines.length * 5) + (essayScoreLines.length * 5) + 14;
 
         if (q.options && Array.isArray(q.options) && q.options.length > 0) {
             q.options.forEach(opt => {
@@ -10603,11 +10620,34 @@ async function downloadStudentExamPDF(examId) {
 
         y += 1.5;
 
-        // Write only the answer submitted by this student.
+        // Corrected details are exposed only by the guarded result-download endpoint.
         doc.setFontSize(9);
         doc.setFont("helvetica", "bold");
-        doc.setTextColor(79, 70, 229);
+        if (q.isCorrect === true) doc.setTextColor(16, 185, 129);
+        else if (q.isCorrect === false) doc.setTextColor(220, 38, 38);
+        else doc.setTextColor(202, 138, 4);
         userAnsLines.forEach((line) => {
+            doc.text(line, 15, y);
+            y += 4.5;
+        });
+
+        doc.setTextColor(79, 70, 229);
+        correctAnsLines.forEach((line) => {
+            doc.text(line, 15, y);
+            y += 4.5;
+        });
+
+        if (essayScoreLines.length > 0) {
+            doc.setTextColor(5, 150, 105);
+            essayScoreLines.forEach((line) => {
+                doc.text(line, 15, y);
+                y += 4.5;
+            });
+        }
+
+        doc.setFont("helvetica", "italic");
+        doc.setTextColor(100, 116, 139);
+        explanationLines.forEach((line) => {
             doc.text(line, 15, y);
             y += 4.5;
         });
