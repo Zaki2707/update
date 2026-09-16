@@ -6240,6 +6240,10 @@ function defaultArenaModeConfig() {
   return { enabled: true, quickMatch: true, classIds: [] as string[], gameIds: [] as string[] };
 }
 
+function defaultGameEducationSectionConfig() {
+  return { enabled: true, classIds: [] as string[] };
+}
+
 function getArenaTenantConfig(req: any) {
   const tenantId = gameTenantNamespace(req);
   const raw = gameArenaConfigs?.[tenantId];
@@ -6253,7 +6257,16 @@ function getArenaTenantConfig(req: any) {
       gameIds: normalizeArenaList(item?.gameIds, 500)
     };
   }
-  return { version: 1, modes };
+  const rawSections = raw?.visibleSections || {};
+  const visibleSections: Record<string, any> = {};
+  for (const section of ['catalog', 'arena', 'treasure', 'tower']) {
+    const item = rawSections[section];
+    visibleSections[section] = {
+      enabled: item?.enabled !== false,
+      classIds: normalizeArenaList(item?.classIds, 200)
+    };
+  }
+  return { version: 1, modes, visibleSections };
 }
 
 function arenaClassAllowed(config: any, classKey: string, className = '') {
@@ -6656,8 +6669,17 @@ app.get("/api/game-arena/config", requireAuth, (req: any, res) => {
       quickMatch: Boolean(item.quickMatch)
     };
   }
+  const sections: Record<string, any> = {};
+  for (const section of ['catalog', 'arena', 'treasure', 'tower']) {
+    const item = config.visibleSections?.[section] || defaultGameEducationSectionConfig();
+    const classAllowed = !student || arenaClassAllowed(item, classKey, className);
+    const modeAllowed = section === 'arena'
+      ? Object.values(modes).some((mode: any) => mode.enabled)
+      : true;
+    sections[section] = { enabled: Boolean(item.enabled && classAllowed && modeAllowed) };
+  }
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ success: true, config: { version: 1, modes } });
+  res.json({ success: true, config: { version: 1, modes, visibleSections: sections } });
 });
 
 app.get("/api/game-arena/admin/config", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
@@ -6680,7 +6702,17 @@ app.post("/api/game-arena/admin/config", requireAuth, requireRole(['teacher', 'g
         gameIds: normalizeArenaList(raw?.gameIds, 500)
       };
     }
-    const next = { version: 1, modes };
+    const incomingSections = req.body?.visibleSections && typeof req.body.visibleSections === 'object' ? req.body.visibleSections : {};
+    const currentSections = current.visibleSections || {};
+    const visibleSections: Record<string, any> = {};
+    for (const section of ['catalog', 'arena', 'treasure', 'tower']) {
+      const rawSection = incomingSections?.[section] ?? currentSections?.[section] ?? defaultGameEducationSectionConfig();
+      visibleSections[section] = {
+        enabled: rawSection?.enabled !== false,
+        classIds: normalizeArenaList(rawSection?.classIds, 200)
+      };
+    }
+    const next = { version: 1, modes, visibleSections };
     gameArenaConfigs = { ...gameArenaConfigs, [tenantId]: next };
     await saveData('gameArenaConfigs', gameArenaConfigs);
     res.json({ success: true, config: next });
