@@ -3758,6 +3758,12 @@ export function renderGameStudentModule(container) {
         return;
     }
 
+    if (!appState.gameArenaStudentConfig) {
+        ensureGameArenaStudentConfigLoaded();
+        container.innerHTML = '<div class="p-12 text-center text-slate-500 font-bold"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-indigo-500 block mb-3"></i>Menyiapkan pilihan Game Edukasi...</div>';
+        return;
+    }
+
     const currentStudent = appState.currentUser || {};
     const xp = currentStudent.gameXp || 0;
     const progress = getXpProgress(xp);
@@ -3769,18 +3775,23 @@ export function renderGameStudentModule(container) {
     const allModes = getGameModes();
     const activeAdventureModes = allModes.filter(m => m.modeType === 'adventure' && m.status !== 'inactive');
     const activeTowerModes = allModes.filter(m => m.modeType === 'tower' && m.status !== 'inactive');
-    const hasAdventure = activeAdventureModes.length > 0;
-    const hasTower = activeTowerModes.length > 0;
-    const hasArena = appState.settings?.gameArenaEnabled !== false;
+    const visibleSections = appState.gameArenaStudentConfig.visibleSections || {};
+    const hasCatalog = visibleSections.catalog !== false;
+    const hasAdventure = visibleSections.treasure !== false && activeAdventureModes.length > 0;
+    const hasTower = visibleSections.tower !== false && activeTowerModes.length > 0;
+    const hasArena = visibleSections.arena !== false && appState.settings?.gameArenaEnabled !== false;
+    const firstVisibleSubTab = hasCatalog ? 'katalog' : hasArena ? 'arena' : hasAdventure ? 'adventure' : hasTower ? 'tower' : 'katalog';
 
-    let activeSubTab = window.__studentGameSubTab || 'katalog';
-    if (activeSubTab === 'adventure' && !hasAdventure) activeSubTab = 'katalog';
-    if (activeSubTab === 'tower' && !hasTower) activeSubTab = 'katalog';
-    if (activeSubTab === 'arena' && !hasArena) activeSubTab = 'katalog';
-    if (activeSubTab === 'escape') activeSubTab = 'katalog';
+    let activeSubTab = window.__studentGameSubTab || firstVisibleSubTab;
+    if (activeSubTab === 'katalog' && !hasCatalog) activeSubTab = firstVisibleSubTab;
+    if (activeSubTab === 'adventure' && !hasAdventure) activeSubTab = firstVisibleSubTab;
+    if (activeSubTab === 'tower' && !hasTower) activeSubTab = firstVisibleSubTab;
+    if (activeSubTab === 'arena' && !hasArena) activeSubTab = firstVisibleSubTab;
+    if (activeSubTab === 'escape') activeSubTab = firstVisibleSubTab;
     window.__studentGameSubTab = activeSubTab;
 
-    const showSubTabs = hasAdventure || hasTower || hasArena;
+    const visibleSectionCount = [hasCatalog, hasArena, hasAdventure, hasTower].filter(Boolean).length;
+    const showSubTabs = visibleSectionCount > 1;
 
     container.innerHTML = `
         <div class="space-y-6 pb-16 animate-fade-in">
@@ -3949,7 +3960,11 @@ function defaultClientArenaConfig() {
     GAME_ARENA_MODE_META.forEach(mode => {
         modes[mode.id] = { enabled: true, quickMatch: true, classIds: [], gameIds: [] };
     });
-    return { version: 1, modes };
+    return {
+        version: 1,
+        modes,
+        visibleSections: { catalog: true, arena: true, treasure: true, tower: true }
+    };
 }
 
 function normalizeClientArenaConfig(raw) {
@@ -3963,6 +3978,10 @@ function normalizeClientArenaConfig(raw) {
             classIds: Array.isArray(item.classIds) ? [...new Set(item.classIds.map(x => String(x || '')).filter(Boolean))] : [],
             gameIds: Array.isArray(item.gameIds) ? [...new Set(item.gameIds.map(x => String(x || '')).filter(Boolean))] : []
         };
+    });
+    const sectionSource = source?.visibleSections || {};
+    ['catalog', 'arena', 'treasure', 'tower'].forEach(section => {
+        base.visibleSections[section] = sectionSource[section]?.enabled !== false;
     });
     return base;
 }
@@ -4092,7 +4111,7 @@ async function saveGameArenaAdminConfig(config) {
         const res = await fetch('/api/game-arena/admin/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modes: config.modes })
+            body: JSON.stringify({ modes: config.modes, visibleSections: config.visibleSections })
         });
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.message || 'Gagal menyimpan konfigurasi Arena.');
