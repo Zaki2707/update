@@ -4033,6 +4033,10 @@ function ensureGameArenaFxStyles() {
         [data-arena-fx="full"] .arena-shield-active,
         [data-arena-fx="light"] .arena-shield-active { animation:arenaShieldGlow 1.6s ease-in-out infinite; }
         [data-arena-fx="full"] .arena-racer-boost { animation:arenaBoostFlame .35s ease-in-out infinite; transform-origin:right center; }
+        [data-arena-fx="full"] .arena-race-smoke { animation:arenaRaceSmoke .9s ease-out infinite; }
+        [data-arena-fx="full"] .arena-race-smoke:nth-child(2) { animation-delay:.28s; }
+        [data-arena-fx="light"] .arena-race-smoke:first-child { animation:arenaRaceSmoke 1.25s ease-out infinite; }
+        [data-arena-fx="full"] .arena-tug-dust { animation:arenaRaceSmoke 1.15s ease-out infinite; }
         [data-arena-fx="full"] .arena-base-critical { animation:arenaBaseCritical 1.1s ease-in-out infinite; }
         [data-arena-fx="eco"] * { animation-duration:0s !important; animation-iteration-count:1 !important; }
         @media (prefers-reduced-motion: reduce) {
@@ -4902,8 +4906,10 @@ function renderTugArenaStage(state) {
                 <div class="absolute right-2 bottom-1 flex -space-x-2 flex-row-reverse">
                     ${teamB.slice(0, 7).map((player, index) => `<div style="transform:rotate(${index%2?'3':'-3'}deg)">${renderGameArenaAvatar(player.avatar?.presetId || 'komet', 'w-11 h-11', 'border-2 border-white')}</div>`).join('')}
                 </div>
-                <div class="absolute left-8 bottom-0 text-[9px] font-black text-emerald-900/60">💨 tarik!</div>
-                <div class="absolute right-8 bottom-0 text-[9px] font-black text-emerald-900/60">tarik! 💨</div>
+                <div class="absolute left-8 bottom-0 text-[9px] font-black text-emerald-900/60">tarik!</div>
+                <div class="arena-tug-dust absolute left-16 bottom-2 w-3 h-3 rounded-full bg-amber-700/30 blur-[2px]"></div>
+                <div class="absolute right-8 bottom-0 text-[9px] font-black text-emerald-900/60">tarik!</div>
+                <div class="arena-tug-dust absolute right-16 bottom-2 w-3 h-3 rounded-full bg-amber-700/30 blur-[2px]"></div>
             </div>
             <div class="relative z-10 grid grid-cols-2 gap-2 text-[10px] font-bold">
                 <div class="bg-white/70 rounded-xl p-2 text-blue-900">✓ ${teamA.reduce((sum,p)=>sum+Number(p.correctAnswers||0),0)} jawaban benar</div>
@@ -4970,7 +4976,9 @@ function renderQuizRaceArenaStage(state) {
                                 <div class="absolute left-3 right-3 top-1/2 border-t border-dashed border-white/25"></div>
                                 <div class="absolute right-2 top-0 bottom-0 border-r-2 border-dashed border-white/55"></div>
                                 <div class="arena-race-car absolute top-1/2 -translate-y-1/2 -translate-x-1/2 text-2xl transition-all duration-700 ease-out" style="left:calc(6% + ${progress * .88}%)">
-                                    ${boosted ? '<span class="arena-racer-boost absolute right-[80%] top-1/2 -translate-y-1/2 text-sm">🔥</span>' : '<span class="absolute right-[80%] top-1/2 -translate-y-1/2 text-[10px] opacity-55">💨</span>'}
+                                    ${boosted ? '<span class="arena-racer-boost absolute right-[80%] top-1/2 -translate-y-1/2 text-sm">🔥</span>' : ''}
+                                    <span class="arena-race-smoke absolute right-[88%] top-[45%] w-2 h-2 rounded-full bg-white/50 blur-[1px]"></span>
+                                    <span class="arena-race-smoke absolute right-[92%] top-[62%] w-1.5 h-1.5 rounded-full bg-white/35 blur-[1px]"></span>
                                     <span class="relative z-10">${progress >= 100 ? '🏁' : vehicle}</span>
                                 </div>
                             </div>
