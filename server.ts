@@ -7058,7 +7058,7 @@ app.get("/api/game-arena/admin/rooms", requireAuth, requireRole(['teacher', 'gur
   res.json({ success: true, rooms: roomList });
 });
 
-app.post("/api/game-arena/admin/rooms", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+app.post("/api/game-arena/admin/rooms", requireAuth, requireRole(['admin', 'bos', 'superadmin']), (req: any, res) => {
   try {
     cleanupGameArenaRooms();
     const mode = String(req.body?.mode || '') as GameArenaMode;
@@ -7130,7 +7130,7 @@ app.post("/api/game-arena/admin/rooms", requireAuth, requireRole(['teacher', 'gu
   }
 });
 
-app.post("/api/game-arena/admin/room-action", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+app.post("/api/game-arena/admin/room-action", requireAuth, requireRole(['admin', 'bos', 'superadmin']), (req: any, res) => {
   try {
     cleanupGameArenaRooms();
     const room = getGameArenaRoomForRequest(req, req.body?.roomId);
