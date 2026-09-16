@@ -6437,8 +6437,10 @@ function shuffleGameArenaItems<T>(items: T[]): T[] {
   return out;
 }
 
-function createGameArenaQuestion(req: any, student: any, previousGameId = ''): GameArenaQuestion | null {
-  const pool = getGameArenaGamePool(req, student);
+function createGameArenaQuestion(req: any, student: any, previousGameId = '', sourceGameIds: string[] = []): GameArenaQuestion | null {
+  const basePool = getGameArenaGamePool(req, student);
+  const allowed = new Set(normalizeArenaList(sourceGameIds));
+  const pool = allowed.size ? basePool.filter((game: any) => allowed.has(String(game?.id || ''))) : basePool;
   if (!pool.length) return null;
 
   const alternatives = pool.filter((game: any) => String(game.id) !== String(previousGameId));
@@ -6517,7 +6519,7 @@ function ensureGameArenaQuestion(req: any, room: GameArenaRoom, student: any, fo
 
   const previous = room.questions[studentId];
   if (!forceNew && previous) return;
-  const next = createGameArenaQuestion(req, student, previous?.gameId || '');
+  const next = createGameArenaQuestion(req, student, previous?.gameId || '', normalizeArenaList((room as any).sourceGameIds));
   if (next) room.questions[studentId] = next;
   else delete room.questions[studentId];
 }
@@ -6536,7 +6538,9 @@ function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
     status: room.status,
     position: Math.max(0, Math.min(100, Number(room.position || 50))),
     version: room.version,
+    classKey: room.classKey,
     className: room.className,
+    hosted: Boolean((room as any).hosted),
     winnerSide: room.winnerSide || null,
     winnerPlayerId: room.winnerPlayerId || null,
     base: {
@@ -6624,6 +6628,53 @@ function applyBaseBattleAction(room: GameArenaRoom, player: GameArenaPlayer, act
 
   throw new Error('Aksi Base Battle tidak valid.');
 }
+
+
+app.get("/api/game-arena/config", requireAuth, (req: any, res) => {
+  const config = getArenaTenantConfig(req);
+  const student = getGameArenaStudent(req);
+  const classKey = student ? getGameArenaClassKey(student) : '';
+  const className = student ? getGameArenaClassName(student) : '';
+  const modes: Record<string, any> = {};
+  for (const mode of GAME_ARENA_MODES) {
+    const item = config.modes[mode] || defaultArenaModeConfig();
+    modes[mode] = {
+      enabled: Boolean(item.enabled && (!student || arenaClassAllowed(item, classKey, className))),
+      quickMatch: Boolean(item.quickMatch)
+    };
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, config: { version: 1, modes } });
+});
+
+app.get("/api/game-arena/admin/config", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, config: getArenaTenantConfig(req) });
+});
+
+app.post("/api/game-arena/admin/config", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const tenantId = gameTenantNamespace(req);
+    const current = getArenaTenantConfig(req);
+    const incoming = req.body?.modes && typeof req.body.modes === 'object' ? req.body.modes : {};
+    const modes: Record<string, any> = {};
+    for (const mode of GAME_ARENA_MODES) {
+      const raw = incoming?.[mode] ?? current.modes[mode] ?? defaultArenaModeConfig();
+      modes[mode] = {
+        enabled: raw?.enabled !== false,
+        quickMatch: raw?.quickMatch !== false,
+        classIds: normalizeArenaList(raw?.classIds, 200),
+        gameIds: normalizeArenaList(raw?.gameIds, 500)
+      };
+    }
+    const next = { version: 1, modes };
+    gameArenaConfigs = { ...gameArenaConfigs, [tenantId]: next };
+    await saveData('gameArenaConfigs', gameArenaConfigs);
+    res.json({ success: true, config: next });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal menyimpan konfigurasi Arena.") });
+  }
+});
 
 app.post("/api/game-arena/avatar", async (req: any, res) => {
   try {
@@ -6793,7 +6844,9 @@ app.post("/api/game-arena/answer", (req: any, res) => {
     }
 
     const pool = getGameArenaGamePool(req, student);
-    const game = pool.find((item: any) => String(item.id) === currentQuestion.gameId);
+    const sourceIds = normalizeArenaList((room as any).sourceGameIds);
+    const effectivePool = sourceIds.length ? pool.filter((item: any) => sourceIds.includes(String(item?.id || ''))) : pool;
+    const game = effectivePool.find((item: any) => String(item.id) === currentQuestion.gameId);
     if (!game) {
       delete room.questions[studentId];
       ensureGameArenaQuestion(req, room, student, true);
