@@ -4646,25 +4646,45 @@ function getGameArenaAvatarPreset(presetId) {
     return GAME_ARENA_AVATARS.find(item => item.id === presetId) || GAME_ARENA_AVATARS[0];
 }
 
+function getArenaAvatarHairSvg(presetId, hair) {
+    const id = String(presetId || 'bintang');
+    if (id === 'roket') return `<path d="M23 35C24 17 38 8 52 10c13 2 20 11 20 25-8-8-13-12-24-12-9 0-17 4-25 12Z" fill="${hair}"/><path d="M27 24c10-13 31-16 43-2-13-4-28-3-43 2Z" fill="rgba(255,255,255,.12)"/>`;
+    if (id === 'buku') return `<path d="M22 35c0-16 12-26 28-26 15 0 28 10 28 27-5-5-10-8-15-9-4 7-12 9-21 5-7 6-13 5-20 3Z" fill="${hair}"/><circle cx="29" cy="25" r="5" fill="${hair}"/><circle cx="70" cy="26" r="5" fill="${hair}"/>`;
+    if (id === 'komet') return `<path d="M20 37C19 19 30 7 49 7c17 0 29 12 29 29-10-7-17-11-27-10-10 1-19 5-31 11Z" fill="${hair}"/><path d="M58 10c11 2 18 8 22 17-9-4-18-6-27-5 4-5 5-8 5-12Z" fill="rgba(255,255,255,.14)"/>`;
+    if (id === 'bulan') return `<path d="M20 38C18 22 28 9 48 8c20-1 31 12 31 29-8-4-15-6-22-5-8 1-15 4-22 0-5 4-10 6-15 6Z" fill="${hair}"/><path d="M24 20c10-9 30-12 46-3-15-3-31-2-46 3Z" fill="rgba(255,255,255,.1)"/>`;
+    if (id === 'petir') return `<path d="M22 37C21 19 32 8 48 8c17 0 29 9 31 27l-12-7-7 6-9-8-9 8-8-6-12 9Z" fill="${hair}"/>`;
+    return `<path d="M21 37C20 20 31 9 49 9c17 0 29 11 29 27-7-6-13-9-21-10-8 7-18 7-27 1-3 4-6 7-9 10Z" fill="${hair}"/><path d="M29 18c9-7 27-8 39-1-12-2-25-1-39 1Z" fill="rgba(255,255,255,.12)"/>`;
+}
+
 function renderGameArenaAvatar(presetId, sizeClass = 'w-16 h-16', extraClass = '') {
     const avatar = getGameArenaAvatarPreset(presetId);
+    const hairSvg = getArenaAvatarHairSvg(presetId, avatar.hair);
     return `
-        <div class="${sizeClass} ${extraClass} arena-character-wrap rounded-[28%] bg-gradient-to-br ${avatar.shell} shadow-lg border-2 border-white/70 flex items-end justify-center relative overflow-hidden">
-            <div class="absolute inset-x-2 top-2 h-2 rounded-full bg-white/30"></div>
-            <div class="arena-character-core relative w-[72%] h-[86%] flex flex-col items-center justify-end">
-                <div class="relative w-[52%] aspect-square rounded-[46%] border border-white/40 shadow-sm z-10" style="background:${avatar.skin}">
-                    <div class="absolute -left-[5%] -right-[5%] -top-[8%] h-[42%] rounded-t-[55%] rounded-b-[30%]" style="background:${avatar.hair}"></div>
-                    <span class="absolute left-[24%] top-[48%] w-[9%] aspect-square rounded-full bg-slate-900"></span>
-                    <span class="absolute right-[24%] top-[48%] w-[9%] aspect-square rounded-full bg-slate-900"></span>
-                    <span class="absolute left-1/2 -translate-x-1/2 bottom-[18%] w-[22%] h-[7%] rounded-full bg-rose-700/60"></span>
-                </div>
-                <div class="relative -mt-[5%] w-[70%] h-[44%] rounded-t-[45%] rounded-b-[24%] border border-white/30 shadow-sm flex items-center justify-center" style="background:${avatar.shirt}">
-                    <i class="fa-solid ${avatar.icon} ${avatar.accent} text-[34%] drop-shadow"></i>
-                    <span class="absolute -left-[12%] top-[25%] w-[18%] h-[45%] rounded-full" style="background:${avatar.skin};transform:rotate(18deg)"></span>
-                    <span class="absolute -right-[12%] top-[25%] w-[18%] h-[45%] rounded-full" style="background:${avatar.skin};transform:rotate(-18deg)"></span>
-                </div>
-            </div>
-            <div class="absolute bottom-[2%] w-[55%] h-[8%] rounded-full bg-slate-950/25 blur-[2px]"></div>
+        <div class="${sizeClass} ${extraClass} arena-character-wrap relative flex items-end justify-center drop-shadow-md overflow-visible">
+            <svg class="arena-character-core w-full h-full overflow-visible" viewBox="0 0 100 128" role="img" aria-label="${gameEscapeAttr(avatar.name)}">
+                <ellipse cx="50" cy="120" rx="27" ry="6" fill="rgba(15,23,42,.28)"/>
+                <path d="M33 104 29 119h13l5-16Zm34 0 4 15H58l-5-16Z" fill="#1f2937"/>
+                <rect x="28" y="116" width="18" height="7" rx="3.5" fill="#111827"/>
+                <rect x="55" y="116" width="18" height="7" rx="3.5" fill="#111827"/>
+                <path d="M26 68c4-11 14-16 24-16s21 5 25 16l5 36c-8 6-18 9-30 9-11 0-22-3-30-9l6-36Z" fill="${avatar.shirt}" stroke="rgba(255,255,255,.55)" stroke-width="2"/>
+                <path d="M28 70c-10 5-15 14-15 25 0 5 2 8 6 9 5 0 7-4 7-8 0-8 2-14 7-18Z" fill="${avatar.skin}"/>
+                <path d="M72 70c10 5 15 14 15 25 0 5-2 8-6 9-5 0-7-4-7-8 0-8-2-14-7-18Z" fill="${avatar.skin}"/>
+                <circle cx="50" cy="39" r="28" fill="${avatar.skin}" stroke="rgba(255,255,255,.65)" stroke-width="2"/>
+                ${hairSvg}
+                <ellipse cx="39" cy="42" rx="3.3" ry="4.2" fill="#172033"/>
+                <ellipse cx="61" cy="42" rx="3.3" ry="4.2" fill="#172033"/>
+                <circle cx="38" cy="41" r="1" fill="white"/>
+                <circle cx="60" cy="41" r="1" fill="white"/>
+                <path d="M45 53c3.5 3 7 3 10.5 0" fill="none" stroke="#9f1239" stroke-width="2.4" stroke-linecap="round"/>
+                <circle cx="32" cy="51" r="4" fill="rgba(244,114,182,.20)"/>
+                <circle cx="68" cy="51" r="4" fill="rgba(244,114,182,.20)"/>
+                <circle cx="50" cy="82" r="12" fill="rgba(255,255,255,.18)" stroke="rgba(255,255,255,.5)" stroke-width="1.5"/>
+                <foreignObject x="39" y="70" width="22" height="24">
+                    <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-size:11px;color:white;text-shadow:0 1px 2px rgba(0,0,0,.45)">
+                        <i class="fa-solid ${avatar.icon}"></i>
+                    </div>
+                </foreignObject>
+            </svg>
         </div>
     `;
 }
