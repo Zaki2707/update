@@ -12324,6 +12324,76 @@ app.get("/api/exam/review", requireAuth, requireRole(['teacher', 'guru', 'admin'
   }
 });
 
+// Student self-review: return only the exact assigned questions and the student's own submitted answers.
+// Never expose answer keys, correctness flags, master-key fields, or explanations to student clients.
+app.get("/api/exam/my-review", requireAuth, requireRole(['student', 'siswa', 'class_leader', 'ketua_kelas']), (req: any, res) => {
+  try {
+    const authUser = req.user || getAuthUser(req);
+    const studentId = resolveStudentId(req, authUser);
+    const examId = String(req.query?.examId || '').trim();
+    if (!studentId || !examId) {
+      return res.status(400).json({ success: false, message: "examId wajib diisi." });
+    }
+
+    const context = getExamAttemptContext(req, authUser, studentId, examId);
+    if (rejectExamAttemptContext(res, context)) return;
+
+    const key = resolveExamStateKey(req, studentId, examId);
+    const completed = Boolean(completedExams[key] || forceFinishedExams[key]);
+    if (!completed) {
+      return res.status(409).json({ success: false, message: "Review tersedia setelah ujian selesai dikerjakan." });
+    }
+
+    const assignedQuestions = Array.isArray(studentExamQuestions[key]) ? studentExamQuestions[key] : [];
+    const masterQuestions = Array.isArray(studentExamMasterQuestions[key]) ? studentExamMasterQuestions[key] : [];
+    const sourceQuestions = assignedQuestions.length > 0
+      ? assignedQuestions
+      : masterQuestions.map((question: any) => sanitizeQuestionForStudent(question)).filter(Boolean);
+
+    if (sourceQuestions.length === 0) {
+      return res.status(404).json({ success: false, message: "Paket soal ujian siswa tidak ditemukan." });
+    }
+
+    const persistedAnswers = studentExamAnswers[key] && typeof studentExamAnswers[key] === 'object'
+      ? studentExamAnswers[key]
+      : {};
+    const liveAnswers = activeExamSessions[key]?.answers && typeof activeExamSessions[key].answers === 'object'
+      ? activeExamSessions[key].answers
+      : {};
+    const answers = { ...persistedAnswers, ...liveAnswers };
+
+    const reviewQuestions = sourceQuestions.map((question: any, index: number) => {
+      const safeQuestion = sanitizeQuestionForStudent(question);
+      const studentAnswer = answers[question.id] !== undefined
+        ? answers[question.id]
+        : answers[String(question.id)];
+      const answered = studentAnswer !== undefined && studentAnswer !== null && String(studentAnswer).trim() !== '';
+      return {
+        ...safeQuestion,
+        number: index + 1,
+        studentAnswer: studentAnswer === undefined ? null : studentAnswer,
+        answered
+      };
+    });
+
+    const grade = studentExamGrades[key] || null;
+    const showScore = context.exam?.showScore !== false;
+    return res.json({
+      success: true,
+      studentId,
+      examId,
+      questions: reviewQuestions,
+      answeredCount: reviewQuestions.filter((question: any) => question.answered).length,
+      totalQuestions: reviewQuestions.length,
+      showScore,
+      finalScore: showScore && grade?.finalScore !== undefined && grade?.finalScore !== null ? grade.finalScore : null
+    });
+  } catch (error: any) {
+    console.error('[Student Exam Review Error]:', error);
+    return res.status(500).json({ success: false, message: safeServerError(error, 'Gagal memuat jawaban ujian siswa.') });
+  }
+});
+
 app.post("/api/exam/attempt/start-questions", async (req, res) => {
   const authUser = getAuthUser(req);
   if (!authUser) {
