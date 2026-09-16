@@ -3900,6 +3900,357 @@ const GAME_ARENA_MODE_META = [
     }
 ];
 
+
+let adminArenaMonitoringTimer = null;
+let arenaAdminConfigLoading = false;
+let arenaStudentConfigLoading = false;
+
+function defaultClientArenaConfig() {
+    const modes = {};
+    GAME_ARENA_MODE_META.forEach(mode => {
+        modes[mode.id] = { enabled: true, quickMatch: true, classIds: [], gameIds: [] };
+    });
+    return { version: 1, modes };
+}
+
+function normalizeClientArenaConfig(raw) {
+    const base = defaultClientArenaConfig();
+    const source = raw && typeof raw === 'object' ? raw : {};
+    GAME_ARENA_MODE_META.forEach(mode => {
+        const item = source?.modes?.[mode.id] || {};
+        base.modes[mode.id] = {
+            enabled: item.enabled !== false,
+            quickMatch: item.quickMatch !== false,
+            classIds: Array.isArray(item.classIds) ? [...new Set(item.classIds.map(x => String(x || '')).filter(Boolean))] : [],
+            gameIds: Array.isArray(item.gameIds) ? [...new Set(item.gameIds.map(x => String(x || '')).filter(Boolean))] : []
+        };
+    });
+    return base;
+}
+
+async function loadGameArenaAdminConfig(force = false) {
+    if (!force && appState.gameArenaAdminConfig) return appState.gameArenaAdminConfig;
+    if (arenaAdminConfigLoading) return appState.gameArenaAdminConfig || defaultClientArenaConfig();
+    arenaAdminConfigLoading = true;
+    try {
+        const res = await fetch('/api/game-arena/admin/config', { cache: 'no-store' });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            appState.gameArenaAdminConfig = normalizeClientArenaConfig(data.config);
+        }
+    } catch (_) {
+    } finally {
+        arenaAdminConfigLoading = false;
+    }
+    return appState.gameArenaAdminConfig || defaultClientArenaConfig();
+}
+
+function ensureGameArenaAdminConfigLoaded() {
+    if (appState.gameArenaAdminConfig || arenaAdminConfigLoading) return;
+    loadGameArenaAdminConfig(true).then(() => {
+        if ((window.__adminGameSubTab || 'kelola') === 'kelola') {
+            const container = document.getElementById('view-container');
+            if (container) renderGameAdminModule(container);
+        }
+    });
+}
+
+async function loadGameArenaStudentConfig(force = false) {
+    if (!force && appState.gameArenaStudentConfig) return appState.gameArenaStudentConfig;
+    if (arenaStudentConfigLoading) return appState.gameArenaStudentConfig || defaultClientArenaConfig();
+    arenaStudentConfigLoading = true;
+    try {
+        const res = await fetch('/api/game-arena/config', { cache: 'no-store' });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            appState.gameArenaStudentConfig = normalizeClientArenaConfig(data.config);
+        }
+    } catch (_) {
+    } finally {
+        arenaStudentConfigLoading = false;
+    }
+    return appState.gameArenaStudentConfig || defaultClientArenaConfig();
+}
+
+function ensureGameArenaStudentConfigLoaded() {
+    if (appState.gameArenaStudentConfig || arenaStudentConfigLoading) return;
+    loadGameArenaStudentConfig(true).then(() => {
+        if (window.__studentGameSubTab === 'arena') {
+            const container = document.getElementById('view-container');
+            if (container) renderGameStudentModule(container);
+        }
+    });
+}
+
+function getArenaCompatibleAdminGames() {
+    const allowed = new Set(['tebak_kata', 'tebak_gambar', 'susun_kata', 'true_false']);
+    return (Array.isArray(appState.eduGames) ? appState.eduGames : [])
+        .filter(game => game && game.status !== 'inactive' && allowed.has(String(game.gameType || '')));
+}
+
+function arenaClassLabel(config) {
+    const ids = Array.isArray(config?.classIds) ? config.classIds : [];
+    if (!ids.length) return 'Semua Kelas';
+    const classes = Array.isArray(appState.classes) ? appState.classes : [];
+    const names = ids.map(id => classes.find(c => String(c.id || c.code || c.name) === String(id))?.name || id);
+    if (names.length <= 2) return names.join(', ');
+    return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+}
+
+function renderAdminArenaManagementSection() {
+    const config = appState.gameArenaAdminConfig || defaultClientArenaConfig();
+    const compatibleGames = getArenaCompatibleAdminGames();
+    return `
+        <div class="bg-gradient-to-br from-slate-950 via-violet-950 to-slate-950 p-6 sm:p-8 rounded-3xl text-white shadow-xl border border-violet-500/30 space-y-5">
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                <div>
+                    <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-fuchsia-500/15 border border-fuchsia-400/30 text-fuchsia-200 text-[10px] font-black uppercase tracking-widest">
+                        <i class="fa-solid fa-users-viewfinder"></i> Hosted Class Arena
+                    </span>
+                    <h2 class="text-xl sm:text-2xl font-black mt-2">Kelola Game Arena</h2>
+                    <p class="text-xs text-slate-300 mt-1 max-w-2xl">Atur mode yang tampil, target kelas, sumber soal, dan apakah siswa boleh Quick Match. Untuk pembelajaran kelas, buat Hosted Room lalu mulai pertandingan dari Monitoring Arena.</p>
+                </div>
+                <button type="button" onclick="window.__adminGameSubTab='arena-monitoring'; renderGameAdminModule(document.getElementById('view-container'));" class="px-4 py-2.5 rounded-xl bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-xs font-black cursor-pointer whitespace-nowrap">
+                    <i class="fa-solid fa-tv mr-1"></i> Buka Monitoring Arena
+                </button>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                ${GAME_ARENA_MODE_META.map(mode => {
+                    const item = config.modes?.[mode.id] || { enabled: true, quickMatch: true, classIds: [], gameIds: [] };
+                    const sourceCount = Array.isArray(item.gameIds) && item.gameIds.length ? item.gameIds.length : compatibleGames.length;
+                    return `
+                        <div class="rounded-2xl border ${item.enabled ? 'border-violet-400/30 bg-white/8' : 'border-slate-700 bg-slate-900/70 opacity-65'} p-4 space-y-3">
+                            <div class="flex items-start justify-between gap-3">
+                                <div><div class="text-2xl">${mode.icon}</div><h3 class="font-black text-sm mt-1">${gameEscapeHtml(mode.title)}</h3><p class="text-[10px] text-slate-400 mt-1">${gameEscapeHtml(mode.tag)}</p></div>
+                                <button type="button" onclick="toggleGameArenaAdminMode('${mode.id}')" class="px-2.5 py-1 rounded-full text-[9px] font-black cursor-pointer ${item.enabled ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-400/30' : 'bg-slate-700 text-slate-300'}">${item.enabled ? 'AKTIF' : 'NONAKTIF'}</button>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2 text-[9px]">
+                                <div class="rounded-xl bg-slate-950/50 p-2"><span class="text-slate-500 block">Kelas</span><b class="text-slate-200">${gameEscapeHtml(arenaClassLabel(item))}</b></div>
+                                <div class="rounded-xl bg-slate-950/50 p-2"><span class="text-slate-500 block">Sumber Soal</span><b class="text-slate-200">${sourceCount} game</b></div>
+                                <div class="rounded-xl bg-slate-950/50 p-2 col-span-2"><span class="text-slate-500">Matchmaking</span><b class="float-right ${item.quickMatch ? 'text-cyan-300' : 'text-amber-300'}">${item.quickMatch ? 'Hosted + Quick Match' : 'Hosted Room Saja'}</b></div>
+                            </div>
+                            <div class="flex gap-2">
+                                <button type="button" onclick="openGameArenaAdminConfigModal('${mode.id}')" class="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-black cursor-pointer"><i class="fa-solid fa-sliders mr-1"></i> Kelola</button>
+                                <button type="button" onclick="openGameArenaHostModal('${mode.id}')" ${item.enabled ? '' : 'disabled'} class="flex-1 py-2.5 rounded-xl ${item.enabled ? 'bg-fuchsia-600 hover:bg-fuchsia-500 cursor-pointer' : 'bg-slate-700 cursor-not-allowed'} text-white text-[10px] font-black"><i class="fa-solid fa-users mr-1"></i> Buat Room</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `;
+}
+
+window.toggleGameArenaAdminMode = async function(modeId) {
+    const config = await loadGameArenaAdminConfig(true);
+    if (!config.modes?.[modeId]) return;
+    config.modes[modeId].enabled = !config.modes[modeId].enabled;
+    await saveGameArenaAdminConfig(config);
+};
+
+async function saveGameArenaAdminConfig(config) {
+    try {
+        const res = await fetch('/api/game-arena/admin/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ modes: config.modes })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || 'Gagal menyimpan konfigurasi Arena.');
+        appState.gameArenaAdminConfig = normalizeClientArenaConfig(data.config);
+        appState.gameArenaStudentConfig = null;
+        showToast('Konfigurasi Game Arena disimpan.', 'success');
+        const container = document.getElementById('view-container');
+        if (container) renderGameAdminModule(container);
+        return true;
+    } catch (err) {
+        showToast(err?.message || 'Gagal menyimpan konfigurasi Arena.', 'error');
+        return false;
+    }
+}
+
+window.openGameArenaAdminConfigModal = async function(modeId) {
+    const config = await loadGameArenaAdminConfig(true);
+    const modeMeta = GAME_ARENA_MODE_META.find(item => item.id === modeId);
+    const item = config.modes?.[modeId];
+    if (!modeMeta || !item) return;
+    const classes = Array.isArray(appState.classes) ? appState.classes : [];
+    const games = getArenaCompatibleAdminGames();
+    const modal = document.getElementById('modal-container');
+    if (!modal) return;
+
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-[120] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-3">
+            <div class="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-white rounded-3xl shadow-2xl">
+                <form onsubmit="saveGameArenaModeAdminForm(event, '${modeId}')">
+                    <div class="sticky top-0 z-10 bg-slate-950 text-white p-5 flex items-center justify-between">
+                        <div><h3 class="font-black text-lg">${modeMeta.icon} Kelola ${gameEscapeHtml(modeMeta.title)}</h3><p class="text-[10px] text-slate-400">Target kelas, sumber soal, dan mode masuk siswa.</p></div>
+                        <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="w-9 h-9 rounded-xl bg-slate-800 cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                    <div class="p-5 space-y-5">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label class="rounded-2xl border border-slate-200 p-4 flex items-center justify-between gap-3 cursor-pointer"><div><b class="text-sm text-slate-800 block">Mode Aktif</b><span class="text-[10px] text-slate-500">Tampilkan kepada kelas yang dipilih.</span></div><input id="arena-admin-enabled" type="checkbox" ${item.enabled ? 'checked' : ''} class="w-5 h-5 accent-emerald-600"></label>
+                            <label class="rounded-2xl border border-slate-200 p-4 flex items-center justify-between gap-3 cursor-pointer"><div><b class="text-sm text-slate-800 block">Quick Match</b><span class="text-[10px] text-slate-500">Jika mati, siswa hanya bisa masuk Hosted Room guru.</span></div><input id="arena-admin-quick" type="checkbox" ${item.quickMatch ? 'checked' : ''} class="w-5 h-5 accent-indigo-600"></label>
+                        </div>
+
+                        <div class="space-y-2">
+                            <div><b class="text-xs text-slate-800">Target Kelas</b><p class="text-[10px] text-slate-500">Kosongkan semua pilihan untuk mengizinkan semua kelas.</p></div>
+                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-44 overflow-y-auto rounded-2xl bg-slate-50 border border-slate-200 p-3">
+                                ${classes.map(cls => {
+                                    const id = String(cls.id || cls.code || cls.name || '');
+                                    const checked = item.classIds.includes(id);
+                                    return `<label class="flex items-center gap-2 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[10px] font-bold text-slate-700 cursor-pointer"><input type="checkbox" data-arena-class value="${gameEscapeAttr(id)}" ${checked ? 'checked' : ''} class="accent-indigo-600"> ${gameEscapeHtml(cls.name || cls.code || id)}</label>`;
+                                }).join('') || '<p class="col-span-full text-xs text-slate-400">Belum ada data kelas.</p>'}
+                            </div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <div><b class="text-xs text-slate-800">Sumber Soal Arena</b><p class="text-[10px] text-slate-500">Kosongkan semua pilihan untuk memakai semua game kompatibel yang aktif.</p></div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto rounded-2xl bg-slate-50 border border-slate-200 p-3">
+                                ${games.map(game => {
+                                    const id = String(game.id || '');
+                                    const checked = item.gameIds.includes(id);
+                                    return `<label class="flex items-start gap-2 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[10px] text-slate-700 cursor-pointer"><input type="checkbox" data-arena-game value="${gameEscapeAttr(id)}" ${checked ? 'checked' : ''} class="mt-0.5 accent-fuchsia-600"><span><b class="block">${gameEscapeHtml(game.title || 'Game')}</b><span class="text-slate-400">${gameEscapeHtml(game.subjectId || 'Umum')} · ${gameEscapeHtml(game.classId || 'Semua Kelas')}</span></span></label>`;
+                                }).join('') || '<p class="col-span-full text-xs text-slate-400">Belum ada game kompatibel aktif.</p>'}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="sticky bottom-0 bg-white border-t border-slate-200 p-4 flex justify-end gap-2">
+                        <button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="px-4 py-2.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold cursor-pointer">Batal</button>
+                        <button type="submit" class="px-5 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-floppy-disk mr-1"></i> Simpan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+};
+
+window.saveGameArenaModeAdminForm = async function(event, modeId) {
+    event?.preventDefault?.();
+    const config = await loadGameArenaAdminConfig(true);
+    const item = config.modes?.[modeId];
+    if (!item) return;
+    item.enabled = Boolean(document.getElementById('arena-admin-enabled')?.checked);
+    item.quickMatch = Boolean(document.getElementById('arena-admin-quick')?.checked);
+    item.classIds = Array.from(document.querySelectorAll('[data-arena-class]:checked')).map(el => String(el.value || ''));
+    item.gameIds = Array.from(document.querySelectorAll('[data-arena-game]:checked')).map(el => String(el.value || ''));
+    const ok = await saveGameArenaAdminConfig(config);
+    if (ok) document.getElementById('modal-container').innerHTML = '';
+};
+
+window.openGameArenaHostModal = async function(modeId) {
+    const config = await loadGameArenaAdminConfig(true);
+    const modeMeta = GAME_ARENA_MODE_META.find(item => item.id === modeId);
+    const item = config.modes?.[modeId];
+    if (!modeMeta || !item || !item.enabled) return;
+    const allowedIds = new Set(item.classIds || []);
+    const classes = (Array.isArray(appState.classes) ? appState.classes : []).filter(cls => {
+        const id = String(cls.id || cls.code || cls.name || '');
+        return allowedIds.size === 0 || allowedIds.has(id) || allowedIds.has(String(cls.name || ''));
+    });
+    const modal = document.getElementById('modal-container');
+    if (!modal) return;
+    modal.innerHTML = `
+        <div class="fixed inset-0 z-[120] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-3">
+            <div class="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden">
+                <form onsubmit="createHostedGameArenaRoom(event, '${modeId}')">
+                    <div class="bg-slate-950 text-white p-5"><h3 class="font-black text-lg">${modeMeta.icon} Buat Hosted Room</h3><p class="text-[10px] text-slate-400">Siswa masuk lobby terlebih dahulu. Guru menentukan kapan permainan dimulai.</p></div>
+                    <div class="p-5 space-y-3">
+                        <label class="text-xs font-black text-slate-700">Kelas</label>
+                        <select id="arena-host-class" required class="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-sm font-bold">
+                            <option value="">Pilih kelas...</option>
+                            ${classes.map(cls => {
+                                const id = String(cls.id || cls.code || cls.name || '');
+                                return `<option value="${gameEscapeAttr(id)}">${gameEscapeHtml(cls.name || cls.code || id)}</option>`;
+                            }).join('')}
+                        </select>
+                        <div class="rounded-2xl bg-violet-50 border border-violet-200 p-3 text-[10px] text-violet-800"><b>Alur:</b> buat room → siswa membuka mode Arena → semua avatar muncul di Monitoring Arena → guru tekan Mulai.</div>
+                    </div>
+                    <div class="p-4 border-t border-slate-200 flex justify-end gap-2"><button type="button" onclick="document.getElementById('modal-container').innerHTML=''" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-bold cursor-pointer">Batal</button><button type="submit" class="px-4 py-2 rounded-xl bg-fuchsia-600 text-white text-xs font-black cursor-pointer">Buat Room</button></div>
+                </form>
+            </div>
+        </div>
+    `;
+};
+
+window.createHostedGameArenaRoom = async function(event, modeId) {
+    event?.preventDefault?.();
+    const classKey = String(document.getElementById('arena-host-class')?.value || '');
+    if (!classKey) return;
+    try {
+        const res = await fetch('/api/game-arena/admin/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: modeId, classKey }) });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || 'Gagal membuat Hosted Room.');
+        document.getElementById('modal-container').innerHTML = '';
+        showToast('Hosted Room Arena dibuat. Siswa sekarang dapat masuk lobby.', 'success');
+        window.__adminGameSubTab = 'arena-monitoring';
+        renderGameAdminModule(document.getElementById('view-container'));
+    } catch (err) {
+        showToast(err?.message || 'Gagal membuat Hosted Room Arena.', 'error');
+    }
+};
+
+function renderAdminArenaRoomCard(room) {
+    const state = room?.state;
+    if (!state) return '';
+    const meta = getGameArenaModeMeta(room.mode);
+    const statusLabel = room.status === 'playing' ? 'LIVE' : room.status === 'waiting' ? 'LOBBY' : 'SELESAI';
+    return `
+        <div class="rounded-3xl bg-slate-900 border border-slate-700 overflow-hidden shadow-xl">
+            <div class="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800">
+                <div><div class="flex items-center gap-2"><h3 class="font-black text-white">${meta.icon} ${gameEscapeHtml(meta.title)}</h3><span class="px-2 py-0.5 rounded-full text-[9px] font-black ${room.status === 'playing' ? 'bg-emerald-500/20 text-emerald-300' : room.status === 'waiting' ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700 text-slate-300'}">${statusLabel}</span><span class="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 text-[9px] font-black">${room.hosted ? 'HOSTED' : 'QUICK'}</span></div><p class="text-[10px] text-slate-400 mt-1">${gameEscapeHtml(room.className || room.classKey || 'Kelas')} · ${room.playerCount}/${room.maxPlayers} siswa</p></div>
+                <div class="flex gap-2 flex-wrap">
+                    ${room.status === 'waiting' ? `<button type="button" onclick="controlAdminGameArenaRoom('${room.id}','start')" class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black cursor-pointer"><i class="fa-solid fa-play mr-1"></i> Mulai</button>` : ''}
+                    ${room.status === 'playing' ? `<button type="button" onclick="controlAdminGameArenaRoom('${room.id}','finish')" class="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-black cursor-pointer">Selesai</button>` : ''}
+                    <button type="button" onclick="controlAdminGameArenaRoom('${room.id}','reset')" class="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-black cursor-pointer"><i class="fa-solid fa-rotate-right mr-1"></i> Reset</button>
+                    <button type="button" onclick="controlAdminGameArenaRoom('${room.id}','delete')" class="px-3 py-2 rounded-xl bg-rose-900/70 hover:bg-rose-800 text-rose-100 text-[10px] font-black cursor-pointer"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            </div>
+            <div class="p-4">${renderGameArenaStage(state)}</div>
+        </div>
+    `;
+}
+
+window.refreshAdminGameArenaMonitoring = async function(showNotice = false) {
+    const container = document.getElementById('game-arena-monitoring-content');
+    if (!container) return;
+    try {
+        const res = await fetch('/api/game-arena/admin/rooms', { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || 'Gagal membaca room Arena.');
+        const rooms = Array.isArray(data.rooms) ? data.rooms : [];
+        const live = rooms.filter(room => room.status === 'playing').length;
+        const waiting = rooms.filter(room => room.status === 'waiting').length;
+        const players = rooms.reduce((sum, room) => sum + Number(room.playerCount || 0), 0);
+        container.innerHTML = `
+            <div class="grid grid-cols-3 gap-3">
+                <div class="rounded-2xl bg-slate-950 border border-slate-800 p-4"><span class="text-[9px] uppercase font-black text-slate-500">Room</span><b class="text-2xl text-white block">${rooms.length}</b></div>
+                <div class="rounded-2xl bg-slate-950 border border-emerald-900/40 p-4"><span class="text-[9px] uppercase font-black text-emerald-500">Live</span><b class="text-2xl text-emerald-300 block">${live}</b></div>
+                <div class="rounded-2xl bg-slate-950 border border-indigo-900/40 p-4"><span class="text-[9px] uppercase font-black text-indigo-400">Siswa di Arena</span><b class="text-2xl text-indigo-200 block">${players}</b><span class="text-[9px] text-slate-500">${waiting} room lobby</span></div>
+            </div>
+            <div class="space-y-5 mt-5">
+                ${rooms.length ? rooms.map(renderAdminArenaRoomCard).join('') : `<div class="rounded-3xl border border-dashed border-slate-700 bg-slate-950/50 p-12 text-center"><div class="text-4xl mb-3">🎮</div><h3 class="font-black text-white">Belum ada Arena aktif</h3><p class="text-xs text-slate-400 mt-1">Buat Hosted Room dari tab Kelola Game & Mode, atau tunggu siswa memulai Quick Match.</p></div>`}
+            </div>
+        `;
+        if (showNotice) showToast('Monitoring Arena diperbarui.', 'success');
+    } catch (err) {
+        container.innerHTML = `<div class="rounded-2xl bg-rose-950/40 border border-rose-900 p-5 text-rose-200 text-xs font-bold">${gameEscapeHtml(err?.message || 'Gagal memuat Monitoring Arena.')}</div>`;
+    }
+};
+
+window.controlAdminGameArenaRoom = async function(roomId, action) {
+    try {
+        const res = await fetch('/api/game-arena/admin/room-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roomId, action }) });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || 'Aksi room gagal.');
+        if (action === 'start') showToast('Pertandingan Arena dimulai.', 'success');
+        if (action === 'finish') showToast('Pertandingan Arena diselesaikan.', 'info');
+        await window.refreshAdminGameArenaMonitoring(false);
+    } catch (err) {
+        showToast(err?.message || 'Aksi Room Arena gagal.', 'error');
+    }
+};
+
 let activeArenaSession = null;
 let activeArenaPollTimer = null;
 
