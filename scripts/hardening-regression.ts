@@ -226,6 +226,10 @@ assert.match(server, /meta\?\.sanSignature === sanSignature/);
   assert.match(server, /try \{[\s\S]*os\.networkInterfaces\(\)[\s\S]*Network interface enumeration unavailable/);
 
   assert.match(server, /app\.put\("\/api\/student\/profile", requireAuth, requireRole/);
+  assert.match(server, /const isStudentSelfServicePhotoMutation =[\s\S]*set-profile-photo[\s\S]*photo-history/);
+  assert.match(server, /!staffRoles\.has\(role\) &&[\s\S]*!isStudentSelfServicePhotoMutation/);
+  assert.match(server, /Siswa hanya dapat mengubah foto profil miliknya sendiri\./);
+  assert.match(server, /Siswa hanya dapat menghapus riwayat foto miliknya sendiri\./);
   assert.match(server, /withTokenLedger\(async \(\) =>/);
   assert.match(server, /Permintaan top-up ini sudah diproses/);
   assert.match(server, /function examBroadcastStateKey\(/);
