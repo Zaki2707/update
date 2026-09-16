@@ -4823,14 +4823,28 @@ function renderLaserArenaStage(state) {
     const left = getArenaSidePlayers(state, 'A')[0] || null;
     const right = getArenaSidePlayers(state, 'B')[0] || null;
     const position = Math.max(5, Math.min(95, Number(state.position || 50)));
+    const quality = getGameArenaFxQuality();
     return `
-        <div class="rounded-3xl bg-gradient-to-br from-slate-950 via-cyan-950 to-purple-950 border border-cyan-400/20 p-4 sm:p-5 relative overflow-hidden">
-            <div class="absolute inset-0 opacity-20" style="background-image:radial-gradient(circle at 20% 20%,white 0 1px,transparent 1.5px);background-size:24px 24px"></div>
-            <div class="relative z-10 flex items-start justify-between gap-4">${renderArenaPlayerChip(left)}<div class="text-center shrink-0"><span class="px-2.5 py-1 rounded-full bg-white/10 text-[9px] font-black text-cyan-100 uppercase">${state.status === 'waiting' ? 'Lobby' : state.status === 'finished' ? 'Selesai' : 'Laser Duel'}</span></div><div class="text-right">${renderArenaPlayerChip(right)}</div></div>
-            <div class="relative h-28 mt-5 z-10">
-                <div class="absolute left-7 right-7 top-1/2 -translate-y-1/2 h-2 rounded-full bg-slate-800 overflow-hidden"><div class="absolute inset-y-0 left-0 bg-cyan-400/80" style="width:${position}%"></div><div class="absolute inset-y-0 right-0 bg-fuchsia-500/80" style="width:${100-position}%"></div></div>
-                <div class="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white border-4 border-cyan-200 shadow-[0_0_34px_rgba(255,255,255,.95)] transition-all duration-500" style="left:${position}%"><div class="absolute inset-2 rounded-full bg-gradient-to-br from-cyan-300 to-fuchsia-400 animate-pulse"></div></div>
-                <div class="absolute left-2 bottom-0 text-4xl">⚡</div><div class="absolute right-2 bottom-0 text-4xl scale-x-[-1]">⚡</div>
+        <div data-arena-stage="laser_duel" data-arena-fx="${quality}" class="arena-stage rounded-3xl bg-gradient-to-br from-slate-950 via-cyan-950 to-purple-950 border border-cyan-400/20 p-4 sm:p-5 relative overflow-hidden">
+            <div class="absolute inset-0 opacity-20 pointer-events-none" style="background-image:radial-gradient(circle at 20% 20%,white 0 1px,transparent 1.5px);background-size:24px 24px"></div>
+            <div class="absolute inset-0 pointer-events-none bg-gradient-to-r from-cyan-500/5 via-transparent to-fuchsia-500/5"></div>
+            <div class="relative z-10 flex items-start justify-between gap-4">
+                ${renderArenaPlayerChip(left)}
+                <div class="text-center shrink-0"><span class="px-2.5 py-1 rounded-full bg-white/10 text-[9px] font-black text-cyan-100 uppercase">${state.status === 'waiting' ? 'Lobby' : state.status === 'finished' ? 'Selesai' : 'Laser Duel'}</span></div>
+                <div class="text-right">${renderArenaPlayerChip(right)}</div>
+            </div>
+            <div class="relative h-32 mt-4 z-10">
+                <div class="absolute left-7 right-7 top-1/2 -translate-y-1/2 h-3 rounded-full bg-slate-900 border border-white/10 overflow-hidden shadow-inner">
+                    <div class="arena-laser-beam absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-600 via-cyan-300 to-white shadow-[0_0_22px_rgba(34,211,238,.8)] transition-all duration-500" style="width:${position}%"></div>
+                    <div class="arena-laser-beam absolute inset-y-0 right-0 bg-gradient-to-l from-fuchsia-600 via-fuchsia-300 to-white shadow-[0_0_22px_rgba(217,70,239,.8)] transition-all duration-500" style="width:${100-position}%"></div>
+                </div>
+                <div class="arena-laser-impact absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white border-4 border-cyan-200 shadow-[0_0_38px_rgba(255,255,255,.95)] transition-all duration-500" style="left:${position}%">
+                    <div class="absolute inset-2 rounded-full bg-gradient-to-br from-cyan-300 via-white to-fuchsia-400"></div>
+                    <span class="absolute -left-3 top-1/2 -translate-y-1/2 text-cyan-200 text-lg">✦</span>
+                    <span class="absolute -right-3 top-1/2 -translate-y-1/2 text-fuchsia-200 text-lg">✦</span>
+                </div>
+                <div class="absolute left-1 bottom-0 flex items-end gap-1 text-cyan-200"><span class="text-3xl">⚡</span><span class="text-[9px] font-black mb-1">TIM A</span></div>
+                <div class="absolute right-1 bottom-0 flex flex-row-reverse items-end gap-1 text-fuchsia-200"><span class="text-3xl scale-x-[-1]">⚡</span><span class="text-[9px] font-black mb-1">TIM B</span></div>
             </div>
         </div>`;
 }
@@ -4839,11 +4853,31 @@ function renderTugArenaStage(state) {
     const teamA = getArenaSidePlayers(state, 'A');
     const teamB = getArenaSidePlayers(state, 'B');
     const position = Math.max(5, Math.min(95, Number(state.position || 50)));
+    const quality = getGameArenaFxQuality();
     return `
-        <div class="rounded-3xl bg-gradient-to-b from-sky-200 via-emerald-100 to-emerald-300 border border-emerald-300 p-4 sm:p-5 relative overflow-hidden">
-            <div class="absolute left-5 top-5 px-3 py-1 rounded-full bg-blue-700 text-white text-[10px] font-black">TIM A · ${teamA.length}</div><div class="absolute right-5 top-5 px-3 py-1 rounded-full bg-rose-700 text-white text-[10px] font-black">TIM B · ${teamB.length}</div>
-            <div class="h-44 relative mt-5"><div class="absolute left-6 right-6 top-[58%] h-3 rounded-full bg-amber-900 shadow-lg"></div><div class="absolute top-[35%] -translate-x-1/2 transition-all duration-500" style="left:${position}%"><div class="text-4xl -ml-3">🚩</div><div class="w-1 h-20 bg-slate-800 mx-auto -mt-2"></div></div><div class="absolute left-2 bottom-1 flex -space-x-2">${teamA.slice(0, 5).map(player => renderGameArenaAvatar(player.avatar?.presetId || 'bintang', 'w-11 h-11', 'border-2 border-white')).join('')}</div><div class="absolute right-2 bottom-1 flex -space-x-2 flex-row-reverse">${teamB.slice(0, 5).map(player => renderGameArenaAvatar(player.avatar?.presetId || 'komet', 'w-11 h-11', 'border-2 border-white')).join('')}</div></div>
-            <div class="grid grid-cols-2 gap-2 text-[10px] font-bold"><div class="bg-white/70 rounded-xl p-2 text-blue-900">✓ ${teamA.reduce((sum,p)=>sum+Number(p.correctAnswers||0),0)} jawaban benar</div><div class="bg-white/70 rounded-xl p-2 text-right text-rose-900">✓ ${teamB.reduce((sum,p)=>sum+Number(p.correctAnswers||0),0)} jawaban benar</div></div>
+        <div data-arena-stage="tug_war" data-arena-fx="${quality}" class="arena-stage rounded-3xl bg-gradient-to-b from-sky-200 via-emerald-100 to-emerald-300 border border-emerald-300 p-4 sm:p-5 relative overflow-hidden">
+            <div class="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-emerald-700/20 to-transparent pointer-events-none"></div>
+            <div class="absolute left-5 top-5 px-3 py-1 rounded-full bg-blue-700 text-white text-[10px] font-black">TIM A · ${teamA.length}</div>
+            <div class="absolute right-5 top-5 px-3 py-1 rounded-full bg-rose-700 text-white text-[10px] font-black">TIM B · ${teamB.length}</div>
+            <div class="h-48 relative mt-5">
+                <div class="arena-tug-rope absolute left-6 right-6 top-[58%] h-3 rounded-full bg-gradient-to-b from-amber-700 to-amber-950 shadow-lg border border-amber-950/30"></div>
+                <div class="arena-tug-flag absolute top-[28%] -translate-x-1/2 transition-all duration-500" style="left:${position}%">
+                    <div class="text-4xl -ml-3 drop-shadow">🚩</div>
+                    <div class="w-1.5 h-24 bg-slate-800 mx-auto -mt-2 rounded-full"></div>
+                </div>
+                <div class="absolute left-2 bottom-1 flex -space-x-2">
+                    ${teamA.slice(0, 7).map((player, index) => `<div style="transform:rotate(${index%2?'-3':'3'}deg)">${renderGameArenaAvatar(player.avatar?.presetId || 'bintang', 'w-11 h-11', 'border-2 border-white')}</div>`).join('')}
+                </div>
+                <div class="absolute right-2 bottom-1 flex -space-x-2 flex-row-reverse">
+                    ${teamB.slice(0, 7).map((player, index) => `<div style="transform:rotate(${index%2?'3':'-3'}deg)">${renderGameArenaAvatar(player.avatar?.presetId || 'komet', 'w-11 h-11', 'border-2 border-white')}</div>`).join('')}
+                </div>
+                <div class="absolute left-8 bottom-0 text-[9px] font-black text-emerald-900/60">💨 tarik!</div>
+                <div class="absolute right-8 bottom-0 text-[9px] font-black text-emerald-900/60">tarik! 💨</div>
+            </div>
+            <div class="relative z-10 grid grid-cols-2 gap-2 text-[10px] font-bold">
+                <div class="bg-white/70 rounded-xl p-2 text-blue-900">✓ ${teamA.reduce((sum,p)=>sum+Number(p.correctAnswers||0),0)} jawaban benar</div>
+                <div class="bg-white/70 rounded-xl p-2 text-right text-rose-900">✓ ${teamB.reduce((sum,p)=>sum+Number(p.correctAnswers||0),0)} jawaban benar</div>
+            </div>
         </div>`;
 }
 
@@ -4851,43 +4885,63 @@ function renderBattleRoyaleArenaStage(state) {
     const me = getArenaMePlayer(state);
     const isMonitorView = !state?.me?.id;
     const activeCount = (state.players || []).filter(player => !player.eliminated && Number(player.hp || 0) > 0).length;
+    const quality = getGameArenaFxQuality();
+    const hpMax = Math.max(3, ...(state.players || []).map(player => Number(player.hp || 0)));
     return `
-        <div class="rounded-3xl bg-gradient-to-br from-violet-950 via-fuchsia-950 to-slate-950 border border-fuchsia-400/20 p-4 sm:p-5 text-white overflow-hidden">
-            <div class="flex items-center justify-between gap-3 mb-4">
+        <div data-arena-stage="battle_royale" data-arena-fx="${quality}" class="arena-stage rounded-3xl bg-gradient-to-br from-violet-950 via-fuchsia-950 to-slate-950 border border-fuchsia-400/20 p-4 sm:p-5 text-white overflow-hidden relative">
+            <div class="absolute inset-0 opacity-15 pointer-events-none" style="background-image:radial-gradient(circle at 30% 30%,#c084fc 0 1px,transparent 1.5px);background-size:28px 28px"></div>
+            <div class="relative z-10 flex items-center justify-between gap-3 mb-4">
                 <div><p class="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">Battle Royale Energi</p><h3 class="font-black">${activeCount} shield masih aktif</h3></div>
                 <div class="text-right">${isMonitorView ? `<p class="text-[10px] text-slate-400">Teacher View</p><p class="font-black text-fuchsia-200">${(state.players || []).length} pemain</p>` : `<p class="text-[10px] text-slate-400">Energi kamu</p><p class="font-black text-amber-300">⚡ ${Number(me?.energy || 0)}/6</p>`}</div>
             </div>
-            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                ${(state.players || []).map(player => `
-                    <div class="rounded-2xl border ${String(player.id) === String(state.me?.id) ? 'border-cyan-300 bg-cyan-400/10' : 'border-white/10 bg-white/5'} p-3 ${player.eliminated ? 'opacity-40 grayscale' : ''}">
-                        <div class="flex items-center gap-2">
-                            ${renderGameArenaAvatar(player.avatar?.presetId || 'bintang', 'w-10 h-10', 'shrink-0')}
-                            <div class="min-w-0"><p class="text-[11px] font-black truncate">${gameEscapeHtml(player.name || 'Siswa')}</p><p class="text-[9px] text-slate-300">${player.eliminated ? 'Penonton' : `🛡️ ${Number(player.hp || 0)}/3 · ⚡ ${Number(player.energy || 0)}`}</p></div>
-                        </div>
-                    </div>
-                `).join('')}
+            <div class="relative z-10 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                ${(state.players || []).map(player => {
+                    const active = !player.eliminated && Number(player.hp || 0) > 0;
+                    const hp = Math.max(0, Number(player.hp || 0));
+                    return `
+                        <div data-arena-player-id="${gameEscapeAttr(player.id)}" class="arena-battle-player rounded-2xl border ${String(player.id) === String(state.me?.id) ? 'border-cyan-300 bg-cyan-400/10' : 'border-white/10 bg-white/5'} p-3 relative overflow-hidden ${player.eliminated ? 'opacity-45 grayscale' : ''}">
+                            ${active ? '<div class="arena-shield-active absolute inset-1 rounded-2xl border border-cyan-300/20 pointer-events-none"></div>' : ''}
+                            <div class="relative z-10 flex items-center gap-2">
+                                ${renderGameArenaAvatar(player.avatar?.presetId || 'bintang', 'w-12 h-12', 'shrink-0')}
+                                <div class="min-w-0 flex-1">
+                                    <p class="text-[11px] font-black truncate">${gameEscapeHtml(player.name || 'Siswa')}</p>
+                                    <p class="text-[9px] text-slate-300">${player.eliminated ? '👀 Penonton' : `🛡️ ${hp}/${hpMax} · ⚡ ${Number(player.energy || 0)}`}</p>
+                                    <div class="mt-1 h-1.5 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-400 transition-all duration-300" style="width:${Math.max(0,Math.min(100,(hp/hpMax)*100))}%"></div></div>
+                                </div>
+                            </div>
+                        </div>`;
+                }).join('')}
             </div>
         </div>`;
 }
 
 function renderQuizRaceArenaStage(state) {
     const sorted = [...(state.players || [])].sort((a, b) => Number(b.raceProgress || 0) - Number(a.raceProgress || 0));
+    const quality = getGameArenaFxQuality();
     return `
-        <div class="rounded-3xl bg-gradient-to-br from-sky-950 via-blue-900 to-cyan-800 border border-cyan-400/20 p-4 sm:p-5 text-white">
-            <div class="flex items-center justify-between mb-4"><div><p class="text-[10px] font-black uppercase tracking-wider text-cyan-300">Quiz Racing</p><h3 class="font-black">Jawaban benar = dorongan kendaraan</h3></div><span class="text-2xl">🏁</span></div>
-            <div class="space-y-3">
+        <div data-arena-stage="quiz_race" data-arena-fx="${quality}" class="arena-stage rounded-3xl bg-gradient-to-br from-sky-950 via-blue-900 to-cyan-800 border border-cyan-400/20 p-4 sm:p-5 text-white relative overflow-hidden">
+            <div class="absolute inset-0 opacity-10 pointer-events-none" style="background-image:linear-gradient(90deg,transparent 0 48%,white 49% 51%,transparent 52%);background-size:70px 100%"></div>
+            <div class="relative z-10 flex items-center justify-between mb-4"><div><p class="text-[10px] font-black uppercase tracking-wider text-cyan-300">Quiz Racing</p><h3 class="font-black">Jawaban benar = dorongan kendaraan</h3></div><span class="text-3xl">🏁</span></div>
+            <div class="relative z-10 space-y-3">
                 ${sorted.map((player, index) => {
                     const progress = Math.max(0, Math.min(100, Number(player.raceProgress || 0)));
+                    const boosted = Number(player.streak || 0) >= 2;
+                    const vehicle = index % 3 === 0 ? '🏎️' : index % 3 === 1 ? '🚙' : '🚗';
                     return `
-                        <div class="rounded-2xl bg-white/8 border ${String(player.id) === String(state.me?.id) ? 'border-cyan-300' : 'border-white/10'} p-3">
-                            <div class="flex items-center gap-3">
+                        <div data-arena-racer-id="${gameEscapeAttr(player.id)}" class="rounded-2xl bg-white/8 border ${String(player.id) === String(state.me?.id) ? 'border-cyan-300' : 'border-white/10'} p-3">
+                            <div class="flex items-center gap-2 mb-1">
                                 <span class="w-6 text-center text-[10px] font-black text-cyan-200">#${index + 1}</span>
-                                ${renderGameArenaAvatar(player.avatar?.presetId || 'roket', 'w-9 h-9', 'shrink-0')}
-                                <div class="flex-1 min-w-0">
-                                    <div class="flex justify-between gap-2 text-[10px] font-black"><span class="truncate">${gameEscapeHtml(player.name || 'Siswa')}</span><span>${progress}%</span></div>
-                                    <div class="mt-1 h-2 rounded-full bg-slate-950/60 overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-300 transition-all duration-500" style="width:${progress}%"></div></div>
+                                ${renderGameArenaAvatar(player.avatar?.presetId || 'roket', 'w-8 h-8', 'shrink-0')}
+                                <span class="flex-1 truncate text-[10px] font-black">${gameEscapeHtml(player.name || 'Siswa')}</span>
+                                <span class="text-[10px] font-black text-cyan-100">${progress}%</span>
+                            </div>
+                            <div class="ml-8 relative h-9 rounded-xl bg-slate-950/45 border border-white/10 overflow-hidden">
+                                <div class="absolute left-3 right-3 top-1/2 border-t border-dashed border-white/25"></div>
+                                <div class="absolute right-2 top-0 bottom-0 border-r-2 border-dashed border-white/55"></div>
+                                <div class="arena-race-car absolute top-1/2 -translate-y-1/2 -translate-x-1/2 text-2xl transition-all duration-700 ease-out" style="left:calc(6% + ${progress * .88}%)">
+                                    ${boosted ? '<span class="arena-racer-boost absolute right-[80%] top-1/2 -translate-y-1/2 text-sm">🔥</span>' : '<span class="absolute right-[80%] top-1/2 -translate-y-1/2 text-[10px] opacity-55">💨</span>'}
+                                    <span class="relative z-10">${progress >= 100 ? '🏁' : vehicle}</span>
                                 </div>
-                                <span class="text-xl">${progress >= 100 ? '🏁' : '🏎️'}</span>
                             </div>
                         </div>`;
                 }).join('')}
@@ -4900,17 +4954,29 @@ function renderBaseBattleArenaStage(state) {
     const teamB = getArenaSidePlayers(state, 'B');
     const baseA = state.base?.A || { hp: 100, shield: 0 };
     const baseB = state.base?.B || { hp: 100, shield: 0 };
-    const renderBase = (side, base, players) => `
-        <div class="rounded-3xl bg-white/8 border border-white/10 p-4">
-            <div class="flex items-center justify-between gap-3"><div><p class="text-[10px] font-black uppercase tracking-wider ${side === 'A' ? 'text-cyan-300' : 'text-rose-300'}">Base ${side}</p><p class="text-4xl mt-1">🏰</p></div><div class="text-right"><p class="font-black text-lg">❤️ ${Number(base.hp || 0)}/100</p><p class="text-xs font-bold text-sky-200">🛡️ ${Number(base.shield || 0)}/60</p></div></div>
-            <div class="mt-3 h-2 rounded-full bg-slate-950/60 overflow-hidden"><div class="h-full bg-emerald-400 transition-all" style="width:${Math.max(0, Math.min(100, Number(base.hp || 0)))}%"></div></div>
-            <div class="mt-3 flex -space-x-2">${players.slice(0, 8).map(player => renderGameArenaAvatar(player.avatar?.presetId || 'bintang', 'w-9 h-9', 'border-2 border-slate-900')).join('')}</div>
-            <p class="mt-2 text-[9px] text-slate-300">${players.length} pemain</p>
-        </div>`;
+    const quality = getGameArenaFxQuality();
+    const renderBase = (side, base, players) => {
+        const hp = Math.max(0, Number(base.hp || 0));
+        const shield = Math.max(0, Number(base.shield || 0));
+        const critical = hp > 0 && hp < 30;
+        return `
+            <div data-arena-base-side="${side}" class="arena-base-card relative rounded-3xl bg-white/8 border ${shield > 0 ? 'border-cyan-300/40 arena-shield-active' : 'border-white/10'} p-4 overflow-hidden ${critical ? 'arena-base-critical' : ''}">
+                ${shield > 0 ? '<div class="absolute inset-2 rounded-[26px] border-2 border-cyan-300/25 bg-cyan-300/5 pointer-events-none"></div>' : ''}
+                ${critical ? '<div class="absolute right-3 top-3 text-lg opacity-70">💨</div>' : ''}
+                <div class="relative z-10 flex items-center justify-between gap-3">
+                    <div><p class="text-[10px] font-black uppercase tracking-wider ${side === 'A' ? 'text-cyan-300' : 'text-rose-300'}">Base ${side}</p><p class="text-5xl mt-1 drop-shadow">${critical ? '🏚️' : '🏰'}</p></div>
+                    <div class="text-right"><p class="font-black text-lg">❤️ ${hp}/100</p><p class="text-xs font-bold text-sky-200">🛡️ ${shield}/60</p></div>
+                </div>
+                <div class="relative z-10 mt-3 h-2 rounded-full bg-slate-950/60 overflow-hidden"><div class="h-full bg-gradient-to-r from-rose-500 via-amber-400 to-emerald-400 transition-all duration-500" style="width:${Math.max(0, Math.min(100, hp))}%"></div></div>
+                <div class="relative z-10 mt-3 flex -space-x-2">${players.slice(0, 8).map(player => renderGameArenaAvatar(player.avatar?.presetId || 'bintang', 'w-9 h-9', 'border-2 border-slate-900')).join('')}</div>
+                <p class="relative z-10 mt-2 text-[9px] text-slate-300">${players.length} pemain</p>
+            </div>`;
+    };
     return `
-        <div class="rounded-3xl bg-gradient-to-br from-amber-950 via-orange-950 to-slate-950 border border-orange-400/20 p-4 sm:p-5 text-white">
-            <div class="text-center mb-4"><p class="text-[10px] font-black uppercase tracking-wider text-amber-300">Base Battle</p><h3 class="font-black">Isi mana lewat soal, lalu tentukan strategi tim</h3></div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">${renderBase('A', baseA, teamA)}${renderBase('B', baseB, teamB)}</div>
+        <div data-arena-stage="base_battle" data-arena-fx="${quality}" class="arena-stage rounded-3xl bg-gradient-to-br from-amber-950 via-orange-950 to-slate-950 border border-orange-400/20 p-4 sm:p-5 text-white relative overflow-hidden">
+            <div class="absolute left-1/2 top-16 bottom-4 border-l border-dashed border-amber-300/20 pointer-events-none"></div>
+            <div class="relative z-10 text-center mb-4"><p class="text-[10px] font-black uppercase tracking-wider text-amber-300">Base Battle</p><h3 class="font-black">Isi mana lewat soal, lalu tentukan strategi tim</h3></div>
+            <div class="relative z-10 grid grid-cols-1 sm:grid-cols-2 gap-4">${renderBase('A', baseA, teamA)}${renderBase('B', baseB, teamB)}</div>
         </div>`;
 }
 
