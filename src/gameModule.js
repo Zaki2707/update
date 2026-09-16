@@ -3965,6 +3965,11 @@ const GAME_ARENA_MODE_META = [
 
 const GAME_ARENA_FX_LEVELS = ['full', 'light', 'eco'];
 const GAME_ARENA_FX_LABELS = { full: '✨ Penuh', light: '⚡ Ringan', eco: '🔋 Hemat' };
+const GAME_ARENA_ASSET_ROOT = '/assets/game-arena';
+const GAME_ARENA_VEHICLES = ['car-blue.svg','car-red.svg','car-green.svg','car-yellow.svg','car-purple.svg'];
+function gameArenaAsset(path){ return `${GAME_ARENA_ASSET_ROOT}/${String(path||'').replace(/^\\/+/, '')}`; }
+function gameArenaVehicleAsset(index=0){ return gameArenaAsset(`vehicles/${GAME_ARENA_VEHICLES[Math.abs(Number(index||0)) % GAME_ARENA_VEHICLES.length]}`); }
+
 let adminArenaFxSnapshots = Object.create(null);
 
 function detectGameArenaFxQuality() {
@@ -4099,192 +4104,28 @@ function ensureGameArenaFxStyles() {
     document.head.appendChild(style);
 }
 
-function ensureGameArenaReferenceStyles() {
-    if (document.getElementById('game-arena-reference-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'game-arena-reference-styles';
-    style.textContent = \`
-        @keyframes arenaReferenceGlow { 0%,100%{filter:brightness(.95) saturate(1)} 50%{filter:brightness(1.28) saturate(1.3)} }
-        @keyframes arenaReferenceExplosion { 0%{transform:translate(-50%,-50%) scale(.25);opacity:0} 22%{opacity:1} 65%{transform:translate(-50%,-50%) scale(1.18);opacity:.95} 100%{transform:translate(-50%,-50%) scale(1.7);opacity:0} }
-        @keyframes arenaReferenceSmoke { 0%{transform:translate(-50%,-30%) scale(.35);opacity:.55} 100%{transform:translate(-50%,-135%) scale(1.8);opacity:0} }
-        @keyframes arenaReferenceDust { 0%{transform:translate(0,0) scale(.55);opacity:.45} 100%{transform:translate(-25px,-12px) scale(1.6);opacity:0} }
-        @keyframes arenaReferenceCarBob { 0%,100%{transform:translateY(-50%) rotate(-1deg)} 50%{transform:translateY(calc(-50% - 2px)) rotate(1deg)} }
-        @keyframes arenaReferenceRopePull { 0%,100%{filter:drop-shadow(0 3px 2px rgba(0,0,0,.3));transform:scaleX(1)} 50%{filter:drop-shadow(0 6px 3px rgba(0,0,0,.38));transform:scaleX(1.015)} }
-        @keyframes arenaReferencePulseRing { 0%{width:8px;height:8px;opacity:1} 100%{width:88px;height:88px;opacity:0} }
-
-        .arena-reference-live-shell {
-            background:linear-gradient(180deg,#071c35 0%,#0a2442 52%,#06182d 100%);
-            border:1px solid rgba(82,174,255,.32);
-            border-radius:24px;
-            overflow:hidden;
-            box-shadow:0 22px 65px rgba(2,12,27,.42), inset 0 1px rgba(255,255,255,.08);
-        }
-        .arena-reference-stage-wrap { position:relative; min-height:590px; overflow:hidden; }
-        .arena-reference-stage-wrap > [data-arena-stage] { min-height:590px; border-radius:0; border:0; box-shadow:none; padding-bottom:220px; }
-        .arena-reference-bottom {
-            position:absolute;
-            z-index:80;
-            left:18px;
-            right:18px;
-            bottom:18px;
-            display:grid;
-            grid-template-columns:minmax(0,1fr);
-            gap:10px;
-            pointer-events:none;
-        }
-        .arena-reference-bottom > * { pointer-events:auto; }
-        .arena-reference-question,
-        .arena-reference-action {
-            background:linear-gradient(180deg,rgba(9,42,74,.96),rgba(4,27,51,.97));
-            color:#f8fbff;
-            border:1px solid rgba(99,188,255,.42);
-            border-radius:16px;
-            box-shadow:0 14px 35px rgba(2,12,27,.32), inset 0 1px rgba(255,255,255,.07);
-            backdrop-filter:blur(10px);
-        }
-        .arena-reference-choice {
-            background:rgba(16,55,91,.92);
-            border:1px solid rgba(116,191,255,.28);
-            color:#f8fbff;
-            border-radius:8px;
-            transition:.18s ease;
-        }
-        .arena-reference-choice:hover {
-            background:linear-gradient(90deg,#0ca678,#18c98b);
-            border-color:#55f2bd;
-            transform:translateY(-1px);
-            box-shadow:0 8px 18px rgba(14,201,139,.2);
-        }
-        .arena-reference-input {
-            background:rgba(3,27,49,.9);
-            border:1px solid rgba(105,184,255,.36);
-            color:white;
-        }
-        .arena-reference-input::placeholder { color:rgba(219,234,254,.48); }
-
-        .arena-hud-glass {
-            background:linear-gradient(180deg,rgba(6,31,56,.9),rgba(4,24,45,.78));
-            border:1px solid rgba(118,197,255,.34);
-            box-shadow:0 7px 22px rgba(0,0,0,.26), inset 0 1px rgba(255,255,255,.08);
-            backdrop-filter:blur(8px);
-        }
-        .arena-hud-progress { height:17px; border-radius:6px; overflow:hidden; background:rgba(1,12,28,.72); border:1px solid rgba(255,255,255,.14); }
-        .arena-hud-progress > span { display:block; height:100%; transition:width .45s ease; }
-
-        [data-arena-stage="laser_duel"] .arena-cyber-floor {
-            position:absolute;left:-12%;right:-12%;bottom:-16%;height:68%;
-            transform:perspective(520px) rotateX(62deg);
-            transform-origin:center top;
-            background-image:
-                linear-gradient(rgba(52,211,153,.0),rgba(14,165,233,.14)),
-                repeating-linear-gradient(90deg,rgba(34,211,238,.38) 0 1px,transparent 1px 46px),
-                repeating-linear-gradient(0deg,rgba(34,211,238,.32) 0 1px,transparent 1px 34px);
-            filter:drop-shadow(0 0 9px rgba(34,211,238,.45));
-            opacity:.92;
-        }
-        [data-arena-stage="laser_duel"] .arena-laser-core {
-            box-shadow:0 0 12px #fff,0 0 32px rgba(34,211,238,.95),0 0 55px rgba(217,70,239,.72);
-        }
-        [data-arena-stage="laser_duel"] .arena-laser-fighter { filter:drop-shadow(0 12px 6px rgba(0,0,0,.42)); }
-
-        [data-arena-stage="tug_war"] .arena-school-building {
-            position:absolute;left:7%;right:7%;top:19%;height:31%;
-            border-radius:12px 12px 0 0;
-            background:
-                repeating-linear-gradient(90deg,transparent 0 44px,rgba(255,255,255,.7) 44px 48px,transparent 48px 92px),
-                repeating-linear-gradient(0deg,#d8eef4 0 26px,#8db6c5 26px 30px);
-            border:3px solid rgba(35,89,106,.18);
-            opacity:.76;
-            box-shadow:0 12px 24px rgba(15,55,40,.16);
-        }
-        [data-arena-stage="tug_war"] .arena-school-ground { position:absolute;left:0;right:0;bottom:0;height:52%;background:linear-gradient(#d9bc82,#c69b59);opacity:.92; }
-        [data-arena-stage="tug_war"] .arena-tug-rope { animation:arenaReferenceRopePull .8s ease-in-out infinite; }
-        [data-arena-stage="tug_war"] .arena-tug-player { filter:drop-shadow(0 7px 4px rgba(0,0,0,.28)); }
-
-        [data-arena-stage="battle_royale"] .arena-battle-map {
-            position:absolute;inset:64px 10px 10px;border-radius:18px;overflow:hidden;
-            background:
-                radial-gradient(circle at 20% 20%,rgba(255,255,255,.07) 0 2px,transparent 3px),
-                linear-gradient(135deg,#406f49,#679264 44%,#385b43);
-            box-shadow:inset 0 0 55px rgba(2,19,12,.45);
-        }
-        [data-arena-stage="battle_royale"] .arena-battle-map::before {
-            content:"";position:absolute;inset:0;
-            background-image:
-                radial-gradient(circle at 18% 31%,#294f34 0 19px,transparent 20px),
-                radial-gradient(circle at 76% 20%,#294f34 0 24px,transparent 25px),
-                radial-gradient(circle at 62% 74%,#2f5e39 0 18px,transparent 19px),
-                linear-gradient(115deg,transparent 0 44%,rgba(213,190,135,.18) 45% 52%,transparent 53%);
-            opacity:.9;
-        }
-        .arena-map-crate { position:absolute;width:30px;height:30px;background:linear-gradient(135deg,#8b5e34,#593719);border:3px solid rgba(56,32,12,.7);box-shadow:0 5px 6px rgba(0,0,0,.25);transform:rotate(45deg); }
-        .arena-map-rock { position:absolute;width:34px;height:23px;border-radius:50%;background:linear-gradient(#8d9aa3,#56616a);box-shadow:0 5px 5px rgba(0,0,0,.22); }
-
-        [data-arena-stage="quiz_race"] .arena-road {
-            position:absolute;left:30%;right:3%;top:58px;bottom:12px;
-            clip-path:polygon(18% 0,82% 0,100% 100%,0 100%);
-            background:
-                linear-gradient(90deg,#d9d9d9 0 4%,#e73a45 4% 8%,#252b34 8% 92%,#e73a45 92% 96%,#d9d9d9 96%),
-                #252b34;
-            box-shadow:inset 0 0 35px rgba(0,0,0,.52);
-        }
-        [data-arena-stage="quiz_race"] .arena-road::after {
-            content:"";position:absolute;left:50%;top:0;bottom:0;border-left:3px dashed rgba(255,255,255,.55);
-        }
-        [data-arena-stage="quiz_race"] .arena-race-car { animation:arenaReferenceCarBob .5s ease-in-out infinite; filter:drop-shadow(0 7px 4px rgba(0,0,0,.38)); }
-        [data-arena-stage="quiz_race"] .arena-race-ranking { position:absolute;left:12px;top:64px;width:27%;z-index:9; }
-
-        [data-arena-stage="base_battle"] .arena-base-field {
-            position:absolute;inset:52px 0 0;
-            background:
-                radial-gradient(circle at 23% 28%,rgba(255,255,255,.07),transparent 27%),
-                radial-gradient(circle at 76% 25%,rgba(255,255,255,.06),transparent 29%),
-                linear-gradient(#3d7454,#315d43 55%,#274c37);
-        }
-        [data-arena-stage="base_battle"] .arena-castle { font-size:84px;filter:drop-shadow(0 13px 5px rgba(0,0,0,.35)); }
-        [data-arena-stage="base_battle"] .arena-base-battleline { position:absolute;left:38%;right:38%;top:47%;height:3px;background:linear-gradient(90deg,#5eead4,#fff,#fb7185);box-shadow:0 0 18px #fff; }
-        [data-arena-stage="base_battle"] .arena-base-battleline::after { content:"✦";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:42px;color:#fff;text-shadow:0 0 14px #f97316,0 0 26px #facc15;animation:arenaReferenceGlow .55s ease-in-out infinite; }
-
-        .arena-impact-shockwave {
-            position:absolute;z-index:70;width:12px;height:12px;border:3px solid;border-radius:999px;
-            transform:translate(-50%,-50%);
-            pointer-events:none;
-            animation:arenaReferencePulseRing .58s ease-out forwards;
-            box-shadow:0 0 18px currentColor;
-        }
-        .arena-impact-smoke {
-            position:absolute;z-index:64;width:22px;height:22px;border-radius:999px;
-            transform:translate(-50%,-50%);
-            background:radial-gradient(circle,rgba(226,232,240,.72),rgba(71,85,105,.28) 55%,transparent 72%);
-            filter:blur(1px);
-            pointer-events:none;
-            animation:arenaReferenceSmoke .86s ease-out forwards;
-        }
-        .arena-static-explosion {
-            position:absolute;width:52px;height:52px;border-radius:50%;
-            background:radial-gradient(circle,#fff 0 9%,#fde047 10% 22%,#fb923c 23% 42%,rgba(239,68,68,.2) 43% 62%,transparent 63%);
-            animation:arenaReferenceExplosion 1.25s ease-in-out infinite;
-            filter:drop-shadow(0 0 14px #fb923c);
-        }
-
-        [data-arena-monitor-room] .arena-stage { min-height:300px !important; padding-bottom:12px !important; border-radius:14px !important; }
-        [data-arena-monitor-room] .arena-stage .arena-monitor-hide { display:none !important; }
-        [data-arena-monitor-room] .arena-race-ranking { width:34% !important; }
-        [data-arena-monitor-room] .arena-castle { font-size:58px !important; }
-
-        @media (max-width: 720px) {
-            .arena-reference-stage-wrap { min-height:auto; }
-            .arena-reference-stage-wrap > [data-arena-stage] { min-height:430px; padding-bottom:18px; }
-            .arena-reference-bottom { position:relative;left:auto;right:auto;bottom:auto;padding:10px;background:#071b31; }
-            [data-arena-stage="quiz_race"] .arena-race-ranking { width:38%; }
-            [data-arena-stage="quiz_race"] .arena-road { left:40%; }
-            [data-arena-stage="base_battle"] .arena-castle { font-size:58px; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .arena-static-explosion,.arena-race-car,.arena-tug-rope { animation:none !important; }
-        }
-    \`;
-    document.head.appendChild(style);
+function ensureGameArenaReferenceStyles(){
+ if(document.getElementById('game-arena-reference-styles'))return;
+ const style=document.createElement('style');style.id='game-arena-reference-styles';style.textContent=`
+ @keyframes arenaRefSmoke{0%{transform:translate(-50%,-20%) scale(.35);opacity:.62}100%{transform:translate(-50%,-145%) scale(1.9);opacity:0}}
+ @keyframes arenaRefRing{0%{transform:translate(-50%,-50%) scale(.2);opacity:1}100%{transform:translate(-50%,-50%) scale(2.2);opacity:0}}
+ @keyframes arenaRefFlash{0%,100%{opacity:.45;transform:translate(-50%,-50%) scale(.75)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.25)}}
+ @keyframes arenaRefCar{0%,100%{transform:translate(-50%,-50%) rotate(-1deg)}50%{transform:translate(-50%,calc(-50% - 2px)) rotate(1deg)}}
+ @keyframes arenaRefCritical{0%,100%{filter:brightness(1)}50%{filter:brightness(.72) saturate(1.4)}}
+ .arena-ref-shell{background:#06182d;border:1px solid rgba(71,173,255,.32);border-radius:22px;overflow:hidden;box-shadow:0 22px 65px rgba(2,12,27,.45)}
+ .arena-ref-wrap{position:relative;min-height:650px;overflow:hidden}.arena-ref-wrap>[data-arena-stage]{min-height:650px;border-radius:0!important;border:0!important;box-shadow:none!important;padding-bottom:235px!important}
+ .arena-ref-bottom{position:absolute;z-index:90;left:18px;right:18px;bottom:16px;display:grid;grid-template-columns:1fr;gap:9px}
+ .arena-ref-bottom>div{box-shadow:0 14px 35px rgba(1,10,23,.3)}
+ .arena-hud-glass{background:linear-gradient(180deg,rgba(7,35,63,.92),rgba(4,25,47,.82));border:1px solid rgba(110,196,255,.35);box-shadow:0 8px 24px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.08);backdrop-filter:blur(8px)}
+ .arena-hud-bar{height:18px;border-radius:6px;overflow:hidden;background:rgba(1,12,28,.76);border:1px solid rgba(255,255,255,.14)}.arena-scene-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;user-select:none}
+ .arena-laser-impact-ref{position:absolute;width:62px;height:62px;border-radius:999px;background:radial-gradient(circle,#fff 0 10%,#76e8ff 11% 28%,#d946ef 35%,rgba(249,115,22,.7) 48%,transparent 68%);filter:drop-shadow(0 0 18px #fff) drop-shadow(0 0 34px #22d3ee);animation:arenaRefFlash .52s ease-in-out infinite}
+ .arena-pulse-ring{position:absolute;width:44px;height:44px;border:3px solid rgba(255,255,255,.9);border-radius:999px;animation:arenaRefRing .72s ease-out infinite}.arena-smoke-puff{position:absolute;width:28px;height:28px;border-radius:999px;background:radial-gradient(circle,rgba(241,245,249,.8),rgba(71,85,105,.32) 55%,transparent 72%);filter:blur(1px);animation:arenaRefSmoke 1.1s ease-out infinite}
+ .arena-race-vehicle{animation:arenaRefCar .5s ease-in-out infinite;filter:drop-shadow(0 8px 5px rgba(0,0,0,.38))}.arena-base-critical{animation:arenaRefCritical 1s ease-in-out infinite}
+ .arena-fx-shock{position:absolute;z-index:75;width:18px;height:18px;border:3px solid currentColor;border-radius:999px;transform:translate(-50%,-50%);pointer-events:none;animation:arenaRefRing .55s ease-out forwards}.arena-fx-smoke{position:absolute;z-index:70;width:24px;height:24px;border-radius:999px;transform:translate(-50%,-50%);background:radial-gradient(circle,rgba(241,245,249,.78),rgba(71,85,105,.3) 55%,transparent 72%);pointer-events:none;animation:arenaRefSmoke .9s ease-out forwards}
+ [data-arena-monitor-room] .arena-stage{min-height:315px!important;padding-bottom:12px!important;border-radius:12px!important}[data-arena-monitor-room] .arena-monitor-detail{display:none!important}[data-arena-monitor-room] .arena-character-wrap{transform:scale(.82)}[data-arena-monitor-room] .arena-castle-img{width:86px!important;height:96px!important}[data-arena-monitor-room] .arena-race-rank{width:38%!important}
+ @media(max-width:720px){.arena-ref-wrap{min-height:auto}.arena-ref-wrap>[data-arena-stage]{min-height:470px;padding-bottom:12px!important}.arena-ref-bottom{position:relative;left:auto;right:auto;bottom:auto;padding:10px;background:#06182d}.arena-race-rank{width:40%!important}}
+ @media(prefers-reduced-motion:reduce){.arena-laser-impact-ref,.arena-pulse-ring,.arena-smoke-puff,.arena-race-vehicle,.arena-base-critical{animation:none!important}}
+ `;document.head.appendChild(style);
 }
 
 function arenaFxScopeRoot(scope = document) {
@@ -4299,60 +4140,14 @@ function arenaFxStage(scope = document) {
 }
 
 function arenaFxBurst(target, kind = 'spark', count = 8) {
-    if (!target) return;
-    const quality = getGameArenaFxQuality();
-    if (quality === 'eco') return;
-    const actualCount = quality === 'full' ? count : Math.min(4, count);
-    const host = target.closest?.('[data-arena-stage]') || target.parentElement;
-    if (!host) return;
-    const hostRect = host.getBoundingClientRect();
-    const rect = target.getBoundingClientRect();
-    const cx = rect.left - hostRect.left + rect.width / 2;
-    const cy = rect.top - hostRect.top + rect.height / 2;
-    const palette = kind === 'repair' ? ['#86efac','#4ade80','#dcfce7']
-        : kind === 'shield' ? ['#67e8f9','#38bdf8','#e0f2fe']
-        : kind === 'boost' ? ['#fde047','#fb923c','#fff7ed']
-        : ['#f0abfc','#ffffff','#67e8f9'];
-
-    const shock = document.createElement('span');
-    shock.className = 'arena-impact-shockwave';
-    shock.style.left = cx + 'px';
-    shock.style.top = cy + 'px';
-    shock.style.borderColor = palette[0];
-    host.appendChild(shock);
-    shock.addEventListener('animationend', () => shock.remove(), { once: true });
-
-    if (quality === 'full') {
-        for (let s = 0; s < 3; s++) {
-            const smoke = document.createElement('span');
-            smoke.className = 'arena-impact-smoke';
-            smoke.style.left = (cx + (s - 1) * 8) + 'px';
-            smoke.style.top = (cy + (s % 2 ? 6 : -4)) + 'px';
-            smoke.style.animationDelay = (s * 70) + 'ms';
-            host.appendChild(smoke);
-            smoke.addEventListener('animationend', () => smoke.remove(), { once: true });
-        }
-    }
-
-    for (let i = 0; i < actualCount; i++) {
-        const particle = document.createElement('span');
-        const particleColor = palette[i % palette.length];
-        particle.style.cssText = \`position:absolute;z-index:65;width:\${quality === 'full' ? 8 : 5}px;height:\${quality === 'full' ? 8 : 5}px;border-radius:9999px;background:\${particleColor};pointer-events:none;left:\${cx}px;top:\${cy}px;box-shadow:0 0 16px \${particleColor};\`;
-        host.appendChild(particle);
-        const angle = (Math.PI * 2 * i / actualCount) + (i % 2 ? .22 : 0);
-        const distance = quality === 'full' ? 44 + (i % 3) * 13 : 24;
-        particle.animate([
-            { transform:'translate(-50%,-50%) scale(1)', opacity:1 },
-            { transform:\`translate(calc(-50% + \${Math.cos(angle)*distance}px), calc(-50% + \${Math.sin(angle)*distance}px)) scale(.15)\`, opacity:0 }
-        ], { duration: quality === 'full' ? 720 : 430, easing:'cubic-bezier(.16,.84,.44,1)' }).onfinish = () => particle.remove();
-    }
-
-    if (quality === 'full') {
-        host.animate(
-            [{ transform:'translate3d(0,0,0)' }, { transform:'translate3d(-2px,1px,0)' }, { transform:'translate3d(2px,-1px,0)' }, { transform:'translate3d(0,0,0)' }],
-            { duration: 260, easing: 'ease-out' }
-        );
-    }
+    if (!target) return; const quality=getGameArenaFxQuality(); if(quality==='eco')return;
+    const actualCount=quality==='full'?count:Math.min(4,count); const host=target.closest?.('[data-arena-stage]')||target.parentElement;if(!host)return;
+    const hr=host.getBoundingClientRect(),r=target.getBoundingClientRect(),cx=r.left-hr.left+r.width/2,cy=r.top-hr.top+r.height/2;
+    const color=kind==='repair'?'#86efac':kind==='shield'?'#67e8f9':kind==='boost'?'#fde047':'#f0abfc';
+    const shock=document.createElement('span');shock.className='arena-fx-shock';shock.style.left=cx+'px';shock.style.top=cy+'px';shock.style.color=color;host.appendChild(shock);shock.addEventListener('animationend',()=>shock.remove(),{once:true});
+    if(quality==='full'){for(let s=0;s<3;s++){const smoke=document.createElement('span');smoke.className='arena-fx-smoke';smoke.style.left=(cx+(s-1)*10)+'px';smoke.style.top=(cy+(s%2?7:-3))+'px';smoke.style.animationDelay=(s*70)+'ms';host.appendChild(smoke);smoke.addEventListener('animationend',()=>smoke.remove(),{once:true});}}
+    for(let i=0;i<actualCount;i++){const p=document.createElement('span');p.style.cssText=`position:absolute;z-index:78;width:${quality==='full'?8:5}px;height:${quality==='full'?8:5}px;border-radius:9999px;background:${color};pointer-events:none;left:${cx}px;top:${cy}px;box-shadow:0 0 16px ${color};`;host.appendChild(p);const a=Math.PI*2*i/actualCount+(i%2?.2:0),d=quality==='full'?42+(i%3)*13:23;p.animate([{transform:'translate(-50%,-50%) scale(1)',opacity:1},{transform:`translate(calc(-50% + ${Math.cos(a)*d}px),calc(-50% + ${Math.sin(a)*d}px)) scale(.15)`,opacity:0}],{duration:quality==='full'?690:420,easing:'cubic-bezier(.16,.84,.44,1)'}).onfinish=()=>p.remove();}
+    if(quality==='full')host.animate([{transform:'translateX(0)'},{transform:'translateX(-2px)'},{transform:'translateX(2px)'},{transform:'translateX(0)'}],{duration:250,easing:'ease-out'});
 }
 
 function arenaFxPulseElement(element, variant = 'correct') {
@@ -4854,29 +4649,8 @@ window.createHostedGameArenaRoom = async function(event, modeId) {
 };
 
 function renderAdminArenaRoomCard(room) {
-    const state = room?.state;
-    if (!state) return '';
-    ensureGameArenaReferenceStyles();
-    const meta = getGameArenaModeMeta(room.mode);
-    const statusLabel = room.status === 'playing' ? '● LIVE' : room.status === 'waiting' ? 'LOBBY' : 'SELESAI';
-    return \`
-        <div data-arena-monitor-room="\${gameEscapeAttr(room.id)}" class="rounded-2xl bg-[#071a31] border border-sky-500/25 overflow-hidden shadow-xl min-w-0">
-            <div class="px-3 py-2 flex items-center justify-between gap-2 border-b border-sky-500/20">
-                <div class="min-w-0"><h3 class="font-black text-white text-xs truncate">\${meta.icon} \${gameEscapeHtml(meta.title)} – Monitoring</h3><p class="text-[8px] text-slate-400 truncate">\${gameEscapeHtml(room.className || room.classKey || 'Kelas')} · Room: \${gameEscapeHtml(room.id)}</p></div>
-                <span class="shrink-0 text-[8px] font-black \${room.status === 'playing' ? 'text-red-300' : 'text-amber-300'}">\${statusLabel}</span>
-            </div>
-            <div class="p-2">\${renderGameArenaStage(state)}</div>
-            <div class="px-2 pb-2 grid grid-cols-2 gap-1 text-[8px]">
-                <div class="rounded-lg bg-slate-950/60 border border-white/5 p-2 text-slate-300"><b class="text-white block">\${room.playerCount}/\${room.maxPlayers} siswa</b>\${room.hosted ? 'Hosted Room' : 'Quick Match'}</div>
-                <div class="rounded-lg bg-slate-950/60 border border-white/5 p-2 text-right text-slate-300"><b class="text-cyan-200 block">\${statusLabel}</b>\${gameEscapeHtml(room.className || '')}</div>
-            </div>
-            <div class="px-2 pb-2 flex gap-1 flex-wrap">
-                \${room.status === 'waiting' ? \`<button type="button" onclick="controlAdminGameArenaRoom('\${room.id}','start')" class="px-2 py-1.5 rounded-lg bg-emerald-600 text-white text-[8px] font-black cursor-pointer">Mulai</button>\` : ''}
-                \${room.status === 'playing' ? \`<button type="button" onclick="controlAdminGameArenaRoom('\${room.id}','finish')" class="px-2 py-1.5 rounded-lg bg-amber-600 text-white text-[8px] font-black cursor-pointer">Selesai</button>\` : ''}
-                <button type="button" onclick="controlAdminGameArenaRoom('\${room.id}','reset')" class="px-2 py-1.5 rounded-lg bg-slate-700 text-white text-[8px] font-black cursor-pointer">Reset</button>
-                <button type="button" onclick="controlAdminGameArenaRoom('\${room.id}','delete')" class="px-2 py-1.5 rounded-lg bg-rose-900 text-rose-100 text-[8px] font-black cursor-pointer">Hapus</button>
-            </div>
-        </div>\`;
+    const state=room?.state;if(!state)return '';ensureGameArenaReferenceStyles();const meta=getGameArenaModeMeta(room.mode);const statusLabel=room.status==='playing'?'● LIVE':room.status==='waiting'?'LOBBY':'SELESAI';
+    return `<div data-arena-monitor-room="${gameEscapeAttr(room.id)}" class="rounded-2xl bg-[#071a31] border border-sky-500/25 overflow-hidden shadow-xl min-w-0"><div class="px-3 py-2 flex items-center justify-between gap-2 border-b border-sky-500/20"><div class="min-w-0"><h3 class="font-black text-white text-xs truncate">${meta.icon} ${gameEscapeHtml(meta.title)} – Monitoring</h3><p class="text-[8px] text-slate-400 truncate">${gameEscapeHtml(room.className||room.classKey||'Kelas')} · ${gameEscapeHtml(room.id)}</p></div><span class="text-[8px] font-black ${room.status==='playing'?'text-red-300':'text-amber-300'}">${statusLabel}</span></div><div class="p-2">${renderGameArenaStage(state)}</div><div class="px-2 pb-2 flex gap-1 flex-wrap">${room.status==='waiting'?`<button type="button" onclick="controlAdminGameArenaRoom('${room.id}','start')" class="px-2 py-1.5 rounded-lg bg-emerald-600 text-white text-[8px] font-black cursor-pointer">Mulai</button>`:''}${room.status==='playing'?`<button type="button" onclick="controlAdminGameArenaRoom('${room.id}','finish')" class="px-2 py-1.5 rounded-lg bg-amber-600 text-white text-[8px] font-black cursor-pointer">Selesai</button>`:''}<button type="button" onclick="controlAdminGameArenaRoom('${room.id}','reset')" class="px-2 py-1.5 rounded-lg bg-slate-700 text-white text-[8px] font-black cursor-pointer">Reset</button><button type="button" onclick="controlAdminGameArenaRoom('${room.id}','delete')" class="px-2 py-1.5 rounded-lg bg-rose-900 text-rose-100 text-[8px] font-black cursor-pointer">Hapus</button></div></div>`;
 }
 
 window.refreshAdminGameArenaMonitoring = async function(showNotice = false) {
@@ -4953,35 +4727,8 @@ function getArenaAvatarHairSvg(presetId, hair) {
 
 function renderGameArenaAvatar(presetId, sizeClass = 'w-16 h-16', extraClass = '') {
     const avatar = getGameArenaAvatarPreset(presetId);
-    const hairSvg = getArenaAvatarHairSvg(presetId, avatar.hair);
-    return `
-        <div class="${sizeClass} ${extraClass} arena-character-wrap relative flex items-end justify-center drop-shadow-md overflow-visible">
-            <svg class="arena-character-core w-full h-full overflow-visible" viewBox="0 0 100 128" role="img" aria-label="${gameEscapeAttr(avatar.name)}">
-                <ellipse cx="50" cy="120" rx="27" ry="6" fill="rgba(15,23,42,.28)"/>
-                <path d="M33 104 29 119h13l5-16Zm34 0 4 15H58l-5-16Z" fill="#1f2937"/>
-                <rect x="28" y="116" width="18" height="7" rx="3.5" fill="#111827"/>
-                <rect x="55" y="116" width="18" height="7" rx="3.5" fill="#111827"/>
-                <path d="M26 68c4-11 14-16 24-16s21 5 25 16l5 36c-8 6-18 9-30 9-11 0-22-3-30-9l6-36Z" fill="${avatar.shirt}" stroke="rgba(255,255,255,.55)" stroke-width="2"/>
-                <path d="M28 70c-10 5-15 14-15 25 0 5 2 8 6 9 5 0 7-4 7-8 0-8 2-14 7-18Z" fill="${avatar.skin}"/>
-                <path d="M72 70c10 5 15 14 15 25 0 5-2 8-6 9-5 0-7-4-7-8 0-8-2-14-7-18Z" fill="${avatar.skin}"/>
-                <circle cx="50" cy="39" r="28" fill="${avatar.skin}" stroke="rgba(255,255,255,.65)" stroke-width="2"/>
-                ${hairSvg}
-                <ellipse cx="39" cy="42" rx="3.3" ry="4.2" fill="#172033"/>
-                <ellipse cx="61" cy="42" rx="3.3" ry="4.2" fill="#172033"/>
-                <circle cx="38" cy="41" r="1" fill="white"/>
-                <circle cx="60" cy="41" r="1" fill="white"/>
-                <path d="M45 53c3.5 3 7 3 10.5 0" fill="none" stroke="#9f1239" stroke-width="2.4" stroke-linecap="round"/>
-                <circle cx="32" cy="51" r="4" fill="rgba(244,114,182,.20)"/>
-                <circle cx="68" cy="51" r="4" fill="rgba(244,114,182,.20)"/>
-                <circle cx="50" cy="82" r="12" fill="rgba(255,255,255,.18)" stroke="rgba(255,255,255,.5)" stroke-width="1.5"/>
-                <foreignObject x="39" y="70" width="22" height="24">
-                    <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-size:11px;color:white;text-shadow:0 1px 2px rgba(0,0,0,.45)">
-                        <i class="fa-solid ${avatar.icon}"></i>
-                    </div>
-                </foreignObject>
-            </svg>
-        </div>
-    `;
+    const safePreset = GAME_ARENA_AVATARS.some(item => item.id === presetId) ? presetId : 'bintang';
+    return `<div class="${sizeClass} ${extraClass} arena-character-wrap relative flex items-end justify-center overflow-visible"><img src="${gameArenaAsset(`characters/${safePreset}.svg`)}" alt="${gameEscapeAttr(avatar.name)}" class="arena-character-core w-full h-full object-contain select-none pointer-events-none" draggable="false"></div>`;
 }
 
 function getCurrentGameArenaAvatarId() {
@@ -5135,212 +4882,27 @@ function renderArenaPlayerChip(player, fallbackLabel = 'Menunggu...') {
 }
 
 function renderLaserArenaStage(state) {
-    ensureGameArenaReferenceStyles();
-    const left = getArenaSidePlayers(state, 'A')[0] || null;
-    const right = getArenaSidePlayers(state, 'B')[0] || null;
-    const position = Math.max(5, Math.min(95, Number(state.position || 50)));
-    const leftPct = Math.round(position);
-    const rightPct = Math.round(100 - position);
-    const quality = getGameArenaFxQuality();
-    return \`
-        <div data-arena-stage="laser_duel" data-arena-fx="\${quality}" class="arena-stage relative overflow-hidden text-white" style="background:radial-gradient(circle at 50% 42%,rgba(34,211,238,.22),transparent 22%),linear-gradient(160deg,#071a39,#082951 48%,#230b43)">
-            <div class="arena-cyber-floor"></div>
-            <div class="absolute inset-0 opacity-30 pointer-events-none" style="background-image:radial-gradient(circle at 20% 14%,#38bdf8 0 1px,transparent 1.5px),radial-gradient(circle at 75% 20%,#e879f9 0 1px,transparent 1.5px);background-size:34px 34px,43px 43px"></div>
-
-            <div class="absolute left-3 right-3 top-3 z-20">
-                <div class="arena-hud-progress flex">
-                    <span class="bg-gradient-to-r from-blue-700 to-cyan-400 text-[10px] font-black flex items-center px-2" style="width:\${leftPct}%">\${leftPct}%</span>
-                    <span class="bg-gradient-to-l from-rose-700 to-fuchsia-500 text-[10px] font-black flex items-center justify-end px-2" style="width:\${rightPct}%">\${rightPct}%</span>
-                </div>
-                <div class="flex items-center justify-between mt-2">
-                    <div class="arena-hud-glass rounded-xl px-3 py-2 min-w-[110px]">\${renderArenaPlayerChip(left)}</div>
-                    <div class="arena-hud-glass rounded-xl px-4 py-2 text-center">
-                        <div class="text-[9px] uppercase tracking-widest text-cyan-200 font-black">\${state.status === 'finished' ? 'SELESAI' : state.status === 'waiting' ? 'LOBBY' : 'LIVE DUEL'}</div>
-                        <div class="font-black text-sm">⚡ LASER DUEL</div>
-                    </div>
-                    <div class="arena-hud-glass rounded-xl px-3 py-2 min-w-[110px] text-right">\${renderArenaPlayerChip(right)}</div>
-                </div>
-            </div>
-
-            <div class="absolute left-[5%] bottom-[16%] z-20 arena-laser-fighter">
-                \${left ? renderGameArenaAvatar(left.avatar?.presetId || 'bintang','w-28 h-32') : '<div class="w-28 h-32"></div>'}
-                <div class="text-center text-[10px] font-black text-cyan-200 mt-1">\${gameEscapeHtml(left?.name || 'Menunggu')}</div>
-            </div>
-            <div class="absolute right-[5%] bottom-[16%] z-20 arena-laser-fighter">
-                <div class="scale-x-[-1]">\${right ? renderGameArenaAvatar(right.avatar?.presetId || 'komet','w-28 h-32') : '<div class="w-28 h-32"></div>'}</div>
-                <div class="text-center text-[10px] font-black text-fuchsia-200 mt-1">\${gameEscapeHtml(right?.name || 'Menunggu')}</div>
-            </div>
-
-            <div class="absolute left-[17%] right-[17%] top-[48%] h-3 z-30">
-                <div class="arena-laser-beam absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-cyan-700 via-cyan-300 to-white arena-laser-core transition-all duration-500" style="width:\${position}%"></div>
-                <div class="arena-laser-beam absolute right-0 top-0 h-full rounded-full bg-gradient-to-l from-fuchsia-700 via-fuchsia-300 to-white arena-laser-core transition-all duration-500" style="width:\${100-position}%"></div>
-                <div class="arena-laser-impact absolute top-1/2 w-16 h-16 rounded-full transition-all duration-500" style="left:\${position}%">
-                    <span class="arena-static-explosion left-1/2 top-1/2"></span>
-                    <span class="absolute inset-3 rounded-full bg-white shadow-[0_0_28px_white]"></span>
-                </div>
-            </div>
-            <div class="absolute left-[22%] right-[22%] top-[58%] h-[2px] bg-gradient-to-r from-cyan-400/0 via-white/35 to-fuchsia-400/0"></div>
-        </div>\`;
+ ensureGameArenaReferenceStyles();const left=getArenaSidePlayers(state,'A')[0]||null,right=getArenaSidePlayers(state,'B')[0]||null,position=Math.max(5,Math.min(95,Number(state.position||50))),quality=getGameArenaFxQuality(),leftPct=Math.round(position),rightPct=100-leftPct;
+ return `<div data-arena-stage="laser_duel" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/laser-arena.svg')}" class="arena-scene-bg" alt=""><div class="absolute inset-x-3 top-3 z-30"><div class="arena-hud-bar flex"><span class="bg-gradient-to-r from-blue-700 to-cyan-400 px-2 flex items-center text-[10px] font-black" style="width:${leftPct}%">${leftPct}%</span><span class="bg-gradient-to-l from-rose-700 to-fuchsia-500 px-2 flex items-center justify-end text-[10px] font-black" style="width:${rightPct}%">${rightPct}%</span></div><div class="flex items-center justify-between gap-2 mt-2"><div class="arena-hud-glass rounded-xl px-3 py-2 min-w-[120px]">${renderArenaPlayerChip(left)}</div><div class="arena-hud-glass rounded-xl px-4 py-2 text-center"><span class="text-[8px] uppercase tracking-widest text-cyan-200 font-black">Laser Duel</span><b class="block text-sm">⚡ ${state.status==='playing'?'LIVE':state.status==='waiting'?'LOBBY':'SELESAI'}</b></div><div class="arena-hud-glass rounded-xl px-3 py-2 min-w-[120px] text-right">${renderArenaPlayerChip(right)}</div></div></div><div class="absolute left-[5%] bottom-[12%] z-20">${left?renderGameArenaAvatar(left.avatar?.presetId||'bintang','w-32 h-40'):''}</div><div class="absolute right-[5%] bottom-[12%] z-20 scale-x-[-1]">${right?renderGameArenaAvatar(right.avatar?.presetId||'komet','w-32 h-40'):''}</div><div class="absolute left-[18%] right-[18%] top-[49%] h-3 z-35"><div class="arena-laser-beam absolute left-0 h-full rounded-full bg-gradient-to-r from-cyan-700 via-cyan-300 to-white shadow-[0_0_26px_rgba(34,211,238,.95)] transition-all duration-500" style="width:${position}%"></div><div class="arena-laser-beam absolute right-0 h-full rounded-full bg-gradient-to-l from-fuchsia-700 via-fuchsia-300 to-white shadow-[0_0_26px_rgba(217,70,239,.95)] transition-all duration-500" style="width:${100-position}%"></div><div class="arena-laser-impact absolute top-1/2 transition-all duration-500" style="left:${position}%"><span class="arena-laser-impact-ref left-0 top-0"></span><span class="arena-pulse-ring left-0 top-0"></span></div></div><div class="arena-monitor-detail absolute bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-black text-cyan-100/80">Jawaban benar mendorong titik benturan laser • streak memberi bonus daya</div></div>`;
 }
-
 function renderTugArenaStage(state) {
-    ensureGameArenaReferenceStyles();
-    const teamA = getArenaSidePlayers(state, 'A');
-    const teamB = getArenaSidePlayers(state, 'B');
-    const position = Math.max(5, Math.min(95, Number(state.position || 50)));
-    const pctA = Math.max(0, Math.min(100, Math.round(100 - position)));
-    const pctB = 100 - pctA;
-    const quality = getGameArenaFxQuality();
-    const teamRow = (players, fallback, flip = false) => players.slice(0, 6).map((player, index) =>
-        \`<div class="arena-tug-player \${flip ? 'scale-x-[-1]' : ''}" style="margin-left:\${index ? '-14px' : '0'}">\${renderGameArenaAvatar(player.avatar?.presetId || fallback,'w-16 h-20')}</div>\`
-    ).join('');
-    return \`
-        <div data-arena-stage="tug_war" data-arena-fx="\${quality}" class="arena-stage relative overflow-hidden text-white" style="background:linear-gradient(#79c7ef 0 37%,#b9e9f4 37% 50%,#d5b06f 50% 100%)">
-            <div class="arena-school-building"></div>
-            <div class="arena-school-ground"></div>
-            <div class="absolute left-3 right-3 top-3 z-30">
-                <div class="arena-hud-progress flex">
-                    <span class="bg-gradient-to-r from-blue-700 to-sky-400 text-[10px] font-black flex items-center px-2" style="width:\${pctA}%">\${pctA}%</span>
-                    <span class="bg-gradient-to-l from-rose-700 to-red-400 text-[10px] font-black flex items-center justify-end px-2" style="width:\${pctB}%">\${pctB}%</span>
-                </div>
-                <div class="mt-2 flex justify-between items-start">
-                    <div class="arena-hud-glass px-3 py-2 rounded-xl text-center"><b class="text-sky-200 text-xs block">Tim A</b><span class="text-[10px]">\${teamA.length} siswa · ✓ \${teamA.reduce((s,p)=>s+Number(p.correctAnswers||0),0)}</span></div>
-                    <div class="arena-hud-glass px-4 py-2 rounded-xl text-center"><div class="text-[9px] text-amber-200 font-black uppercase tracking-widest">Tarik Tambang</div><b class="text-sm">🪢 Adu Pengetahuan</b></div>
-                    <div class="arena-hud-glass px-3 py-2 rounded-xl text-center"><b class="text-rose-200 text-xs block">Tim B</b><span class="text-[10px]">\${teamB.length} siswa · ✓ \${teamB.reduce((s,p)=>s+Number(p.correctAnswers||0),0)}</span></div>
-                </div>
-            </div>
-
-            <div class="absolute left-[5%] bottom-[18%] z-20 flex items-end">\${teamRow(teamA,'bintang')}</div>
-            <div class="absolute right-[5%] bottom-[18%] z-20 flex items-end flex-row-reverse">\${teamRow(teamB,'komet',true)}</div>
-            <div class="arena-tug-rope absolute left-[18%] right-[18%] top-[59%] h-[10px] rounded-full bg-gradient-to-b from-amber-500 via-amber-700 to-amber-950 z-25 shadow-lg"></div>
-            <div class="arena-tug-flag absolute z-30 top-[37%] -translate-x-1/2 transition-all duration-500" style="left:\${position}%">
-                <div class="text-5xl drop-shadow-lg">🚩</div><div class="w-2 h-28 bg-slate-700 rounded-full mx-auto -mt-3"></div>
-            </div>
-            <span class="arena-tug-dust absolute left-[14%] bottom-[16%] w-8 h-8 rounded-full bg-amber-100/60 blur-[2px]"></span>
-            <span class="arena-tug-dust absolute right-[14%] bottom-[16%] w-8 h-8 rounded-full bg-amber-100/60 blur-[2px]"></span>
-            <div class="absolute left-5 bottom-4 text-[10px] font-black text-blue-950/80">💪 Kontribusi tim terus bertambah dari jawaban benar</div>
-        </div>\`;
+ ensureGameArenaReferenceStyles();const teamA=getArenaSidePlayers(state,'A'),teamB=getArenaSidePlayers(state,'B'),position=Math.max(5,Math.min(95,Number(state.position||50))),quality=getGameArenaFxQuality();const team=(items,fallback,flip=false)=>items.slice(0,6).map((p,i)=>`<div class="${flip?'scale-x-[-1]':''}" style="margin-left:${i?'-14px':'0'}">${renderGameArenaAvatar(p.avatar?.presetId||fallback,'w-16 h-20')}</div>`).join('');
+ return `<div data-arena-stage="tug_war" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/tug-schoolyard.svg')}" class="arena-scene-bg" alt=""><div class="absolute inset-x-3 top-3 z-30"><div class="arena-hud-bar flex"><span class="bg-gradient-to-r from-blue-700 to-sky-400 flex items-center px-2 text-[10px] font-black" style="width:${100-position}%">Tim A</span><span class="bg-gradient-to-l from-rose-700 to-red-400 flex items-center justify-end px-2 text-[10px] font-black" style="width:${position}%">Tim B</span></div><div class="flex justify-between mt-2"><div class="arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Tim A · ${teamA.length} siswa<br><span class="text-sky-200">✓ ${teamA.reduce((s,p)=>s+Number(p.correctAnswers||0),0)}</span></div><div class="arena-hud-glass rounded-xl px-4 py-2 text-center text-xs font-black">🪢 Tarik Tambang Ilmu</div><div class="arena-hud-glass rounded-xl px-3 py-2 text-right text-[10px] font-black">Tim B · ${teamB.length} siswa<br><span class="text-rose-200">✓ ${teamB.reduce((s,p)=>s+Number(p.correctAnswers||0),0)}</span></div></div></div><div class="absolute left-[4%] bottom-[17%] z-20 flex items-end">${team(teamA,'bintang')}</div><div class="absolute right-[4%] bottom-[17%] z-20 flex flex-row-reverse items-end">${team(teamB,'komet',true)}</div><div class="arena-tug-rope absolute left-[18%] right-[18%] top-[59%] h-[11px] rounded-full bg-gradient-to-b from-amber-500 via-amber-700 to-amber-950 shadow-lg z-25"></div><div class="arena-tug-flag absolute z-32 top-[35%] -translate-x-1/2 transition-all duration-500" style="left:${position}%"><div class="text-5xl">🚩</div><div class="w-2 h-28 bg-slate-700 rounded-full mx-auto -mt-3"></div></div><span class="arena-smoke-puff left-[14%] bottom-[14%] z-20"></span><span class="arena-smoke-puff right-[14%] bottom-[14%] z-20"></span></div>`;
 }
-
 function renderBattleRoyaleArenaStage(state) {
-    ensureGameArenaReferenceStyles();
-    const me = getArenaMePlayer(state);
-    const isMonitorView = !state?.me?.id;
-    const players = state.players || [];
-    const activePlayers = players.filter(player => !player.eliminated && Number(player.hp || 0) > 0);
-    const eliminated = players.length - activePlayers.length;
-    const quality = getGameArenaFxQuality();
-    const positions = [[13,30],[37,22],[62,27],[82,20],[24,58],[49,54],[72,60],[88,48],[13,78],[39,75],[63,79],[82,76]];
-    return \`
-        <div data-arena-stage="battle_royale" data-arena-fx="\${quality}" class="arena-stage relative overflow-hidden text-white" style="background:linear-gradient(160deg,#173b2c,#315f43)">
-            <div class="absolute top-3 left-3 right-3 z-30 flex items-center justify-between gap-2">
-                <div class="arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Pemain: \${players.length}</div>
-                <div class="arena-hud-glass rounded-xl px-4 py-2 text-center"><span class="text-fuchsia-200 text-[9px] uppercase tracking-widest block">Battle Royale</span><b>🛡️ \${activePlayers.length} Aktif</b></div>
-                <div class="arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Eliminasi: \${eliminated}</div>
-            </div>
-            <div class="arena-battle-map">
-                <span class="arena-map-crate" style="left:13%;top:14%"></span><span class="arena-map-crate" style="left:70%;top:34%"></span><span class="arena-map-crate" style="left:42%;top:72%"></span>
-                <span class="arena-map-rock" style="left:27%;top:38%"></span><span class="arena-map-rock" style="left:79%;top:70%"></span><span class="arena-map-rock" style="left:56%;top:18%"></span>
-                \${players.slice(0,12).map((player,index)=>{
-                    const pos = positions[index % positions.length];
-                    const hp = Math.max(0,Number(player.hp||0));
-                    const active = !player.eliminated && hp > 0;
-                    const mine = String(player.id) === String(state.me?.id || '');
-                    return \`
-                        <div data-arena-player-id="\${gameEscapeAttr(player.id)}" class="arena-battle-player absolute z-20 -translate-x-1/2 -translate-y-1/2 text-center \${active?'':'opacity-45 grayscale'}" style="left:\${pos[0]}%;top:\${pos[1]}%">
-                            <div class="relative inline-block">
-                                \${active ? '<span class="arena-shield-active absolute -inset-2 rounded-full border-2 border-cyan-300/60 bg-cyan-300/10"></span>' : ''}
-                                \${renderGameArenaAvatar(player.avatar?.presetId || 'bintang',mine?'w-16 h-20':'w-14 h-18')}
-                                <span class="absolute -bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap px-2 py-0.5 rounded-full bg-slate-950/80 border border-white/15 text-[8px] font-black">\${gameEscapeHtml(player.name || 'Siswa')}</span>
-                            </div>
-                            <div class="mt-2 text-[8px] font-black">\${active ? \`🛡️ \${hp} · ⚡ \${Number(player.energy||0)}\` : '👀 Penonton'}</div>
-                        </div>\`;
-                }).join('')}
-                \${players.length > 12 ? \`<div class="absolute right-3 bottom-3 z-30 px-3 py-1 rounded-full bg-slate-950/80 text-[9px] font-black">+\${players.length-12} pemain</div>\` : ''}
-            </div>
-            \${!isMonitorView && me ? \`<div class="absolute left-4 bottom-4 z-40 arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Shield: 🛡️ \${Number(me.hp||0)} &nbsp; Energy: ⚡ \${Number(me.energy||0)}</div>\` : ''}
-        </div>\`;
+ ensureGameArenaReferenceStyles();const players=state.players||[],active=players.filter(p=>!p.eliminated&&Number(p.hp||0)>0),me=getArenaMePlayer(state),quality=getGameArenaFxQuality(),coords=[[12,29],[35,22],[61,26],[82,20],[22,56],[47,51],[72,57],[88,47],[13,78],[38,74],[62,80],[83,76]];
+ return `<div data-arena-stage="battle_royale" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/battle-map.svg')}" class="arena-scene-bg" alt=""><div class="absolute top-3 left-3 right-3 z-35 flex items-center justify-between"><div class="arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Pemain: ${players.length}</div><div class="arena-hud-glass rounded-xl px-4 py-2 text-center text-xs font-black">🛡️ Battle Royale · ${active.length} Aktif</div><div class="arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Eliminasi: ${players.length-active.length}</div></div>${players.slice(0,12).map((p,i)=>{const c=coords[i%coords.length],hp=Math.max(0,Number(p.hp||0)),mine=String(p.id)===String(state.me?.id||'');return `<div data-arena-player-id="${gameEscapeAttr(p.id)}" class="absolute z-25 -translate-x-1/2 -translate-y-1/2 text-center ${p.eliminated?'opacity-45 grayscale':''}" style="left:${c[0]}%;top:${c[1]}%"><div class="relative">${!p.eliminated?'<span class="arena-shield-active absolute -inset-2 rounded-full border-2 border-cyan-300/55 bg-cyan-300/10"></span>':''}${renderGameArenaAvatar(p.avatar?.presetId||'bintang',mine?'w-16 h-20':'w-14 h-18')}</div><span class="inline-block -mt-1 px-2 py-0.5 rounded-full bg-slate-950/80 border border-white/15 text-[8px] font-black">${gameEscapeHtml(p.name||'Siswa')}</span><div class="text-[8px] font-black">${p.eliminated?'👀 Penonton':`🛡️ ${hp} · ⚡ ${Number(p.energy||0)}`}</div></div>`}).join('')}${players.length>12?`<div class="absolute right-3 bottom-3 z-35 arena-hud-glass rounded-lg px-3 py-1 text-[9px] font-black">+${players.length-12} pemain</div>`:''}${me?`<div class="arena-monitor-detail absolute left-4 bottom-4 z-35 arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Shield: 🛡️ ${Number(me.hp||0)} &nbsp; Energy: ⚡ ${Number(me.energy||0)}</div>`:''}</div>`;
 }
-
 function renderQuizRaceArenaStage(state) {
-    ensureGameArenaReferenceStyles();
-    const sorted = [...(state.players || [])].sort((a,b)=>Number(b.raceProgress||0)-Number(a.raceProgress||0));
-    const quality = getGameArenaFxQuality();
-    const top = sorted.slice(0,5);
-    return \`
-        <div data-arena-stage="quiz_race" data-arena-fx="\${quality}" class="arena-stage relative overflow-hidden text-white" style="background:linear-gradient(180deg,#4ea6d6 0 28%,#49754c 28% 100%)">
-            <div class="absolute top-3 left-3 right-3 z-30 flex items-center justify-between">
-                <div class="arena-hud-glass px-3 py-2 rounded-xl text-[10px] font-black">🏎️ QUIZ RACING</div>
-                <div class="arena-hud-glass px-4 py-2 rounded-xl font-black text-sm">🏁 Race to 100%</div>
-            </div>
-            <div class="arena-race-ranking arena-hud-glass rounded-xl p-2 space-y-1">
-                \${top.map((player,index)=>{
-                    const p=Math.max(0,Math.min(100,Number(player.raceProgress||0)));
-                    return \`<div class="flex items-center gap-2 text-[9px]"><span class="w-5 h-5 rounded-md \${index===0?'bg-amber-400 text-slate-900':'bg-slate-700'} flex items-center justify-center font-black">\${index+1}</span><span class="truncate flex-1 font-black">\${gameEscapeHtml(player.name||'Siswa')}</span><div class="w-16 h-2 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-r from-cyan-400 to-blue-500" style="width:\${p}%"></div></div><b>\${p}%</b></div>\`;
-                }).join('')}
-            </div>
-            <div class="arena-road">
-                \${top.map((player,index)=>{
-                    const p=Math.max(0,Math.min(100,Number(player.raceProgress||0)));
-                    const car=['🏎️','🚙','🚗','🏁','🚘'][index%5];
-                    const y=16+index*17;
-                    return \`
-                        <div data-arena-racer-id="\${gameEscapeAttr(player.id)}" class="absolute left-[9%] right-[7%]" style="top:\${y}%">
-                            <div class="absolute left-0 right-0 top-1/2 border-t border-dashed border-white/35"></div>
-                            <div class="arena-race-car absolute top-1/2 -translate-x-1/2 text-3xl transition-all duration-700" style="left:\${Math.max(5,Math.min(95,p))}%">
-                                <span class="arena-race-smoke absolute right-[85%] top-[55%] w-4 h-4 rounded-full bg-white/55 blur-[2px]"></span>
-                                <span class="arena-race-smoke absolute right-[115%] top-[55%] w-3 h-3 rounded-full bg-white/30 blur-[2px]"></span>
-                                \${Number(player.streak||0)>=2?'<span class="arena-racer-boost absolute right-[72%] top-[38%] text-lg">🔥</span>':''}
-                                <span class="relative z-10">\${car}</span>
-                            </div>
-                        </div>\`;
-                }).join('')}
-                <div class="absolute right-[5%] top-0 bottom-0 border-r-4 border-dashed border-white/80"></div>
-            </div>
-        </div>\`;
+ ensureGameArenaReferenceStyles();const sorted=[...(state.players||[])].sort((a,b)=>Number(b.raceProgress||0)-Number(a.raceProgress||0)),top=sorted.slice(0,5),quality=getGameArenaFxQuality();
+ return `<div data-arena-stage="quiz_race" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/race-track.svg')}" class="arena-scene-bg" alt=""><div class="absolute top-3 left-3 right-3 z-35 flex justify-between"><div class="arena-hud-glass rounded-xl px-3 py-2 text-xs font-black">🏎️ Quiz Racing</div><div class="arena-hud-glass rounded-xl px-4 py-2 text-xs font-black">🏁 Race to 100%</div></div><div class="arena-race-rank absolute left-3 top-16 z-35 w-[31%] arena-hud-glass rounded-xl p-2 space-y-1">${top.map((p,i)=>{const prog=Math.max(0,Math.min(100,Number(p.raceProgress||0)));return `<div class="flex items-center gap-1.5 text-[9px]"><b class="w-5 h-5 rounded-md ${i===0?'bg-amber-400 text-slate-900':'bg-slate-700'} flex items-center justify-center">${i+1}</b><span class="truncate flex-1 font-black">${gameEscapeHtml(p.name||'Siswa')}</span><div class="w-14 h-2 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-r from-cyan-400 to-blue-500" style="width:${prog}%"></div></div><b>${prog}%</b></div>`}).join('')}</div><div class="absolute left-[34%] right-[4%] top-[19%] bottom-[4%] z-20">${top.map((p,i)=>{const prog=Math.max(0,Math.min(100,Number(p.raceProgress||0))),y=10+i*18;return `<div data-arena-racer-id="${gameEscapeAttr(p.id)}" class="absolute left-0 right-0" style="top:${y}%"><div class="absolute left-0 right-0 top-1/2 border-t border-dashed border-white/30"></div><div class="arena-race-car arena-race-vehicle absolute top-1/2 transition-all duration-700" style="left:${Math.max(5,Math.min(95,prog))}%"><span class="arena-race-smoke absolute right-[72%] top-[55%] w-4 h-4 rounded-full bg-white/55 blur-[2px]"></span><span class="arena-race-smoke absolute right-[100%] top-[58%] w-3 h-3 rounded-full bg-white/30 blur-[2px]"></span>${Number(p.streak||0)>=2?'<span class="arena-racer-boost absolute right-[65%] top-[45%] text-lg">🔥</span>':''}<img src="${gameArenaVehicleAsset(i)}" class="w-20 h-12 object-contain" alt=""></div></div>`}).join('')}<div class="absolute right-0 top-0 bottom-0 border-r-4 border-dashed border-white/85"></div></div></div>`;
 }
-
 function renderBaseBattleArenaStage(state) {
-    ensureGameArenaReferenceStyles();
-    const teamA = getArenaSidePlayers(state,'A');
-    const teamB = getArenaSidePlayers(state,'B');
-    const baseA = state.base?.A || {hp:100,shield:0};
-    const baseB = state.base?.B || {hp:100,shield:0};
-    const quality = getGameArenaFxQuality();
-    const hpA=Math.max(0,Number(baseA.hp||0)), hpB=Math.max(0,Number(baseB.hp||0));
-    const shieldA=Math.max(0,Number(baseA.shield||0)), shieldB=Math.max(0,Number(baseB.shield||0));
-    return \`
-        <div data-arena-stage="base_battle" data-arena-fx="\${quality}" class="arena-stage relative overflow-hidden text-white" style="background:linear-gradient(180deg,#5a97bf 0 24%,#315e44 24% 100%)">
-            <div class="arena-base-field"></div>
-            <div class="absolute top-3 left-3 right-3 z-30">
-                <div class="grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
-                    <div class="arena-hud-glass rounded-xl p-2"><div class="flex items-center justify-between text-[10px] font-black"><span class="text-cyan-200">Tim A</span><span>HP \${hpA}/100</span></div><div class="h-2 mt-1 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-r from-cyan-400 to-emerald-400" style="width:\${hpA}%"></div></div><div class="text-[9px] text-sky-200 mt-1">Shield \${shieldA}</div></div>
-                    <div class="arena-hud-glass rounded-xl px-4 py-2 text-center"><span class="text-[9px] text-amber-200 block font-black uppercase tracking-widest">Base Battle</span><b>🏰 VS 🏰</b></div>
-                    <div class="arena-hud-glass rounded-xl p-2"><div class="flex items-center justify-between text-[10px] font-black"><span class="text-rose-200">Tim B</span><span>HP \${hpB}/100</span></div><div class="h-2 mt-1 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-l from-rose-500 to-orange-400" style="width:\${hpB}%"></div></div><div class="text-[9px] text-rose-200 mt-1 text-right">Shield \${shieldB}</div></div>
-                </div>
-            </div>
-            <div data-arena-base-side="A" class="absolute left-[5%] top-[28%] z-20 text-center \${shieldA>0?'arena-shield-active':''}">
-                <div class="arena-castle">🏰</div><div class="text-[9px] font-black text-cyan-100">Tim A · \${teamA.length} siswa</div>
-                <div class="flex -space-x-3 justify-center mt-1">\${teamA.slice(0,5).map(p=>renderGameArenaAvatar(p.avatar?.presetId||'bintang','w-10 h-12')).join('')}</div>
-            </div>
-            <div data-arena-base-side="B" class="absolute right-[5%] top-[28%] z-20 text-center \${shieldB>0?'arena-shield-active':''}">
-                <div class="arena-castle">🏰</div><div class="text-[9px] font-black text-rose-100">Tim B · \${teamB.length} siswa</div>
-                <div class="flex -space-x-3 justify-center mt-1">\${teamB.slice(0,5).map(p=>renderGameArenaAvatar(p.avatar?.presetId||'komet','w-10 h-12')).join('')}</div>
-            </div>
-            <div class="arena-base-battleline"></div>
-            <span class="arena-static-explosion left-[50%] top-[49%] z-30"></span>
-            \${hpA<35?'<span class="absolute left-[14%] top-[30%] text-4xl opacity-75">💨</span>':''}
-            \${hpB<35?'<span class="absolute right-[14%] top-[30%] text-4xl opacity-75">💨</span>':''}
-        </div>\`;
+ ensureGameArenaReferenceStyles();const teamA=getArenaSidePlayers(state,'A'),teamB=getArenaSidePlayers(state,'B'),a=state.base?.A||{hp:100,shield:0},b=state.base?.B||{hp:100,shield:0},hpA=Math.max(0,Number(a.hp||0)),hpB=Math.max(0,Number(b.hp||0)),shA=Math.max(0,Number(a.shield||0)),shB=Math.max(0,Number(b.shield||0)),quality=getGameArenaFxQuality();
+ return `<div data-arena-stage="base_battle" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/base-field.svg')}" class="arena-scene-bg" alt=""><div class="absolute top-3 left-3 right-3 z-35 grid grid-cols-[1fr_auto_1fr] gap-3 items-center"><div class="arena-hud-glass rounded-xl p-2"><div class="flex justify-between text-[10px] font-black"><span class="text-cyan-200">Tim A</span><span>HP ${hpA}/100</span></div><div class="h-2 mt-1 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-r from-cyan-400 to-emerald-400" style="width:${hpA}%"></div></div><div class="text-[9px] text-sky-200 mt-1">Shield ${shA}</div></div><div class="arena-hud-glass rounded-xl px-4 py-2 text-center text-xs font-black">🏰 Base Battle</div><div class="arena-hud-glass rounded-xl p-2"><div class="flex justify-between text-[10px] font-black"><span class="text-rose-200">Tim B</span><span>HP ${hpB}/100</span></div><div class="h-2 mt-1 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-l from-rose-500 to-orange-400" style="width:${hpB}%"></div></div><div class="text-[9px] text-rose-200 mt-1 text-right">Shield ${shB}</div></div></div><div data-arena-base-side="A" class="absolute left-[4%] top-[27%] z-25 text-center ${hpA<30?'arena-base-critical':''}"><img src="${gameArenaAsset('structures/castle-blue.svg')}" class="arena-castle-img w-36 h-40 object-contain mx-auto" alt="Base A"><div class="flex -space-x-3 justify-center mt-1">${teamA.slice(0,5).map(p=>renderGameArenaAvatar(p.avatar?.presetId||'bintang','w-11 h-14')).join('')}</div></div><div data-arena-base-side="B" class="absolute right-[4%] top-[27%] z-25 text-center ${hpB<30?'arena-base-critical':''}"><img src="${gameArenaAsset('structures/castle-red.svg')}" class="arena-castle-img w-36 h-40 object-contain mx-auto" alt="Base B"><div class="flex -space-x-3 justify-center mt-1">${teamB.slice(0,5).map(p=>renderGameArenaAvatar(p.avatar?.presetId||'komet','w-11 h-14')).join('')}</div></div><div class="absolute left-[32%] right-[32%] top-[49%] h-1 bg-gradient-to-r from-cyan-400 via-white to-rose-400 shadow-[0_0_18px_white] z-25"></div><span class="arena-laser-impact-ref left-1/2 top-[49%] z-30"></span><span class="arena-pulse-ring left-1/2 top-[49%] z-31"></span>${hpA<35?'<span class="arena-smoke-puff left-[15%] top-[31%] z-30"></span>':''}${hpB<35?'<span class="arena-smoke-puff right-[15%] top-[31%] z-30"></span>':''}</div>`;
 }
+function renderGameArenaStage(state){ensureGameArenaReferenceStyles();if(state.mode==='tug_war')return renderTugArenaStage(state);if(state.mode==='battle_royale')return renderBattleRoyaleArenaStage(state);if(state.mode==='quiz_race')return renderQuizRaceArenaStage(state);if(state.mode==='base_battle')return renderBaseBattleArenaStage(state);return renderLaserArenaStage(state);}
 
-function renderGameArenaStage(state) {
-    if (state.mode === 'tug_war') return renderTugArenaStage(state);
-    if (state.mode === 'battle_royale') return renderBattleRoyaleArenaStage(state);
-    if (state.mode === 'quiz_race') return renderQuizRaceArenaStage(state);
-    if (state.mode === 'base_battle') return renderBaseBattleArenaStage(state);
-    return renderLaserArenaStage(state);
-}
 
 function renderGameArenaActionPanel(state) {
     if (state.status !== 'playing') return '';
@@ -5350,33 +4912,31 @@ function renderGameArenaActionPanel(state) {
     if (state.mode === 'battle_royale') {
         const targets = (state.players || []).filter(player => String(player.id) !== String(me.id) && !player.eliminated && Number(player.hp || 0) > 0);
         if (Number(me.energy || 0) <= 0) return '';
-        return \`
-            <div class="arena-reference-action p-3">
-                <div class="flex items-center justify-between gap-3 mb-2">
-                    <div><p class="text-[10px] font-black uppercase tracking-wider text-cyan-200">Pilih target untuk Energy Pulse</p><p class="text-[9px] text-slate-300">Energi yang tersimpan: gunakan untuk menyerang shield lawan.</p></div>
-                    <span class="px-3 py-1.5 rounded-lg bg-amber-400 text-slate-950 text-xs font-black">⚡ \${Number(me.energy || 0)}</span>
+        return `
+            <div class="rounded-3xl bg-fuchsia-50 border border-fuchsia-200 p-4 sm:p-5">
+                <div class="flex items-center justify-between gap-3 mb-3"><div><p class="text-[10px] font-black uppercase tracking-wider text-fuchsia-700">Energy Pulse</p><p class="text-xs text-slate-600">Gunakan energi sampai habis; setelah itu soal isi ulang muncul lagi.</p></div><span class="px-3 py-1.5 rounded-xl bg-fuchsia-600 text-white text-xs font-black">⚡ ${Number(me.energy || 0)}</span></div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    ${targets.map(target => `<button type="button" onclick="submitGameArenaAction('energy_pulse', ${gameInlineArg(target.id)})" class="px-3 py-3 rounded-2xl bg-white border border-fuchsia-200 hover:bg-fuchsia-600 hover:text-white text-slate-700 text-[10px] font-black transition cursor-pointer">✨ ${gameEscapeHtml(target.name)} · 🛡️ ${Number(target.hp || 0)}</button>`).join('')}
                 </div>
-                <div class="grid grid-cols-3 sm:grid-cols-5 gap-2">
-                    \${targets.slice(0,10).map(target => \`<button type="button" onclick="submitGameArenaAction('energy_pulse', \${gameInlineArg(target.id)})" class="arena-reference-choice px-2 py-2 text-[9px] font-black text-center"><span class="block text-lg">🎯</span>\${gameEscapeHtml(target.name)}<span class="block text-cyan-200">🛡️ \${Number(target.hp || 0)}</span></button>\`).join('')}
-                </div>
-                <div id="game-arena-action-feedback" class="min-h-4 mt-1 text-center text-[9px] font-black text-cyan-200"></div>
-            </div>\`;
+                <div id="game-arena-action-feedback" class="min-h-5 mt-2 text-center text-[10px] font-black text-fuchsia-700"></div>
+            </div>`;
     }
 
     if (state.mode === 'base_battle') {
         const mana = Number(me.mana || 0);
-        const btn = (action, cost, icon, label, desc, cls) => \`<button type="button" onclick="submitGameArenaAction('\${action}')" \${mana < cost ? 'disabled' : ''} class="rounded-xl border p-2.5 text-center transition \${mana >= cost ? cls + ' cursor-pointer hover:-translate-y-0.5' : 'bg-slate-800/70 border-slate-700 text-slate-500 opacity-50 cursor-not-allowed'}"><span class="text-xl block">\${icon}</span><b class="text-[10px] block">\${label}</b><span class="text-[9px] block">\${cost} Mana</span><span class="hidden sm:block text-[8px] opacity-75 mt-1">\${desc}</span></button>\`;
-        return \`
-            <div class="arena-reference-action p-3">
-                <div class="flex items-center justify-between gap-3 mb-2"><div><p class="text-[10px] font-black text-white">Mana Anda: <span class="text-fuchsia-300">🔮 \${mana}</span></p><p class="text-[9px] text-slate-300">Pilih aksi untuk Base Tim \${gameEscapeHtml(me.side)}</p></div></div>
+        const btn = (action, cost, icon, label, desc) => `<button type="button" onclick="submitGameArenaAction('${action}')" ${mana < cost ? 'disabled' : ''} class="rounded-2xl border p-3 text-left transition ${mana >= cost ? 'bg-white border-orange-200 hover:border-orange-500 cursor-pointer' : 'bg-slate-100 border-slate-200 opacity-50 cursor-not-allowed'}"><div class="flex items-center justify-between"><span class="text-lg">${icon}</span><span class="text-[9px] font-black text-violet-700">🔮 ${cost}</span></div><p class="mt-1 text-[11px] font-black text-slate-800">${label}</p><p class="text-[9px] text-slate-500">${desc}</p></button>`;
+        return `
+            <div class="rounded-3xl bg-orange-50 border border-orange-200 p-4 sm:p-5">
+                <div class="flex items-center justify-between gap-3 mb-3"><div><p class="text-[10px] font-black uppercase tracking-wider text-orange-700">Strategi Base</p><p class="text-xs text-slate-600">Tim ${gameEscapeHtml(me.side)} · gunakan mana atau simpan untuk aksi berikutnya.</p></div><span class="px-3 py-1.5 rounded-xl bg-violet-700 text-white text-xs font-black">🔮 ${mana}/100</span></div>
                 <div class="grid grid-cols-3 gap-2">
-                    \${btn('base_attack',20,'⚔️','Attack','Serang base lawan','bg-red-600 border-red-400 text-white')}
-                    \${btn('base_shield',15,'🛡️','Shield','Tambah shield tim','bg-blue-600 border-blue-400 text-white')}
-                    \${btn('base_repair',25,'🔧','Repair','Pulihkan HP base','bg-emerald-600 border-emerald-400 text-white')}
+                    ${btn('base_attack', 20, '✨', 'Attack', 'Kurangi pertahanan base lawan')}
+                    ${btn('base_shield', 15, '🛡️', 'Shield', 'Tambah shield base tim')}
+                    ${btn('base_repair', 25, '🔧', 'Repair', 'Pulihkan HP base tim')}
                 </div>
-                <div id="game-arena-action-feedback" class="min-h-4 mt-1 text-center text-[9px] font-black text-orange-200"></div>
-            </div>\`;
+                <div id="game-arena-action-feedback" class="min-h-5 mt-2 text-center text-[10px] font-black text-orange-700"></div>
+            </div>`;
     }
+
     return '';
 }
 
@@ -5388,102 +4948,83 @@ function renderGameArenaFinishedPanel(state) {
         : Boolean(state.me?.side && state.winnerSide === state.me.side);
     const winnerPlayer = individual ? (state.players || []).find(player => String(player.id) === String(state.winnerPlayerId || '')) : null;
     const detail = individual
-        ? (winnerPlayer ? \`\${gameEscapeHtml(winnerPlayer.name)} menyelesaikan ronde di posisi pertama.\` : 'Ronde selesai tanpa pemenang aktif.')
-        : (state.winnerSide ? \`Tim \${gameEscapeHtml(state.winnerSide)} memenangkan ronde.\` : 'Ronde selesai.');
-    return \`
-        <div class="arena-reference-question p-5 text-center">
-            <div class="text-4xl">\${won ? '🏆' : '🎮'}</div>
-            <h3 class="font-black text-xl text-white mt-1">\${won ? 'Kamu memenangkan ronde!' : 'Ronde selesai.'}</h3>
-            <p class="text-xs text-slate-300 mt-1">\${detail}</p>
-            <button type="button" onclick="rematchGameArena()" class="mt-3 px-6 py-3 bg-indigo-500 hover:bg-indigo-400 text-white rounded-xl text-xs font-black cursor-pointer"><i class="fa-solid fa-rotate-right mr-1"></i> Cari Ronde Baru</button>
-        </div>\`;
+        ? (winnerPlayer ? `${gameEscapeHtml(winnerPlayer.name)} menyelesaikan ronde di posisi pertama.` : 'Ronde selesai tanpa pemenang aktif.')
+        : (state.winnerSide ? `Tim ${gameEscapeHtml(state.winnerSide)} memenangkan ronde.` : 'Ronde selesai.');
+    return `
+        <div class="rounded-3xl ${won ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'} border p-6 text-center space-y-3">
+            <div class="text-4xl">${won ? '🏆' : '🎮'}</div>
+            <h3 class="font-black text-xl ${won ? 'text-emerald-800' : 'text-slate-800'}">${won ? 'Kamu memenangkan ronde!' : 'Ronde selesai.'}</h3>
+            <p class="text-xs text-slate-500">${detail}</p>
+            <button type="button" onclick="rematchGameArena()" class="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-black cursor-pointer"><i class="fa-solid fa-rotate-right mr-1"></i> Cari Ronde Baru</button>
+        </div>`;
 }
 
 function renderGameArenaQuestionPanel(state, preservedDraft = '') {
-    if (state.status === 'waiting') return \`<div class="arena-reference-question p-5 text-center"><div class="text-3xl mb-1 animate-pulse">⏳</div><h3 class="font-black text-white">Menunggu pemain lain dari \${gameEscapeHtml(state.className || 'kelasmu')}...</h3><p class="text-[10px] text-cyan-200 mt-1">Pertandingan akan aktif sesuai mode room.</p></div>\`;
+    if (state.status === 'waiting') return `<div class="rounded-3xl bg-amber-50 border border-amber-200 p-6 text-center"><div class="text-3xl mb-2 animate-pulse">⏳</div><h3 class="font-black text-amber-900">Menunggu pemain lain dari ${gameEscapeHtml(state.className || 'kelasmu')}...</h3><p class="text-xs text-amber-700 mt-1">Pertandingan otomatis aktif setelah minimal dua siswa bergabung.</p></div>`;
     if (state.status === 'finished') return renderGameArenaFinishedPanel(state);
 
     const me = getArenaMePlayer(state);
     if (me?.eliminated) {
-        return \`<div class="arena-reference-question p-5 text-center"><div class="text-3xl">👀</div><h3 class="font-black text-white mt-1">Mode Penonton</h3><p class="text-[10px] text-slate-300">Kamu tetap dapat melihat ronde sampai selesai.</p></div>\`;
+        return `<div class="rounded-3xl bg-slate-100 border border-slate-200 p-5 text-center"><div class="text-3xl">👀</div><h3 class="font-black text-slate-800 mt-2">Mode Penonton</h3><p class="text-xs text-slate-500 mt-1">Shield-mu sudah habis. Kamu tetap bisa melihat ronde sampai selesai.</p></div>`;
     }
+
     if (state.mode === 'battle_royale' && Number(me?.energy || 0) > 0) {
-        return \`<div class="arena-reference-question p-4 text-center"><p class="text-xs font-black text-amber-200">⚡ Energi tersedia. Pilih target dan gunakan Energy Pulse sebelum soal isi ulang berikutnya.</p></div>\`;
+        return `<div class="rounded-3xl bg-violet-50 border border-violet-200 p-5 text-center"><p class="text-xs font-black text-violet-800">Energi masih tersedia. Gunakan Energy Pulse di atas sampai energi 0, lalu soal isi ulang berikutnya akan muncul.</p></div>`;
     }
 
     const question = state.question;
-    if (!question) return \`<div class="arena-reference-question p-5 text-center"><h3 class="font-black text-rose-200">Belum ada soal kompatibel.</h3><p class="text-[10px] text-slate-300 mt-1">Siapkan Tebak Kata, Tebak Gambar, Susun Kata, atau Benar/Salah.</p></div>\`;
+    if (!question) return `<div class="rounded-3xl bg-rose-50 border border-rose-200 p-6 text-center"><h3 class="font-black text-rose-800">Belum ada soal kompatibel.</h3><p class="text-xs text-rose-600 mt-1">Minta guru menyiapkan game Tebak Kata, Tebak Gambar, Susun Kata, atau Benar/Salah.</p></div>`;
 
-    const statusText = state.mode === 'laser_duel'
-        ? \`🔥 Streak: \${Number(me?.streak || 0)} · ✓ \${Number(me?.correctAnswers || 0)} benar\`
-        : state.mode === 'tug_war'
-            ? \`💪 Kontribusi: \${Number(me?.correctAnswers || 0)} jawaban benar\`
-            : state.mode === 'quiz_race'
-                ? \`🔥 Streak: \${Number(me?.streak || 0)} · +Progress\`
-                : state.mode === 'base_battle'
-                    ? \`🔮 Mana: \${Number(me?.mana || 0)}\`
-                    : \`🛡️ HP: \${Number(me?.hp || 0)} · ⚡ Energi: \${Number(me?.energy || 0)}\`;
+    const rechargeLabel = state.mode === 'quiz_race'
+        ? 'Boost Pengetahuan'
+        : state.mode === 'base_battle'
+            ? 'Isi Mana'
+            : state.mode === 'battle_royale'
+                ? 'Isi Energi'
+                : 'Recharge Knowledge';
 
-    return \`
-        <div data-arena-question-panel class="arena-reference-question p-4">
-            <div class="flex items-center justify-between gap-3 mb-2">
-                <span class="text-[9px] font-black uppercase tracking-widest text-cyan-200">\${gameEscapeHtml(question.title || 'Soal Arena')}</span>
-                <span class="text-[9px] font-black text-amber-200">\${statusText}</span>
-            </div>
-            \${question.imageUrl ? \`<img src="\${gameSafeImageSrc(question.imageUrl)}" class="w-full max-h-28 object-cover rounded-xl border border-cyan-300/20 mb-2">\` : ''}
-            <p class="text-sm sm:text-base font-black text-white leading-relaxed mb-3">\${gameEscapeHtml(question.prompt || '')}</p>
-            \${Array.isArray(question.scrambledLetters) && question.scrambledLetters.length ? \`<div class="flex flex-wrap items-center gap-1.5 mb-3">\${question.scrambledLetters.map(letter => \`<span class="w-8 h-8 rounded-lg bg-cyan-50 text-slate-900 flex items-center justify-center text-sm font-black">\${gameEscapeHtml(letter)}</span>\`).join('')}</div>\` : ''}
-            \${question.type === 'choice'
-                ? \`<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">\${(question.options || []).map((option,index) => \`<button type="button" onclick="submitGameArenaAnswer(\${gameInlineArg(option)})" class="arena-reference-choice px-3 py-2.5 text-left text-xs font-black"><span class="inline-flex w-6 h-6 items-center justify-center rounded-md bg-white/10 mr-2">\${String.fromCharCode(65+index)}</span>\${gameEscapeHtml(option)}</button>\`).join('')}</div>\`
-                : \`<form onsubmit="submitGameArenaTextAnswer(event)" class="flex gap-2"><input id="game-arena-answer-input" value="\${gameEscapeAttr(preservedDraft)}" autocomplete="off" placeholder="Ketik jawaban..." class="arena-reference-input flex-1 px-4 py-3 rounded-xl text-sm font-black uppercase focus:outline-none focus:ring-2 focus:ring-cyan-400"><button type="submit" class="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black cursor-pointer"><i class="fa-solid fa-bolt mr-1"></i> Kirim</button></form>\`}
-            <div id="game-arena-answer-feedback" class="min-h-4 mt-1 text-center text-[10px] font-black"></div>
-        </div>\`;
+    return `
+        <div data-arena-question-panel class="arena-question-panel rounded-3xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
+            <div class="flex items-center justify-between gap-3"><span class="px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-black uppercase tracking-wider"><i class="fa-solid fa-battery-three-quarters mr-1"></i> ${rechargeLabel}</span><span class="text-[10px] font-bold text-slate-400">${gameEscapeHtml(question.title || 'Tantangan')}</span></div>
+            ${question.imageUrl ? `<img src="${gameSafeImageSrc(question.imageUrl)}" class="w-full max-h-44 object-cover rounded-2xl border border-slate-200">` : ''}
+            <p class="text-sm sm:text-base font-black text-slate-900 leading-relaxed">${gameEscapeHtml(question.prompt || '')}</p>
+            ${Array.isArray(question.scrambledLetters) && question.scrambledLetters.length ? `
+                <div class="flex flex-wrap items-center justify-center gap-2 rounded-2xl bg-violet-50 border border-violet-200 p-3">
+                    <span class="w-full text-center text-[10px] font-black uppercase tracking-wider text-violet-700">Susun huruf berikut</span>
+                    ${question.scrambledLetters.map(letter => `<span class="w-9 h-10 rounded-xl bg-white border border-violet-200 shadow-sm flex items-center justify-center text-base font-black text-violet-900">${gameEscapeHtml(letter)}</span>`).join('')}
+                </div>
+            ` : ''}
+            ${question.type === 'choice' ? `<div class="grid grid-cols-2 gap-2">${(question.options || []).map(option => `<button type="button" onclick="submitGameArenaAnswer(${gameInlineArg(option)})" class="px-4 py-3 rounded-2xl bg-slate-100 hover:bg-indigo-600 hover:text-white text-slate-800 text-xs font-black transition cursor-pointer">${gameEscapeHtml(option)}</button>`).join('')}</div>` : `<form onsubmit="submitGameArenaTextAnswer(event)" class="flex flex-col sm:flex-row gap-2"><input id="game-arena-answer-input" value="${gameEscapeAttr(preservedDraft)}" autocomplete="off" placeholder="Ketik jawaban..." class="flex-1 px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 text-sm font-black uppercase focus:outline-none focus:ring-2 focus:ring-indigo-400"><button type="submit" class="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-bolt mr-1"></i> Kirim</button></form>`}
+            <div id="game-arena-answer-feedback" class="min-h-5 text-center text-[11px] font-black"></div>
+        </div>`;
 }
 
 function renderGameArenaModalState(state) {
-    const modal = document.getElementById('game-arena-modal');
-    if (!modal || !state) return;
-    ensureGameArenaReferenceStyles();
-    const draft = document.getElementById('game-arena-answer-input')?.value || '';
-    const body = modal.querySelector('[data-arena-body]');
-    if (!body) return;
-    const action = renderGameArenaActionPanel(state);
-    const question = renderGameArenaQuestionPanel(state, draft);
-    body.innerHTML = \`
-        <div class="arena-reference-live-shell">
-            <div class="arena-reference-stage-wrap">
-                \${renderGameArenaStage(state)}
-                <div class="arena-reference-bottom">
-                    \${action}
-                    \${question}
-                </div>
-            </div>
-        </div>\`;
-    const status = modal.querySelector('[data-arena-status]');
-    if (status) status.textContent = state.status === 'waiting' ? 'LOBBY' : state.status === 'finished' ? 'SELESAI' : '● LIVE';
+    const modal=document.getElementById('game-arena-modal');if(!modal||!state)return;ensureGameArenaReferenceStyles();
+    const draft=document.getElementById('game-arena-answer-input')?.value||'';const body=modal.querySelector('[data-arena-body]');if(!body)return;
+    body.innerHTML=`<div class="arena-ref-shell"><div class="arena-ref-wrap">${renderGameArenaStage(state)}<div class="arena-ref-bottom">${renderGameArenaActionPanel(state)}${renderGameArenaQuestionPanel(state,draft)}</div></div></div>`;
+    const status=modal.querySelector('[data-arena-status]');if(status)status.textContent=state.status==='waiting'?'LOBBY':state.status==='finished'?'SELESAI':'● LIVE';
 }
 
 function mountGameArenaModal(mode) {
     document.getElementById('game-arena-modal')?.remove();
-    ensureGameArenaReferenceStyles();
     const meta = getGameArenaModeMeta(mode);
-    document.body.insertAdjacentHTML('beforeend', \`
-        <div id="game-arena-modal" class="fixed inset-0 z-[100] bg-[#031225]/95 backdrop-blur-md p-2 sm:p-4 flex items-center justify-center">
-            <div class="w-full max-w-6xl max-h-[98vh] overflow-y-auto rounded-[22px] bg-[#061a31] border border-sky-500/30 shadow-2xl">
-                <div class="sticky top-0 z-50 bg-gradient-to-r from-[#071d37] via-[#0a2949] to-[#071d37] text-white px-4 sm:px-5 py-3 flex items-center justify-between border-b border-sky-500/25">
-                    <div class="flex items-center gap-3">
-                        <div class="text-2xl">\${meta.icon}</div>
-                        <div><h2 class="font-black text-base sm:text-lg">\${gameEscapeHtml(meta.title)} <span class="text-sky-300">· Tampilan Siswa</span></h2><p class="text-[9px] text-cyan-200/75 uppercase tracking-[.18em]">Madrasah Game Arena</p></div>
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="game-arena-modal" class="fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-md p-2 sm:p-4 flex items-center justify-center">
+            <div class="w-full max-w-5xl max-h-[96vh] overflow-y-auto rounded-[28px] bg-slate-100 border border-white/10 shadow-2xl">
+                <div class="sticky top-0 z-20 bg-slate-950 text-white px-4 sm:px-6 py-4 flex items-center justify-between border-b border-slate-800">
+                    <div>
+                        <div class="flex items-center gap-2"><h2 class="font-black text-lg">${meta.icon} ${gameEscapeHtml(meta.title)}</h2><span data-arena-status class="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 text-[9px] font-black uppercase">Menghubungkan</span></div>
+                        <p class="text-[10px] text-slate-400 mt-0.5">Soal → resource → gameplay</p>
                     </div>
                     <div class="flex items-center gap-2">
-                        <span data-arena-status class="px-2.5 py-1 rounded-lg bg-red-500/15 border border-red-400/30 text-red-300 text-[9px] font-black uppercase">Menghubungkan</span>
-                        \${renderGameArenaFxControl()}
-                        <button type="button" onclick="closeGameArena()" class="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
+                        ${renderGameArenaFxControl()}
+                        <button type="button" onclick="closeGameArena()" class="w-10 h-10 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
                     </div>
                 </div>
-                <div data-arena-body class="p-2 sm:p-3"><div class="py-20 text-center text-slate-400"><i class="fa-solid fa-circle-notch fa-spin text-3xl text-cyan-400"></i><p class="text-xs font-bold mt-3">Menyiapkan arena...</p></div></div>
+                <div data-arena-body class="p-4 sm:p-6"><div class="py-16 text-center text-slate-500"><i class="fa-solid fa-circle-notch fa-spin text-3xl text-indigo-500"></i><p class="text-xs font-bold mt-3">Menyiapkan arena...</p></div></div>
             </div>
-        </div>\`);
+        </div>`);
 }
 
 window.openGameArenaMode = async function(mode) {
