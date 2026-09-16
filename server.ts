@@ -7033,6 +7033,133 @@ app.post("/api/game-arena/leave", (req: any, res) => {
   }
 });
 
+
+app.get("/api/game-arena/admin/rooms", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  cleanupGameArenaRooms();
+  const tenantId = gameTenantNamespace(req);
+  const roomList = Object.values(gameArenaRoomsServer)
+    .filter(room => room.tenantId === tenantId)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+    .map(room => ({
+      id: room.id,
+      mode: room.mode,
+      status: room.status,
+      classKey: room.classKey,
+      className: room.className,
+      hosted: Boolean((room as any).hosted),
+      playerCount: room.players.length,
+      maxPlayers: gameArenaModeMaxPlayers(room.mode),
+      createdAt: room.createdAt,
+      updatedAt: room.updatedAt,
+      state: sanitizeGameArenaState(room, '')
+    }));
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, rooms: roomList });
+});
+
+app.post("/api/game-arena/admin/rooms", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  try {
+    cleanupGameArenaRooms();
+    const mode = String(req.body?.mode || '') as GameArenaMode;
+    if (!GAME_ARENA_MODES.has(mode)) return res.status(400).json({ success: false, message: "Mode Arena tidak valid." });
+
+    const config = getArenaTenantConfig(req).modes[mode] || defaultArenaModeConfig();
+    if (!config.enabled) return res.status(409).json({ success: false, message: "Aktifkan mode Arena ini terlebih dahulu." });
+
+    const requestedClass = String(req.body?.classKey || '').trim();
+    const scopedClasses = filterByMadrasah(classes || [], req);
+    const classRow = scopedClasses.find((item: any) =>
+      String(item?.id || '') === requestedClass ||
+      String(item?.name || '') === requestedClass ||
+      String(item?.code || '') === requestedClass
+    );
+    if (!classRow) return res.status(404).json({ success: false, message: "Kelas tidak ditemukan pada madrasah ini." });
+
+    const classKey = String(classRow.id || classRow.code || classRow.name);
+    const className = String(classRow.name || classRow.code || classKey);
+    if (!arenaClassAllowed(config, classKey, className)) {
+      return res.status(403).json({ success: false, message: "Mode Arena ini tidak aktif untuk kelas tersebut." });
+    }
+
+    const existing = Object.values(gameArenaRoomsServer).find(room =>
+      room.tenantId === gameTenantNamespace(req) &&
+      room.mode === mode &&
+      room.classKey === classKey &&
+      Boolean((room as any).hosted) &&
+      room.status !== 'finished'
+    );
+    if (existing) return res.status(409).json({ success: false, message: "Hosted Room aktif untuk mode dan kelas ini sudah ada.", roomId: existing.id });
+
+    const sourceIds = normalizeArenaList(config.gameIds);
+    const syntheticStudent = { classId: classKey, class_id: classKey, className, kelas: className };
+    const basePool = getGameArenaGamePool(req, syntheticStudent);
+    const usablePool = sourceIds.length ? basePool.filter((item: any) => sourceIds.includes(String(item?.id || ''))) : basePool;
+    if (!usablePool.length) {
+      return res.status(409).json({ success: false, message: "Tidak ada sumber soal Arena yang kompatibel untuk kelas ini." });
+    }
+
+    const authUser = req.user || getAuthUser(req);
+    const now = Date.now();
+    const room = {
+      id: `ARENA_HOST_${now}_${crypto.randomBytes(4).toString('hex')}`,
+      tenantId: gameTenantNamespace(req),
+      classKey,
+      className,
+      mode,
+      status: 'waiting',
+      position: 50,
+      players: [],
+      questions: {},
+      version: 0,
+      baseAHp: 100,
+      baseBHp: 100,
+      baseAShield: 0,
+      baseBShield: 0,
+      hosted: true,
+      hostedBy: String(authUser?.id || ''),
+      sourceGameIds: sourceIds,
+      createdAt: now,
+      updatedAt: now
+    } as GameArenaRoom;
+
+    gameArenaRoomsServer[room.id] = room;
+    res.json({ success: true, room: { id: room.id, state: sanitizeGameArenaState(room, '') } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal membuat Hosted Room Arena.") });
+  }
+});
+
+app.post("/api/game-arena/admin/room-action", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req: any, res) => {
+  try {
+    cleanupGameArenaRooms();
+    const room = getGameArenaRoomForRequest(req, req.body?.roomId);
+    if (!room) return res.status(404).json({ success: false, message: "Room Arena tidak ditemukan." });
+
+    const action = String(req.body?.action || '').trim().toLowerCase();
+    if (action === 'start') {
+      if (room.players.length < 2) return res.status(409).json({ success: false, message: "Minimal dua siswa harus masuk sebelum dimulai." });
+      startHostedOrQuickArenaRoom(req, room);
+    } else if (action === 'finish') {
+      finishGameArenaRoom(room);
+      touchGameArenaRoom(room);
+    } else if (action === 'reset') {
+      room.status = 'waiting';
+      resetGameArenaRoom(room);
+      touchGameArenaRoom(room);
+    } else if (action === 'delete') {
+      delete gameArenaRoomsServer[room.id];
+      return res.json({ success: true, deleted: true });
+    } else {
+      return res.status(400).json({ success: false, message: "Aksi Room Arena tidak valid." });
+    }
+
+    res.json({ success: true, room: { id: room.id, state: sanitizeGameArenaState(room, '') } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal mengontrol Room Arena.") });
+  }
+});
+
 app.get("/api/game/active-sessions", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
   const allowed = new Set((filterByMadrasah(students || [], req) || []).map((x: any) => String(x.id)));
   const scoped: Record<string, any> = {};
