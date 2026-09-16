@@ -16209,22 +16209,7 @@ app.post("/api/learning/progress", requireAuth, requireRole(['student', 'siswa',
   const viewedBlockIds = Array.isArray(req.body?.viewedBlockIds)
     ? Array.from(new Set(req.body.viewedBlockIds.map((value: any) => String(value).trim().slice(0, 256)).filter(Boolean))).slice(0, 200)
     : [];
-  if (requestedStatus === 'completed' || progressPercent >= 100) {
-    const policy = learningEngagementPolicy(resolved.material);
-    if (activeSeconds < policy.minActiveSeconds) {
-      return res.status(423).json({ success: false, message: `Baca materi minimal ${policy.minActiveSeconds} detik aktif sebelum selesai.` });
-    }
-    if (policy.requireAllBlocks) {
-      const requiredBlockIds = learningBlockIds(resolved.material);
-      const seen = new Set(viewedBlockIds.map(String));
-      if (requiredBlockIds.length > 0 && !requiredBlockIds.every((id: string) => seen.has(id))) {
-        return res.status(423).json({ success: false, message: 'Semua bagian materi harus terlihat sebelum selesai.' });
-      }
-    }
-  }
-  const finalStatus = progressPercent >= 100 || requestedStatus === 'completed'
-    ? 'completed'
-    : (progressPercent > 0 || requestedStatus === 'viewed' ? 'in_progress' : 'not_started');
+
   const existingIndex = (learningProgress || []).findIndex((item: any) =>
     String(item.id || '') === key ||
     (String(item.studentId || '') === String(authUser.id) &&
@@ -16232,6 +16217,35 @@ app.post("/api/learning/progress", requireAuth, requireRole(['student', 'siswa',
       isItemForCurrentMadrasah(item, req))
   );
   const existing = existingIndex >= 0 ? learningProgress[existingIndex] : {};
+  const existingCompleted = existing.status === 'completed' || Number(existing.progressPercent || 0) >= 100;
+  const mergedActiveSeconds = Math.max(activeSeconds, Number(existing.activeSeconds || 0));
+  const mergedViewedBlockIds = Array.from(new Set([
+    ...(Array.isArray(existing.viewedBlockIds) ? existing.viewedBlockIds : []),
+    ...viewedBlockIds
+  ].map((value: any) => String(value).trim()).filter(Boolean))).slice(0, 200);
+  const mergedProgressPercent = Math.max(progressPercent, Number(existing.progressPercent || 0));
+  const completionRequested = requestedStatus === 'completed' || progressPercent >= 100;
+
+  // Reopening or checkpointing an already completed material must never force the
+  // student through the engagement gate again. New completions are validated
+  // against cumulative server-side checkpoints, not only the latest request.
+  if (completionRequested && !existingCompleted) {
+    const policy = learningEngagementPolicy(resolved.material);
+    if (mergedActiveSeconds < policy.minActiveSeconds) {
+      return res.status(423).json({ success: false, message: `Baca materi minimal ${policy.minActiveSeconds} detik aktif sebelum selesai.` });
+    }
+    if (policy.requireAllBlocks) {
+      const requiredBlockIds = learningBlockIds(resolved.material);
+      const seen = new Set(mergedViewedBlockIds.map(String));
+      if (requiredBlockIds.length > 0 && !requiredBlockIds.every((id: string) => seen.has(id))) {
+        return res.status(423).json({ success: false, message: 'Semua bagian materi harus terlihat sebelum selesai.' });
+      }
+    }
+  }
+
+  const finalStatus = existingCompleted || completionRequested
+    ? 'completed'
+    : (mergedProgressPercent > 0 || requestedStatus === 'viewed' || requestedStatus === 'in_progress' ? 'in_progress' : 'not_started');
   const record = tagNewRecord({
     ...existing,
     id: key,
@@ -16241,9 +16255,9 @@ app.post("/api/learning/progress", requireAuth, requireRole(['student', 'siswa',
     nis: String(own.student.nis || ''),
     classId: String(own.student.classId || own.student.class_id || ''),
     status: finalStatus,
-    progressPercent: finalStatus === 'completed' ? 100 : Math.max(progressPercent, Number(existing.progressPercent || 0)),
-    activeSeconds: Math.max(activeSeconds, Number(existing.activeSeconds || 0)),
-    viewedBlockIds: viewedBlockIds.length > 0 ? viewedBlockIds : (Array.isArray(existing.viewedBlockIds) ? existing.viewedBlockIds : []),
+    progressPercent: finalStatus === 'completed' ? 100 : mergedProgressPercent,
+    activeSeconds: mergedActiveSeconds,
+    viewedBlockIds: mergedViewedBlockIds,
     viewedAt: existing.viewedAt || nowIso,
     completedAt: finalStatus === 'completed' ? (existing.completedAt || nowIso) : (existing.completedAt || ''),
     updatedAt: nowIso,

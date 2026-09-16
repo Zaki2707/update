@@ -5,6 +5,7 @@
 const STUDENT_ROLES = new Set(['student', 'siswa', 'class_leader', 'ketua_kelas']);
 const STAFF_ROLES = new Set(['teacher', 'guru', 'admin', 'administrator', 'bos', 'superadmin']);
 const LEARNING_QUEUE_KEY = 'madrasah_learning_progress_queue_v1';
+const LEARNING_CHECKPOINT_SECONDS = 12;
 
 function learningState() { return window.appState || {}; }
 function learningRole() {
@@ -87,37 +88,117 @@ function trackerActiveSeconds(tracker) {
     const live = tracker.active && !document.hidden ? Date.now() - tracker.lastStartedAt : 0;
     return Math.floor((tracker.activeMs + Math.max(0, live)) / 1000);
 }
-function stopLearningTracker() {
+function learningProgressSnapshot(material) {
+    return material?.progress || progressForMaterial(material?.id) || null;
+}
+function mergeLearningProgressSnapshot(base, payload, pendingSync = false) {
+    const previous = base && typeof base === 'object' ? base : {};
+    const incoming = payload && typeof payload === 'object' ? payload : {};
+    const previousCompleted = previous.status === 'completed' || Number(previous.progressPercent || 0) >= 100;
+    const incomingCompleted = incoming.status === 'completed' || Number(incoming.progressPercent || 0) >= 100;
+    const viewedBlockIds = Array.from(new Set([
+        ...(Array.isArray(previous.viewedBlockIds) ? previous.viewedBlockIds : []),
+        ...(Array.isArray(incoming.viewedBlockIds) ? incoming.viewedBlockIds : [])
+    ].map(value => String(value || '').trim()).filter(Boolean)));
+    return {
+        ...previous,
+        ...incoming,
+        materialId: String(incoming.materialId || previous.materialId || ''),
+        studentId: String(previous.studentId || currentStudentId()),
+        status: previousCompleted || incomingCompleted ? 'completed' : 'in_progress',
+        progressPercent: previousCompleted || incomingCompleted
+            ? 100
+            : Math.max(Number(previous.progressPercent || 0), Number(incoming.progressPercent || 0), 10),
+        activeSeconds: Math.max(Number(previous.activeSeconds || 0), Number(incoming.activeSeconds || 0)),
+        viewedBlockIds,
+        updatedAt: new Date().toISOString(),
+        pendingSync
+    };
+}
+function replaceLearningProgressSnapshot(snapshot) {
+    if (!snapshot?.materialId) return;
+    const state = learningState();
+    const ownId = currentStudentId();
+    const rows = Array.isArray(state.learningProgress) ? state.learningProgress : [];
+    state.learningProgress = rows.filter(row =>
+        !(String(row.materialId || '') === String(snapshot.materialId) &&
+          String(row.studentId || ownId) === ownId)
+    );
+    state.learningProgress.push(snapshot);
+    const material = (window.__learningMaterials || []).find(item => String(item.id) === String(snapshot.materialId));
+    if (material) material.progress = snapshot;
+}
+function checkpointPayloadForTracker(tracker) {
+    const previous = progressForMaterial(tracker?.materialId);
+    return {
+        materialId: tracker?.materialId,
+        status: 'in_progress',
+        progressPercent: Math.max(10, Number(previous?.progressPercent || 0)),
+        activeSeconds: trackerActiveSeconds(tracker),
+        viewedBlockIds: tracker ? Array.from(tracker.viewedBlockIds || []) : []
+    };
+}
+async function checkpointLearningTracker(tracker, options = {}) {
+    if (!tracker?.materialId) return null;
+    const previous = progressForMaterial(tracker.materialId);
+    if (previous && (previous.status === 'completed' || Number(previous.progressPercent || 0) >= 100)) return previous;
+    const payload = checkpointPayloadForTracker(tracker);
+    const fingerprint = `${payload.activeSeconds}|${payload.viewedBlockIds.map(String).sort().join(',')}`;
+    if (!options.force && fingerprint === tracker.lastCheckpointFingerprint) return previous;
+    if (tracker.checkpointInFlight && !options.force) return previous;
+    tracker.lastCheckpointFingerprint = fingerprint;
+    tracker.lastCheckpointSeconds = payload.activeSeconds;
+    if (options.keepalive) queueLearningProgress(payload);
+    tracker.checkpointInFlight = true;
+    try {
+        return await postLearningProgress(payload, { silent: true, keepalive: options.keepalive === true });
+    } finally {
+        tracker.checkpointInFlight = false;
+    }
+}
+function stopLearningTracker(options = {}) {
     const tracker = learningState().__activeLearningTracker;
     if (!tracker) return;
     if (tracker.active) tracker.activeMs += Math.max(0, Date.now() - tracker.lastStartedAt);
     tracker.active = false;
+    if (options.checkpoint !== false) {
+        void checkpointLearningTracker(tracker, { force: true, keepalive: true });
+    }
     if (tracker.interval) window.clearInterval(tracker.interval);
     if (tracker.observer) tracker.observer.disconnect();
     window.removeEventListener('scroll', tracker.onScroll, true);
     window.removeEventListener('focus', tracker.onFocus);
     window.removeEventListener('blur', tracker.onBlur);
+    window.removeEventListener('pagehide', tracker.onPageHide);
     document.removeEventListener('visibilitychange', tracker.onVisibility);
     learningState().__activeLearningTracker = null;
 }
 function startLearningTracker(material) {
     stopLearningTracker();
+    const savedProgress = learningProgressSnapshot(material) || {};
+    const savedActiveSeconds = Math.max(0, Number(savedProgress.activeSeconds || 0));
     const tracker = {
         materialId: String(material.id),
-        activeMs: 0,
+        activeMs: savedActiveSeconds * 1000,
         lastStartedAt: Date.now(),
         active: !document.hidden && document.hasFocus(),
-        viewedBlockIds: new Set(),
+        viewedBlockIds: new Set(Array.isArray(savedProgress.viewedBlockIds) ? savedProgress.viewedBlockIds.map(String) : []),
+        lastCheckpointSeconds: savedActiveSeconds,
+        lastCheckpointFingerprint: '',
+        checkpointInFlight: false,
         observer: null,
         onScroll: null,
         onFocus: null,
         onBlur: null,
-        onVisibility: null
+        onVisibility: null,
+        onPageHide: null
     };
-    const pause = () => {
-        if (!tracker.active) return;
-        tracker.activeMs += Math.max(0, Date.now() - tracker.lastStartedAt);
-        tracker.active = false;
+    const pause = (persist = true) => {
+        if (tracker.active) {
+            tracker.activeMs += Math.max(0, Date.now() - tracker.lastStartedAt);
+            tracker.active = false;
+        }
+        if (persist) void checkpointLearningTracker(tracker, { force: true, keepalive: true });
     };
     const resume = () => {
         if (tracker.active || document.hidden || !document.hasFocus()) return;
@@ -134,11 +215,13 @@ function startLearningTracker(material) {
     };
     tracker.onScroll = () => window.requestAnimationFrame(markVisibleBlocks);
     tracker.onFocus = resume;
-    tracker.onBlur = pause;
-    tracker.onVisibility = () => document.hidden ? pause() : resume();
+    tracker.onBlur = () => pause(true);
+    tracker.onVisibility = () => document.hidden ? pause(true) : resume();
+    tracker.onPageHide = () => pause(true);
     window.addEventListener('scroll', tracker.onScroll, true);
     window.addEventListener('focus', tracker.onFocus);
     window.addEventListener('blur', tracker.onBlur);
+    window.addEventListener('pagehide', tracker.onPageHide);
     document.addEventListener('visibilitychange', tracker.onVisibility);
     if ('IntersectionObserver' in window) {
         tracker.observer = new IntersectionObserver(entries => {
@@ -153,8 +236,19 @@ function startLearningTracker(material) {
     }
     learningState().__activeLearningTracker = tracker;
     markVisibleBlocks();
-    tracker.interval = window.setInterval(() => updateEngagementUi(material), 1000);
+    updateEngagementUi(material);
+    tracker.interval = window.setInterval(() => {
+        updateEngagementUi(material);
+        const currentSeconds = trackerActiveSeconds(tracker);
+        if (currentSeconds - tracker.lastCheckpointSeconds >= LEARNING_CHECKPOINT_SECONDS) {
+            void checkpointLearningTracker(tracker);
+        }
+    }, 1000);
 }
+window.stopLearningTrackerForNavigation = function() {
+    stopLearningTracker({ checkpoint: true });
+};
+
 function learningCompletionPayload(material) {
     const tracker = learningState().__activeLearningTracker;
     return {
@@ -188,8 +282,24 @@ function updateEngagementUi(material) {
 function queueLearningProgress(payload) {
     try {
         const queue = JSON.parse(localStorage.getItem(LEARNING_QUEUE_KEY) || '[]');
-        queue.push({ ...payload, queuedAt: Date.now() });
-        localStorage.setItem(LEARNING_QUEUE_KEY, JSON.stringify(queue.slice(-200)));
+        const rows = Array.isArray(queue) ? queue : [];
+        const existingIndex = rows.findIndex(item => String(item?.materialId || '') === String(payload?.materialId || ''));
+        const existing = existingIndex >= 0 ? rows[existingIndex] : null;
+        const merged = {
+            ...mergeLearningProgressSnapshot(existing, payload, true),
+            queuedAt: Date.now()
+        };
+        if (existingIndex >= 0) rows[existingIndex] = merged;
+        else rows.push(merged);
+        localStorage.setItem(LEARNING_QUEUE_KEY, JSON.stringify(rows.slice(-200)));
+    } catch (_) {}
+}
+function clearQueuedLearningProgress(materialId) {
+    try {
+        const queue = JSON.parse(localStorage.getItem(LEARNING_QUEUE_KEY) || '[]');
+        if (!Array.isArray(queue)) return;
+        const remaining = queue.filter(item => String(item?.materialId || '') !== String(materialId || ''));
+        localStorage.setItem(LEARNING_QUEUE_KEY, JSON.stringify(remaining.slice(-200)));
     } catch (_) {}
 }
 async function flushLearningProgressQueue() {
@@ -204,7 +314,9 @@ async function flushLearningProgressQueue() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(item)
             });
-            if (!response.ok) remaining.push(item);
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.success === false) remaining.push(item);
+            else if (data.progress) replaceLearningProgressSnapshot(data.progress);
         } catch (_) {
             remaining.push(item);
         }
@@ -235,26 +347,26 @@ async function loadLearningLinks() {
     state.exams = Array.isArray(links.exams) ? links.exams : [];
     return links;
 }
-async function postLearningProgress(payload) {
-    const optimistic = {
-        id: `local_${payload.materialId}_${Date.now()}`,
-        materialId: payload.materialId,
-        studentId: currentStudentId(),
-        status: payload.status === 'completed' ? 'completed' : 'in_progress',
-        progressPercent: payload.status === 'completed' ? 100 : Math.max(10, Number(payload.progressPercent || 10)),
-        updatedAt: new Date().toISOString(),
-        pendingSync: true
-    };
+async function postLearningProgress(payload, options = {}) {
     const state = learningState();
-    state.learningProgress = (Array.isArray(state.learningProgress) ? state.learningProgress : [])
-        .filter(row => !(String(row.materialId || '') === String(payload.materialId) && String(row.studentId || '') === currentStudentId()));
-    state.learningProgress.push(optimistic);
+    const previous = progressForMaterial(payload.materialId);
+    const previousCompleted = previous && (previous.status === 'completed' || Number(previous.progressPercent || 0) >= 100);
+    if (previousCompleted && payload.status !== 'completed' && Number(payload.progressPercent || 0) < 100) {
+        return previous;
+    }
+
+    const optimistic = {
+        ...mergeLearningProgressSnapshot(previous, payload, true),
+        id: previous?.id || `local_${payload.materialId}_${Date.now()}`
+    };
+    replaceLearningProgressSnapshot(optimistic);
 
     try {
         const response = await fetch('/api/learning/progress', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            keepalive: options.keepalive === true
         });
         const data = await response.json();
         if (!response.ok || data.success === false) {
@@ -262,14 +374,19 @@ async function postLearningProgress(payload) {
             error.noOfflineQueue = response.status >= 400 && response.status < 500;
             throw error;
         }
-        state.learningProgress = state.learningProgress
-            .filter(row => !(String(row.materialId || '') === String(payload.materialId) && String(row.studentId || '') === currentStudentId()));
-        state.learningProgress.push(data.progress);
-        return data.progress;
+        if (data.progress) replaceLearningProgressSnapshot(data.progress);
+        clearQueuedLearningProgress(payload.materialId);
+        return data.progress || optimistic;
     } catch (err) {
         if (err && err.noOfflineQueue) {
-            state.learningProgress = state.learningProgress.filter(row => row.id !== optimistic.id);
-            learningToast(err.message || 'Progress ditolak server.', 'error');
+            if (previous) replaceLearningProgressSnapshot(previous);
+            else {
+                state.learningProgress = (state.learningProgress || []).filter(row =>
+                    !(String(row.materialId || '') === String(payload.materialId) &&
+                      String(row.studentId || '') === currentStudentId())
+                );
+            }
+            if (!options.silent) learningToast(err.message || 'Progress ditolak server.', 'error');
             return { rejected: true, message: err.message || 'Progress ditolak server.' };
         }
         queueLearningProgress(payload);
@@ -557,8 +674,20 @@ window.openLearningMaterial = async function(id, staffPreview = false) {
     if (!staffPreview && materialLocked(material)) return learningToast('Selesaikan materi prasyarat terlebih dahulu.', 'info');
     const container = document.getElementById('view-container');
     if (!container) return;
-    if (!staffPreview) await postLearningProgress({ materialId: material.id, status: 'viewed', progressPercent: Math.max(10, Number(progressForMaterial(material.id)?.progressPercent || 0)) });
+    const existingProgress = staffPreview ? null : (learningProgressSnapshot(material) || progressForMaterial(material.id));
+    const alreadyCompleted = Boolean(existingProgress && (existingProgress.status === 'completed' || Number(existingProgress.progressPercent || 0) >= 100));
+    if (!staffPreview && !alreadyCompleted) {
+        await postLearningProgress({
+            materialId: material.id,
+            status: 'viewed',
+            progressPercent: Math.max(10, Number(existingProgress?.progressPercent || 0)),
+            activeSeconds: Number(existingProgress?.activeSeconds || 0),
+            viewedBlockIds: Array.isArray(existingProgress?.viewedBlockIds) ? existingProgress.viewedBlockIds : []
+        }, { silent: true });
+    }
     const completed = staffPreview ? false : isCompleted(material.id);
+    const currentProgress = staffPreview ? null : (progressForMaterial(material.id) || existingProgress);
+    if (currentProgress) material.progress = currentProgress;
     const policy = learningPolicy(material);
     container.innerHTML = `
         <div class="max-w-3xl mx-auto pb-12">
@@ -569,7 +698,7 @@ window.openLearningMaterial = async function(id, staffPreview = false) {
                 <p class="text-sm text-slate-500 mt-1">${learningEsc(material.topic || '')}</p>
                 <div class="mt-7 space-y-5">${renderMaterialBlocks(material.blocks || [])}</div>
                 ${!staffPreview ? `<div class="mt-8 pt-6 border-t">
-                    ${!completed ? `<div id="learning-engagement-status" class="mb-3 text-center text-xs font-bold text-slate-500">Aktif membaca 0/${policy.minActiveSeconds} detik${policy.requireAllBlocks ? ' • bagian terlihat 0/' + Math.max(1, materialBlockIds(material).length) : ''}</div>` : ''}
+                    ${!completed ? `<div id="learning-engagement-status" class="mb-3 text-center text-xs font-bold text-slate-500">Aktif membaca ${Math.min(Number(currentProgress?.activeSeconds || 0), policy.minActiveSeconds)}/${policy.minActiveSeconds} detik${policy.requireAllBlocks ? ' • bagian terlihat ' + (Array.isArray(currentProgress?.viewedBlockIds) ? currentProgress.viewedBlockIds.length : 0) + '/' + Math.max(1, materialBlockIds(material).length) : ''}</div>` : ''}
                     <button id="learning-complete-button" type="button" ${completed ? 'disabled aria-disabled="true"' : ''} onclick="completeLearningMaterial(${learningInlineArg(material.id)})" class="w-full py-3 rounded-2xl ${completed ? 'bg-emerald-50 text-emerald-700' : 'bg-emerald-600 text-white'} font-black text-sm">${completed ? 'Materi telah dipelajari' : 'Saya Sudah Mempelajari Materi'}</button>
                     <div id="learning-next-actions" class="mt-3">${completed ? learningNextActions(material) : ''}</div>
                 </div>` : ''}
@@ -584,7 +713,7 @@ window.completeLearningMaterial = async function(id) {
     if (!ready.ready) return learningToast(ready.message || 'Selesaikan syarat baca materi terlebih dahulu.', 'info');
     const progress = await postLearningProgress(learningCompletionPayload(material));
     if (progress?.rejected) return;
-    stopLearningTracker();
+    stopLearningTracker({ checkpoint: false });
     const actionContainer = document.getElementById('learning-next-actions');
     if (actionContainer) actionContainer.innerHTML = learningNextActions(material);
     const button = document.getElementById('learning-complete-button');

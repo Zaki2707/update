@@ -1733,6 +1733,9 @@ async function loadInitialRuntimeSettings() {
 function showLoggedOutShellImmediately() {
     appState.currentUser = null;
     appState.role = null;
+    appState.currentRoute = null;
+    appState.navigationHistory = [];
+    updateGlobalBackBar();
     resetAccountScopedRuntimeState();
 
     try { applyTheme(); } catch(e) {}
@@ -2251,6 +2254,10 @@ function startSession(isRefresh = false) {
         else badge.innerText = 'Pengguna';
     }
 
+    if (!isRefresh) appState.navigationHistory = [];
+    else if (!Array.isArray(appState.navigationHistory)) appState.navigationHistory = [];
+    updateGlobalBackBar();
+
     buildSidebar();
     updateHeaderTokenBadge();
 
@@ -2591,7 +2598,33 @@ function buildSidebar() {
     }
 }
 
-function navigateTo(route) {
+function getNavigationHistory() {
+    if (!Array.isArray(appState.navigationHistory)) appState.navigationHistory = [];
+    return appState.navigationHistory;
+}
+
+function updateGlobalBackBar() {
+    const bar = document.getElementById('global-back-bar');
+    if (!bar) return;
+    const hasHistory = getNavigationHistory().length > 0;
+    bar.classList.toggle('hidden', !hasHistory);
+}
+
+function navigateBack(fallbackRoute = null) {
+    const history = getNavigationHistory();
+    let target = '';
+    while (history.length > 0 && !target) {
+        const candidate = String(history.pop() || '').trim();
+        if (candidate && candidate !== String(appState.currentRoute || '')) target = candidate;
+    }
+    if (!target) target = fallbackRoute || getDefaultRoute();
+    navigateTo(target, { fromBack: true });
+}
+
+function navigateTo(route, options = {}) {
+    if (typeof window.stopLearningTrackerForNavigation === 'function') {
+        try { window.stopLearningTrackerForNavigation(); } catch (e) { console.warn('Learning checkpoint before navigation failed:', e); }
+    }
     if (window.__monitoringPollInterval) {
         clearInterval(window.__monitoringPollInterval);
         window.__monitoringPollInterval = null;
@@ -2646,8 +2679,16 @@ function navigateTo(route) {
         }
     }
 
+    const previousRoute = String(appState.currentRoute || '').trim();
+    if (!options.fromBack && previousRoute && previousRoute !== String(route)) {
+        const history = getNavigationHistory();
+        if (history[history.length - 1] !== previousRoute) history.push(previousRoute);
+        if (history.length > 50) history.splice(0, history.length - 50);
+    }
+
     localStorage.setItem('madrasah_last_route', route);
     appState.currentRoute = route;
+    updateGlobalBackBar();
     const container = document.getElementById('view-container');
     
     // Always close side menu after navigating / selecting item
@@ -3234,6 +3275,8 @@ window.handleLogin = handleLogin;
 window.logout = logout;
 window.toggleSidebar = toggleSidebar;
 window.navigateTo = navigateTo;
+window.navigateBack = navigateBack;
+window.updateGlobalBackBar = updateGlobalBackBar;
 window.fillDemo = fillDemo;
 window.handleGlobalSearch = handleGlobalSearch;
 window.updateSchoolLogoUI = updateSchoolLogoUI;
@@ -3268,6 +3311,8 @@ Object.assign(window, {
   getDefaultRoute,
   buildSidebar,
   navigateTo,
+  navigateBack,
+  updateGlobalBackBar,
   renderMainDashboard
 });
 
