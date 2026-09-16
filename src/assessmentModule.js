@@ -4866,6 +4866,9 @@ window.sendStudentSingleSnapshot = function() {
 window.startStudentConnectingSnapshots = function() {
     if (window._studentSnapshotInterval) clearInterval(window._studentSnapshotInterval);
     console.log("Starting connecting snapshots (3s interval)...");
+    // Capture immediately so the monitoring side has a frame during the first
+    // WebRTC handshake instead of showing an empty livecam for up to 3 seconds.
+    window.sendStudentSingleSnapshot();
     window._studentSnapshotInterval = setInterval(() => {
         window.sendStudentSingleSnapshot();
     }, 3000); // 3-second rapid snapshot interval during WebRTC handshakes
@@ -9706,6 +9709,8 @@ function _executeFocusStudentLivecam(studentId) {
     const id = String(studentId);
     const student = (appState.students || []).find(s => String(s.id) === id);
     if (!student) return;
+    const fallbackSnapshot = (appState.runtimeLivecamFrames || {})[id + '_' + appState.activeMonitoringExamId];
+    const fallbackPhoto = fallbackSnapshot || student.photo || student.facePhoto || student.image || student.avatar || '';
     let modal = document.getElementById('livecam-focus-modal');
     if (!modal) {
         modal = document.createElement('div');
@@ -9724,7 +9729,7 @@ function _executeFocusStudentLivecam(studentId) {
                 <div class="pr-2"><h3 class="text-sm font-bold text-white flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>Spotlight Livecam: ${assessmentEscapeHtml(student.name)}</h3><p class="text-[10px] text-slate-400 mt-0.5">WebRTC P2P langsung dari perangkat siswa — tanpa LiveKit.</p></div>
                 <button onclick="closeStudentLivecamFocus()" title="Tutup Spotlight" class="w-9 h-9 rounded-full bg-rose-500/20 text-rose-300 hover:bg-rose-600 hover:text-white transition flex items-center justify-center cursor-pointer border border-rose-500/30 shrink-0"><i class="fa-solid fa-xmark text-base"></i></button>
             </div>
-            <div class="relative bg-black flex items-center justify-center flex-1 min-h-[250px] max-h-[60vh] overflow-hidden"><video id="focus-livecam-video" autoplay playsinline muted class="w-full h-full max-h-[60vh] object-contain"></video><div id="focus-livecam-loader" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 space-y-3 z-10"><i class="fa-solid fa-spinner fa-spin text-emerald-400 text-3xl"></i><span class="text-xs text-slate-400">Menghubungkan WebRTC P2P...</span></div></div>
+            <div class="relative bg-black flex items-center justify-center flex-1 min-h-[250px] max-h-[60vh] overflow-hidden"><video id="focus-livecam-video" autoplay playsinline muted class="w-full h-full max-h-[60vh] object-contain"></video><div id="focus-livecam-loader" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 space-y-3 z-10">${fallbackPhoto ? `<img src="${assessmentSafeImageSrc(fallbackPhoto)}" alt="Snapshot fallback" class="absolute inset-0 w-full h-full object-cover opacity-70"><div class="absolute inset-0 bg-slate-950/45"></div>` : ''}<div class="relative flex flex-col items-center justify-center space-y-3"><i class="fa-solid fa-spinner fa-spin text-emerald-400 text-3xl"></i><span class="text-xs text-slate-300">Menghubungkan WebRTC P2P...</span><span class="text-[10px] text-slate-500">Menunggu perangkat siswa mengirim kamera</span></div></div></div>
             <div class="p-3 sm:p-4 bg-slate-950/90 border-t border-white/10 flex justify-between items-center text-[10px] text-slate-400 shrink-0 z-10"><span class="flex items-center gap-1.5"><i class="fa-solid fa-link text-emerald-400"></i> Direct P2P Active</span><span id="focus-livecam-stats">Resolusi: -- | P2P WebRTC</span></div>
         </div>`;
     modal.classList.remove('pointer-events-none', 'opacity-0');
@@ -9742,9 +9747,9 @@ function _executeFocusStudentLivecam(studentId) {
         if (window._focusedStudentId !== id) return;
         const loaderEl = document.getElementById('focus-livecam-loader');
         if (!loaderEl || loaderEl.style.display === 'none') return;
-        const snap = (appState.runtimeLivecamFrames || {})[id + '_' + appState.activeMonitoringExamId];
-        if (snap) loaderEl.innerHTML = `<img src="${assessmentSafeImageSrc(snap)}" alt="Snapshot" class="w-full h-full object-cover"><div class="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/90 text-amber-300 border border-amber-500/30 text-[10px] font-bold rounded-full">Snapshot fallback — P2P masih menghubungkan</div>`;
-        else loaderEl.innerHTML = `<i class="fa-solid fa-video-slash text-slate-500 text-3xl mb-2"></i><span class="text-xs text-slate-400">Stream video belum tersedia</span>`;
+        const snap = (appState.runtimeLivecamFrames || {})[id + '_' + appState.activeMonitoringExamId] || fallbackPhoto;
+        if (snap) loaderEl.innerHTML = `<img src="${assessmentSafeImageSrc(snap)}" alt="Snapshot fallback" class="w-full h-full object-cover opacity-70"><div class="absolute inset-0 bg-slate-950/45"></div><div class="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/90 text-amber-300 border border-amber-500/30 text-[10px] font-bold rounded-full">Snapshot fallback — P2P masih menghubungkan</div>`;
+        else loaderEl.innerHTML = `<div class="flex flex-col items-center justify-center text-center space-y-2"><i class="fa-solid fa-video-slash text-slate-500 text-3xl"></i><span class="text-xs text-slate-300">Menunggu perangkat siswa</span><span class="text-[10px] text-slate-500">Snapshot akan tampil saat kamera siswa terhubung</span></div>`;
     }, 4000);
 }
 
