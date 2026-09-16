@@ -5391,10 +5391,15 @@ function sanitizeLearningMaterialMutation(req: any, raw: any, existing: any = {}
   if (!title) throw new Error('Judul materi wajib diisi.');
   const statusRaw = String(raw.status || existing.status || 'draft').toLowerCase();
   const status = statusRaw === 'published' ? 'published' : 'draft';
-  const classId = String(raw.classId ?? raw.class_id ?? existing.classId ?? '').trim().slice(0, 160);
-  const classes = Array.isArray(raw.classes)
-    ? raw.classes.map((value: any) => String(value).trim().slice(0, 160)).filter(Boolean).slice(0, 80)
-    : (classId ? [classId] : []);
+  const requestedClasses = Array.isArray(raw.classes)
+    ? raw.classes
+    : (Array.isArray(existing.classes) ? existing.classes : [raw.classId ?? raw.class_id ?? existing.classId].filter(Boolean));
+  let classes = Array.from(new Set(
+    requestedClasses.map((value: any) => String(value).trim().slice(0, 160)).filter(Boolean)
+  )).slice(0, 80);
+  if (classes.some((value: string) => value.toUpperCase() === 'ALL')) classes = ['ALL'];
+  if (classes.length === 0) classes = ['ALL'];
+  const classId = classes[0];
   const subjectId = String(raw.subjectId ?? raw.subject ?? existing.subjectId ?? '').trim().slice(0, 160);
   const lkpdId = String(raw.lkpdId || '').trim().slice(0, 256);
   const examId = String(raw.examId || '').trim().slice(0, 256);
@@ -16324,7 +16329,9 @@ app.post("/api/learning/materials", requireAuth, requireRole(['teacher', 'guru',
         String(item.id || '') === draftId && isItemForCurrentMadrasah(item, req)
       );
       if (!draft) {
-        const targetClassId = String(material.classId || 'ALL');
+        const targetClasses = classTargetsFromLearningMaterial(material);
+        const normalizedTargetClasses = targetClasses.length ? targetClasses : ['ALL'];
+        const targetClassId = String(normalizedTargetClasses[0] || 'ALL');
         const classRecord = (classes || []).find((item: any) =>
           String(item.id || '') === targetClassId && isItemForCurrentMadrasah(item, req)
         );
@@ -16334,7 +16341,8 @@ app.post("/api/learning/materials", requireAuth, requireRole(['teacher', 'guru',
           subjectId: material.subjectId || material.subjectName || '',
           subjectName: material.subjectName || material.subjectId || '',
           classId: targetClassId || 'ALL',
-          className: targetClassId === 'ALL' ? 'Semua Kelas' : (classRecord?.name || targetClassId),
+          classes: normalizedTargetClasses,
+          className: targetClassId === 'ALL' ? 'Semua Kelas' : (normalizedTargetClasses.length > 1 ? 'Beberapa Kelas' : (classRecord?.name || targetClassId)),
           answeringMode: 'below',
           description: ('Draft otomatis dari materi: ' + material.title).slice(0, 1000),
           date: '',
@@ -16358,7 +16366,9 @@ app.post("/api/learning/materials", requireAuth, requireRole(['teacher', 'guru',
         String(item.id || '') === draftId && isItemForCurrentMadrasah(item, req)
       );
       if (!draft) {
-        const targetClassId = String(material.classId || 'ALL');
+        const targetClasses = classTargetsFromLearningMaterial(material);
+        const normalizedTargetClasses = targetClasses.length ? targetClasses : ['ALL'];
+        const targetClassId = String(normalizedTargetClasses[0] || 'ALL');
         draft = tagNewRecord({
           id: draftId,
           title: ('Asesmen - ' + material.title).slice(0, 240),
@@ -16378,7 +16388,7 @@ app.post("/api/learning/materials", requireAuth, requireRole(['teacher', 'guru',
           weightPg: 50,
           weightEssay: 50,
           autoBlock: 0,
-          classes: targetClassId ? [targetClassId] : ['ALL'],
+          classes: normalizedTargetClasses,
           shuffleQ: false,
           shuffleOpt: false,
           showScore: false,

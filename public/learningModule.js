@@ -529,6 +529,7 @@ window.handleLearningAssetSelection = async function(input) {
     }
     if (input) input.value = '';
     renderLearningEditorAssets();
+    window.renderLearningSelectedClasses();
 };
 window.removeLearningEditorAsset = function(index) {
     const assets = learningEditorAssets();
@@ -619,6 +620,53 @@ window.renderLearningTeacher = async function(container) {
     }
 };
 
+function normalizeLearningClassTargets(values) {
+    const source = Array.isArray(values) ? values : [];
+    const unique = Array.from(new Set(source.map(value => String(value || '').trim()).filter(Boolean)));
+    if (unique.some(value => value.toUpperCase() === 'ALL')) return ['ALL'];
+    return unique;
+}
+function learningMaterialClassTargets(material) {
+    const fromClasses = Array.isArray(material?.classes) ? material.classes : [];
+    const fallback = material?.classId ? [material.classId] : [];
+    const targets = normalizeLearningClassTargets(fromClasses.length ? fromClasses : fallback);
+    return targets.length ? targets : ['ALL'];
+}
+window.renderLearningSelectedClasses = function() {
+    const container = document.getElementById('learning-selected-classes');
+    if (!container) return;
+    const state = learningState();
+    const selected = normalizeLearningClassTargets(window.__learningSelectedClasses || []);
+    window.__learningSelectedClasses = selected;
+    if (!selected.length) {
+        container.innerHTML = '<span class="text-[11px] text-slate-400 italic">Belum ada kelas dipilih.</span>';
+        return;
+    }
+    const classMap = new Map((state.classes || []).map(cls => [String(cls.id), cls]));
+    container.innerHTML = selected.map(id => {
+        const label = id === 'ALL' ? 'Semua Kelas' : (classMap.get(String(id))?.name || classMap.get(String(id))?.code || id);
+        return `<span class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-bold">${learningEsc(label)}<button type="button" onclick="removeLearningClass(${learningInlineArg(id)})" class="w-4 h-4 inline-flex items-center justify-center rounded-full hover:bg-emerald-100" aria-label="Hapus kelas">&times;</button></span>`;
+    }).join('');
+};
+window.addLearningClass = function(value = null) {
+    const picker = document.getElementById('learning-class');
+    const selectedValue = String(value || picker?.value || '').trim();
+    if (!selectedValue) return;
+    let selected = normalizeLearningClassTargets(window.__learningSelectedClasses || []);
+    if (selectedValue === 'ALL') selected = ['ALL'];
+    else {
+        selected = selected.filter(id => id !== 'ALL');
+        if (!selected.includes(selectedValue)) selected.push(selectedValue);
+    }
+    window.__learningSelectedClasses = selected;
+    if (picker) picker.value = '';
+    window.renderLearningSelectedClasses();
+};
+window.removeLearningClass = function(value) {
+    const target = String(value || '');
+    window.__learningSelectedClasses = normalizeLearningClassTargets(window.__learningSelectedClasses || []).filter(id => id !== target);
+    window.renderLearningSelectedClasses();
+};
 window.showLearningEditorById = function(id) {
     const material = (window.__learningMaterials || []).find(item => String(item.id) === String(id));
     if (material) window.showLearningEditor(material);
@@ -629,8 +677,9 @@ window.showLearningEditor = async function(existing = null) {
     const material = existing || {};
     const subjects = Array.isArray(state.subjects) ? state.subjects : [];
     const classes = Array.isArray(state.classes) ? state.classes : [];
-    const classOpts = ['<option value="ALL">Semua Kelas</option>', ...classes.map(cls =>
-        `<option value="${learningAttr(cls.id)}" ${String(material.classId || '') === String(cls.id) ? 'selected' : ''}>${learningEsc(cls.name || cls.code || cls.id)}</option>`
+    window.__learningSelectedClasses = learningMaterialClassTargets(material);
+    const classOpts = ['<option value="">Pilih kelas...</option>', '<option value="ALL">Semua Kelas</option>', ...classes.map(cls =>
+        `<option value="${learningAttr(cls.id)}">${learningEsc(cls.name || cls.code || cls.id)}</option>`
     )].join('');
     const subjectOpts = ['<option value="">Pilih Mapel</option>', ...subjects.map(subject =>
         `<option value="${learningAttr(subject.id)}" ${String(material.subjectId || '') === String(subject.id) ? 'selected' : ''}>${learningEsc(subject.name || subject.id)}</option>`
@@ -674,7 +723,15 @@ window.showLearningEditor = async function(existing = null) {
                     <label class="text-xs font-bold">Judul<input id="learning-title" value="${learningAttr(material.title || '')}" class="mt-1 w-full p-3 border rounded-xl font-normal"></label>
                     <label class="text-xs font-bold">Topik<input id="learning-topic" value="${learningAttr(material.topic || '')}" class="mt-1 w-full p-3 border rounded-xl font-normal"></label>
                     <label class="text-xs font-bold">Mapel<select id="learning-subject" class="mt-1 w-full p-3 border rounded-xl font-normal bg-white">${subjectOpts}</select></label>
-                    <label class="text-xs font-bold">Kelas<select id="learning-class" class="mt-1 w-full p-3 border rounded-xl font-normal bg-white">${classOpts}</select></label>
+                    <div class="text-xs font-bold">
+                        <div>Kelas Target</div>
+                        <div class="mt-1 flex gap-2">
+                            <select id="learning-class" class="min-w-0 flex-1 p-3 border rounded-xl font-normal bg-white">${classOpts}</select>
+                            <button type="button" onclick="addLearningClass()" class="shrink-0 px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold"><i class="fa-solid fa-plus mr-1"></i>Tambah Kelas</button>
+                        </div>
+                        <div id="learning-selected-classes" class="mt-2 flex flex-wrap gap-2"></div>
+                        <div class="mt-1 text-[10px] font-normal text-slate-400">Pilih satu atau beberapa kelas. Memilih Semua Kelas akan menggantikan pilihan kelas individual.</div>
+                    </div>
                 </div>
                 <label class="text-xs font-bold block">Isi Materi<textarea id="learning-content" rows="10" class="mt-1 w-full p-3 border rounded-xl font-normal" placeholder="Tulis materi pembelajaran...">${learningEsc(textBlock)}</textarea></label>
                 <div class="p-4 rounded-2xl bg-blue-50/60 border border-blue-100 space-y-3">
@@ -740,7 +797,9 @@ window.saveLearningMaterial = async function(status) {
 
         const subjectId = document.getElementById('learning-subject')?.value || '';
         const subjectName = (learningState().subjects || []).find(subject => String(subject.id) === String(subjectId))?.name || '';
-        const classId = document.getElementById('learning-class')?.value || 'ALL';
+        const selectedClasses = normalizeLearningClassTargets(window.__learningSelectedClasses || []);
+        if (!selectedClasses.length) throw new Error('Pilih minimal satu kelas target atau Semua Kelas.');
+        const classId = selectedClasses[0] || 'ALL';
         const lkpdSelection = document.getElementById('learning-lkpd')?.value || '';
         const examSelection = document.getElementById('learning-exam')?.value || '';
         const payload = {
@@ -750,7 +809,7 @@ window.saveLearningMaterial = async function(status) {
             subjectId,
             subjectName,
             classId,
-            classes: classId ? [classId] : [],
+            classes: selectedClasses,
             blocks: safeBlocksFromForm(),
             lkpdId: lkpdSelection === '__CREATE_DRAFT__' ? '' : lkpdSelection,
             examId: examSelection === '__CREATE_DRAFT__' ? '' : examSelection,
@@ -774,6 +833,7 @@ window.saveLearningMaterial = async function(status) {
 
         document.getElementById('learning-editor-modal')?.remove();
         window.__learningEditorAssets = [];
+        window.__learningSelectedClasses = [];
         window.__learningLinks = null;
         const created = [];
         if (data.createdDrafts?.lkpdId) created.push('draft LKPD');
