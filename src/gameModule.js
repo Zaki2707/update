@@ -3907,12 +3907,12 @@ export function renderGameStudentModule(container) {
 window.renderGameStudentModule = renderGameStudentModule;
 
 const GAME_ARENA_AVATARS = [
-    { id: 'bintang', name: 'Bintang', icon: 'fa-star', shell: 'from-amber-300 to-orange-500', accent: 'text-amber-950' },
-    { id: 'roket', name: 'Roket', icon: 'fa-rocket', shell: 'from-sky-300 to-indigo-600', accent: 'text-white' },
-    { id: 'buku', name: 'Buku', icon: 'fa-book-open', shell: 'from-emerald-300 to-teal-600', accent: 'text-white' },
-    { id: 'komet', name: 'Komet', icon: 'fa-meteor', shell: 'from-fuchsia-300 to-purple-700', accent: 'text-white' },
-    { id: 'bulan', name: 'Bulan', icon: 'fa-moon', shell: 'from-slate-300 to-slate-700', accent: 'text-white' },
-    { id: 'petir', name: 'Petir', icon: 'fa-bolt', shell: 'from-yellow-200 to-amber-500', accent: 'text-slate-900' }
+    { id: 'bintang', name: 'Bintang', icon: 'fa-star', shell: 'from-amber-300 to-orange-500', accent: 'text-amber-950', skin: '#f2c7a5', hair: '#3b2417', shirt: '#f59e0b' },
+    { id: 'roket', name: 'Roket', icon: 'fa-rocket', shell: 'from-sky-300 to-indigo-600', accent: 'text-white', skin: '#d9a57f', hair: '#172554', shirt: '#2563eb' },
+    { id: 'buku', name: 'Buku', icon: 'fa-book-open', shell: 'from-emerald-300 to-teal-600', accent: 'text-white', skin: '#efc3a1', hair: '#422006', shirt: '#059669' },
+    { id: 'komet', name: 'Komet', icon: 'fa-meteor', shell: 'from-fuchsia-300 to-purple-700', accent: 'text-white', skin: '#c98f6a', hair: '#2e1065', shirt: '#9333ea' },
+    { id: 'bulan', name: 'Bulan', icon: 'fa-moon', shell: 'from-slate-300 to-slate-700', accent: 'text-white', skin: '#e7b98f', hair: '#111827', shirt: '#475569' },
+    { id: 'petir', name: 'Petir', icon: 'fa-bolt', shell: 'from-yellow-200 to-amber-500', accent: 'text-slate-900', skin: '#b97852', hair: '#451a03', shirt: '#eab308' }
 ];
 
 const GAME_ARENA_MODE_META = [
@@ -3963,6 +3963,262 @@ const GAME_ARENA_MODE_META = [
     }
 ];
 
+const GAME_ARENA_FX_LEVELS = ['full', 'light', 'eco'];
+const GAME_ARENA_FX_LABELS = { full: '✨ Penuh', light: '⚡ Ringan', eco: '🔋 Hemat' };
+let adminArenaFxSnapshots = Object.create(null);
+
+function detectGameArenaFxQuality() {
+    try {
+        if (window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return 'eco';
+        const memory = Number(navigator.deviceMemory || 0);
+        const cores = Number(navigator.hardwareConcurrency || 0);
+        if ((memory && memory <= 3) || (cores && cores <= 4)) return 'light';
+    } catch (_) {}
+    return 'full';
+}
+
+function getGameArenaFxQuality() {
+    try {
+        const saved = String(localStorage.getItem('madrasah_arena_fx_quality') || '').toLowerCase();
+        if (GAME_ARENA_FX_LEVELS.includes(saved)) return saved;
+    } catch (_) {}
+    return detectGameArenaFxQuality();
+}
+
+function setGameArenaFxQuality(level) {
+    const next = GAME_ARENA_FX_LEVELS.includes(level) ? level : 'light';
+    try { localStorage.setItem('madrasah_arena_fx_quality', next); } catch (_) {}
+    document.querySelectorAll('[data-arena-fx]').forEach(el => el.setAttribute('data-arena-fx', next));
+    document.querySelectorAll('[data-arena-fx-label]').forEach(el => { el.textContent = GAME_ARENA_FX_LABELS[next]; });
+    return next;
+}
+
+window.cycleGameArenaFxQuality = function() {
+    const current = getGameArenaFxQuality();
+    const index = GAME_ARENA_FX_LEVELS.indexOf(current);
+    const next = GAME_ARENA_FX_LEVELS[(index + 1) % GAME_ARENA_FX_LEVELS.length];
+    setGameArenaFxQuality(next);
+    showToast(`Efek Arena: ${GAME_ARENA_FX_LABELS[next]}`, 'info');
+};
+
+function renderGameArenaFxControl() {
+    const level = getGameArenaFxQuality();
+    return `<button type="button" onclick="cycleGameArenaFxQuality()" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-black text-slate-200 cursor-pointer whitespace-nowrap" title="Ganti kualitas animasi Arena"><span data-arena-fx-label>${GAME_ARENA_FX_LABELS[level]}</span></button>`;
+}
+
+function ensureGameArenaFxStyles() {
+    if (document.getElementById('game-arena-fx-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'game-arena-fx-styles';
+    style.textContent = `
+        @keyframes arenaAvatarIdle { 0%,100%{transform:translateY(0) rotate(-1deg)} 50%{transform:translateY(-3px) rotate(1deg)} }
+        @keyframes arenaBeamFlow { 0%{filter:brightness(.9);opacity:.72} 50%{filter:brightness(1.7);opacity:1} 100%{filter:brightness(.9);opacity:.72} }
+        @keyframes arenaImpactPulse { 0%,100%{transform:translate(-50%,-50%) scale(.78);opacity:.72} 50%{transform:translate(-50%,-50%) scale(1.18);opacity:1} }
+        @keyframes arenaRopeWobble { 0%,100%{transform:rotate(0deg)} 35%{transform:rotate(.6deg)} 70%{transform:rotate(-.6deg)} }
+        @keyframes arenaFlagWave { 0%,100%{transform:translateX(-50%) rotate(-2deg)} 50%{transform:translateX(-50%) rotate(3deg)} }
+        @keyframes arenaShieldGlow { 0%,100%{box-shadow:0 0 0 rgba(103,232,249,0)} 50%{box-shadow:0 0 22px rgba(103,232,249,.65)} }
+        @keyframes arenaRaceSmoke { 0%{transform:translate(0,0) scale(.4);opacity:.65} 100%{transform:translate(-18px,-7px) scale(1.35);opacity:0} }
+        @keyframes arenaBaseCritical { 0%,100%{filter:brightness(1)} 50%{filter:brightness(.72) saturate(1.4)} }
+        @keyframes arenaSpark { 0%{transform:scale(.3) rotate(0);opacity:1} 100%{transform:scale(1.7) rotate(95deg);opacity:0} }
+        @keyframes arenaBoostFlame { 0%,100%{transform:scaleX(.75);opacity:.55} 50%{transform:scaleX(1.25);opacity:1} }
+
+        [data-arena-fx="full"] .arena-character-core { animation:arenaAvatarIdle 2.4s ease-in-out infinite; transform-origin:center bottom; }
+        [data-arena-fx="light"] .arena-character-core { animation:arenaAvatarIdle 3.6s ease-in-out infinite; transform-origin:center bottom; }
+        [data-arena-fx="full"] .arena-laser-beam,
+        [data-arena-fx="light"] .arena-laser-beam { animation:arenaBeamFlow .85s ease-in-out infinite; }
+        [data-arena-fx="full"] .arena-laser-impact { animation:arenaImpactPulse .65s ease-in-out infinite; }
+        [data-arena-fx="light"] .arena-laser-impact { animation:arenaImpactPulse 1.1s ease-in-out infinite; }
+        [data-arena-fx="full"] .arena-tug-rope { animation:arenaRopeWobble 1.5s ease-in-out infinite; transform-origin:center; }
+        [data-arena-fx="full"] .arena-tug-flag { animation:arenaFlagWave 1.1s ease-in-out infinite; transform-origin:center bottom; }
+        [data-arena-fx="full"] .arena-shield-active,
+        [data-arena-fx="light"] .arena-shield-active { animation:arenaShieldGlow 1.6s ease-in-out infinite; }
+        [data-arena-fx="full"] .arena-racer-boost { animation:arenaBoostFlame .35s ease-in-out infinite; transform-origin:right center; }
+        [data-arena-fx="full"] .arena-base-critical { animation:arenaBaseCritical 1.1s ease-in-out infinite; }
+        [data-arena-fx="eco"] * { animation-duration:0s !important; animation-iteration-count:1 !important; }
+        @media (prefers-reduced-motion: reduce) {
+            [data-arena-fx] * { animation-duration:0s !important; animation-iteration-count:1 !important; scroll-behavior:auto !important; }
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+function arenaFxScopeRoot(scope = document) {
+    if (!scope) return document;
+    if (scope.querySelector) return scope;
+    return document;
+}
+
+function arenaFxStage(scope = document) {
+    const root = arenaFxScopeRoot(scope);
+    return root.querySelector?.('[data-arena-stage]') || null;
+}
+
+function arenaFxBurst(target, kind = 'spark', count = 8) {
+    if (!target) return;
+    const quality = getGameArenaFxQuality();
+    if (quality === 'eco') return;
+    const actualCount = quality === 'full' ? count : Math.min(4, count);
+    const host = target.closest?.('[data-arena-stage]') || target.parentElement;
+    if (!host) return;
+    const hostRect = host.getBoundingClientRect();
+    const rect = target.getBoundingClientRect();
+    for (let i = 0; i < actualCount; i++) {
+        const particle = document.createElement('span');
+        const hueClass = kind === 'repair' ? '#86efac' : kind === 'shield' ? '#67e8f9' : kind === 'boost' ? '#fde047' : '#f0abfc';
+        particle.style.cssText = `position:absolute;z-index:45;width:${quality === 'full' ? 7 : 5}px;height:${quality === 'full' ? 7 : 5}px;border-radius:9999px;background:${hueClass};pointer-events:none;left:${rect.left-hostRect.left+rect.width/2}px;top:${rect.top-hostRect.top+rect.height/2}px;box-shadow:0 0 12px ${hueClass};`;
+        host.appendChild(particle);
+        const angle = (Math.PI * 2 * i / actualCount) + (i % 2 ? .22 : 0);
+        const distance = quality === 'full' ? 34 + (i % 3) * 10 : 22;
+        particle.animate([
+            { transform:'translate(-50%,-50%) scale(1)', opacity:1 },
+            { transform:`translate(calc(-50% + ${Math.cos(angle)*distance}px), calc(-50% + ${Math.sin(angle)*distance}px)) scale(.2)`, opacity:0 }
+        ], { duration: quality === 'full' ? 620 : 420, easing:'cubic-bezier(.16,.84,.44,1)' }).onfinish = () => particle.remove();
+    }
+}
+
+function arenaFxPulseElement(element, variant = 'correct') {
+    if (!element || getGameArenaFxQuality() === 'eco') return;
+    const frames = variant === 'hit'
+        ? [{ transform:'translateX(0)', filter:'brightness(1)' }, { transform:'translateX(-4px)', filter:'brightness(1.7)' }, { transform:'translateX(4px)', filter:'brightness(1.15)' }, { transform:'translateX(0)', filter:'brightness(1)' }]
+        : [{ transform:'scale(1)', filter:'brightness(1)' }, { transform:'scale(1.045)', filter:'brightness(1.55)' }, { transform:'scale(1)', filter:'brightness(1)' }];
+    element.animate(frames, { duration: variant === 'hit' ? 360 : 430, easing:'ease-out' });
+}
+
+function arenaFxTravel(fromEl, toEl, kind = 'energy', scope = document) {
+    if (!fromEl || !toEl || getGameArenaFxQuality() === 'eco') return;
+    const stage = arenaFxStage(scope) || fromEl.closest?.('[data-arena-stage]');
+    if (!stage) return;
+    const stageRect = stage.getBoundingClientRect();
+    const a = fromEl.getBoundingClientRect();
+    const b = toEl.getBoundingClientRect();
+    const projectile = document.createElement('span');
+    const glyph = kind === 'base' ? '✦' : '●';
+    projectile.textContent = glyph;
+    projectile.style.cssText = `position:absolute;z-index:60;pointer-events:none;left:${a.left-stageRect.left+a.width/2}px;top:${a.top-stageRect.top+a.height/2}px;color:${kind === 'base' ? '#fde047' : '#c084fc'};font-size:${kind === 'base' ? '24px' : '18px'};text-shadow:0 0 14px currentColor;`;
+    stage.appendChild(projectile);
+    const dx = (b.left + b.width/2) - (a.left + a.width/2);
+    const dy = (b.top + b.height/2) - (a.top + a.height/2);
+    projectile.animate([
+        { transform:'translate(-50%,-50%) scale(.65)', opacity:.8 },
+        { transform:`translate(calc(-50% + ${dx*.52}px), calc(-50% + ${dy*.52-14}px)) scale(1.25)`, opacity:1, offset:.55 },
+        { transform:`translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(.7)`, opacity:.25 }
+    ], { duration:getGameArenaFxQuality()==='full'?560:400, easing:'cubic-bezier(.24,.8,.38,1)' }).onfinish = () => {
+        projectile.remove();
+        arenaFxPulseElement(toEl, 'hit');
+        arenaFxBurst(toEl, kind === 'base' ? 'boost' : 'spark', 9);
+    };
+}
+
+function arenaFxVictory(scope = document) {
+    if (getGameArenaFxQuality() === 'eco') return;
+    const stage = arenaFxStage(scope);
+    if (!stage) return;
+    const count = getGameArenaFxQuality() === 'full' ? 18 : 8;
+    const fakeTarget = document.createElement('span');
+    fakeTarget.style.cssText = 'position:absolute;left:50%;top:45%;width:1px;height:1px;';
+    stage.appendChild(fakeTarget);
+    arenaFxBurst(fakeTarget, 'boost', count);
+    setTimeout(() => fakeTarget.remove(), 900);
+}
+
+function playGameArenaAnswerFx(previousState, nextState, isCorrect, scope = document) {
+    if (!isCorrect || !nextState) return;
+    const root = arenaFxScopeRoot(scope);
+    const mode = nextState.mode;
+    const meId = nextState?.me?.id;
+    if (mode === 'laser_duel') {
+        const impact = root.querySelector?.('.arena-laser-impact');
+        arenaFxPulseElement(impact);
+        arenaFxBurst(impact, 'spark', 10);
+    } else if (mode === 'tug_war') {
+        const flag = root.querySelector?.('.arena-tug-flag');
+        arenaFxPulseElement(flag);
+        const stage = arenaFxStage(root);
+        if (stage && getGameArenaFxQuality() === 'full') {
+            stage.animate([{transform:'translateX(0)'},{transform:'translateX(-2px)'},{transform:'translateX(2px)'},{transform:'translateX(0)'}],{duration:360});
+        }
+    } else if (mode === 'battle_royale') {
+        const card = root.querySelector?.(`[data-arena-player-id="${CSS.escape(String(meId || ''))}"]`);
+        arenaFxPulseElement(card);
+        arenaFxBurst(card, 'shield', 8);
+    } else if (mode === 'quiz_race') {
+        const car = root.querySelector?.(`[data-arena-racer-id="${CSS.escape(String(meId || ''))}"] .arena-race-car`);
+        arenaFxPulseElement(car);
+        arenaFxBurst(car, 'boost', 7);
+    } else if (mode === 'base_battle') {
+        const side = nextState?.me?.side;
+        const base = root.querySelector?.(`[data-arena-base-side="${side}"]`);
+        arenaFxPulseElement(base);
+        arenaFxBurst(base, 'repair', 7);
+    }
+}
+
+function playGameArenaActionFx(previousState, nextState, action, targetId = '', scope = document) {
+    if (!nextState) return;
+    const root = arenaFxScopeRoot(scope);
+    if (action === 'energy_pulse') {
+        const sourceId = nextState?.me?.id;
+        const from = root.querySelector?.(`[data-arena-player-id="${CSS.escape(String(sourceId || ''))}"]`);
+        const to = root.querySelector?.(`[data-arena-player-id="${CSS.escape(String(targetId || ''))}"]`);
+        arenaFxTravel(from, to, 'energy', root);
+        return;
+    }
+    if (nextState.mode === 'base_battle') {
+        const ownSide = nextState?.me?.side;
+        const enemySide = ownSide === 'A' ? 'B' : 'A';
+        const own = root.querySelector?.(`[data-arena-base-side="${ownSide}"]`);
+        const enemy = root.querySelector?.(`[data-arena-base-side="${enemySide}"]`);
+        if (action === 'base_attack') arenaFxTravel(own, enemy, 'base', root);
+        if (action === 'base_shield') { arenaFxPulseElement(own); arenaFxBurst(own, 'shield', 10); }
+        if (action === 'base_repair') { arenaFxPulseElement(own); arenaFxBurst(own, 'repair', 10); }
+    }
+}
+
+function playGameArenaStateDeltaFx(previousState, nextState, scope = document) {
+    if (!previousState || !nextState || previousState.mode !== nextState.mode) return;
+    const root = arenaFxScopeRoot(scope);
+    if (previousState.status !== 'finished' && nextState.status === 'finished') arenaFxVictory(root);
+
+    if (nextState.mode === 'laser_duel' && Number(previousState.position) !== Number(nextState.position)) {
+        const impact = root.querySelector?.('.arena-laser-impact');
+        arenaFxPulseElement(impact);
+        arenaFxBurst(impact, 'spark', 7);
+    } else if (nextState.mode === 'tug_war' && Number(previousState.position) !== Number(nextState.position)) {
+        arenaFxPulseElement(root.querySelector?.('.arena-tug-flag'));
+    } else if (nextState.mode === 'battle_royale') {
+        for (const player of nextState.players || []) {
+            const prev = (previousState.players || []).find(p => String(p.id) === String(player.id));
+            if (prev && Number(player.hp) < Number(prev.hp)) {
+                const card = root.querySelector?.(`[data-arena-player-id="${CSS.escape(String(player.id))}"]`);
+                arenaFxPulseElement(card, 'hit');
+                arenaFxBurst(card, 'shield', 7);
+            }
+        }
+    } else if (nextState.mode === 'quiz_race') {
+        for (const player of nextState.players || []) {
+            const prev = (previousState.players || []).find(p => String(p.id) === String(player.id));
+            if (prev && Number(player.raceProgress) > Number(prev.raceProgress)) {
+                const car = root.querySelector?.(`[data-arena-racer-id="${CSS.escape(String(player.id))}"] .arena-race-car`);
+                arenaFxPulseElement(car);
+            }
+        }
+    } else if (nextState.mode === 'base_battle') {
+        for (const side of ['A','B']) {
+            const prevBase = previousState.base?.[side] || {};
+            const nextBase = nextState.base?.[side] || {};
+            const base = root.querySelector?.(`[data-arena-base-side="${side}"]`);
+            if (Number(nextBase.hp) < Number(prevBase.hp) || Number(nextBase.shield) < Number(prevBase.shield)) {
+                arenaFxPulseElement(base, 'hit'); arenaFxBurst(base, 'boost', 8);
+            } else if (Number(nextBase.hp) > Number(prevBase.hp)) {
+                arenaFxPulseElement(base); arenaFxBurst(base, 'repair', 7);
+            } else if (Number(nextBase.shield) > Number(prevBase.shield)) {
+                arenaFxPulseElement(base); arenaFxBurst(base, 'shield', 7);
+            }
+        }
+    }
+}
+
+ensureGameArenaFxStyles();
 
 let adminArenaMonitoringTimer = null;
 let arenaAdminConfigLoading = false;
@@ -4393,9 +4649,22 @@ function getGameArenaAvatarPreset(presetId) {
 function renderGameArenaAvatar(presetId, sizeClass = 'w-16 h-16', extraClass = '') {
     const avatar = getGameArenaAvatarPreset(presetId);
     return `
-        <div class="${sizeClass} ${extraClass} rounded-[28%] bg-gradient-to-br ${avatar.shell} shadow-lg border-2 border-white/70 flex items-center justify-center relative overflow-hidden">
+        <div class="${sizeClass} ${extraClass} arena-character-wrap rounded-[28%] bg-gradient-to-br ${avatar.shell} shadow-lg border-2 border-white/70 flex items-end justify-center relative overflow-hidden">
             <div class="absolute inset-x-2 top-2 h-2 rounded-full bg-white/30"></div>
-            <i class="fa-solid ${avatar.icon} ${avatar.accent} text-[42%] drop-shadow"></i>
+            <div class="arena-character-core relative w-[72%] h-[86%] flex flex-col items-center justify-end">
+                <div class="relative w-[52%] aspect-square rounded-[46%] border border-white/40 shadow-sm z-10" style="background:${avatar.skin}">
+                    <div class="absolute -left-[5%] -right-[5%] -top-[8%] h-[42%] rounded-t-[55%] rounded-b-[30%]" style="background:${avatar.hair}"></div>
+                    <span class="absolute left-[24%] top-[48%] w-[9%] aspect-square rounded-full bg-slate-900"></span>
+                    <span class="absolute right-[24%] top-[48%] w-[9%] aspect-square rounded-full bg-slate-900"></span>
+                    <span class="absolute left-1/2 -translate-x-1/2 bottom-[18%] w-[22%] h-[7%] rounded-full bg-rose-700/60"></span>
+                </div>
+                <div class="relative -mt-[5%] w-[70%] h-[44%] rounded-t-[45%] rounded-b-[24%] border border-white/30 shadow-sm flex items-center justify-center" style="background:${avatar.shirt}">
+                    <i class="fa-solid ${avatar.icon} ${avatar.accent} text-[34%] drop-shadow"></i>
+                    <span class="absolute -left-[12%] top-[25%] w-[18%] h-[45%] rounded-full" style="background:${avatar.skin};transform:rotate(18deg)"></span>
+                    <span class="absolute -right-[12%] top-[25%] w-[18%] h-[45%] rounded-full" style="background:${avatar.skin};transform:rotate(-18deg)"></span>
+                </div>
+            </div>
+            <div class="absolute bottom-[2%] w-[55%] h-[8%] rounded-full bg-slate-950/25 blur-[2px]"></div>
         </div>
     `;
 }
