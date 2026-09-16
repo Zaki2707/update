@@ -652,6 +652,15 @@ window.showLearningEditor = async function(existing = null) {
     const textBlock = (material.blocks || []).find(block => block.type === 'text')?.content || material.content || '';
     const video = (material.blocks || []).find(block => block.type === 'video')?.url || '';
     const resource = (material.blocks || []).find(block => block.type === 'link')?.url || '';
+    window.__learningEditorAssets = (material.blocks || [])
+        .filter(block => ['image', 'pdf'].includes(String(block.type || '').toLowerCase()))
+        .map(block => ({
+            type: String(block.type || '').toLowerCase(),
+            name: String(block.name || (block.type === 'pdf' ? 'Materi PDF' : 'Gambar materi')),
+            url: String(block.url || ''),
+            pending: false,
+            preview: String(block.type || '').toLowerCase() === 'image' ? String(block.url || '') : ''
+        }));
     const policy = learningPolicy(material);
     document.body.insertAdjacentHTML('beforeend', `
         <div id="learning-editor-modal" class="fixed inset-0 z-[120] bg-slate-950/70 backdrop-blur-sm p-4 overflow-y-auto">
@@ -668,6 +677,17 @@ window.showLearningEditor = async function(existing = null) {
                     <label class="text-xs font-bold">Kelas<select id="learning-class" class="mt-1 w-full p-3 border rounded-xl font-normal bg-white">${classOpts}</select></label>
                 </div>
                 <label class="text-xs font-bold block">Isi Materi<textarea id="learning-content" rows="10" class="mt-1 w-full p-3 border rounded-xl font-normal" placeholder="Tulis materi pembelajaran...">${learningEsc(textBlock)}</textarea></label>
+                <div class="p-4 rounded-2xl bg-blue-50/60 border border-blue-100 space-y-3">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <div class="font-bold text-sm text-slate-800">Sisipkan Gambar / PDF</div>
+                            <div class="text-[11px] text-slate-500 mt-1">Pilih langsung dari HP/PC. Gambar maks. 10 MB, PDF maks. 15 MB. Bisa lebih dari satu dan urutannya dapat diubah.</div>
+                        </div>
+                        <button type="button" onclick="document.getElementById('learning-asset-input')?.click()" class="px-3.5 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-bold"><i class="fa-solid fa-paperclip mr-1"></i>Tambah File</button>
+                        <input id="learning-asset-input" type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" class="hidden" onchange="handleLearningAssetSelection(this)">
+                    </div>
+                    <div id="learning-assets-list" class="space-y-2"></div>
+                </div>
                 <div class="grid md:grid-cols-2 gap-3">
                     <label class="text-xs font-bold">Video/tautan video<input id="learning-video" value="${learningAttr(video)}" class="mt-1 w-full p-3 border rounded-xl font-normal" placeholder="https://..."></label>
                     <label class="text-xs font-bold">Sumber/PDF/link<input id="learning-resource" value="${learningAttr(resource)}" class="mt-1 w-full p-3 border rounded-xl font-normal" placeholder="https://..."></label>
@@ -693,6 +713,7 @@ window.showLearningEditor = async function(existing = null) {
                 </div>
             </div>
         </div>`);
+    renderLearningEditorAssets();
 };
 window.saveLearningMaterial = async function(status) {
     const idEl = document.getElementById('learning-id');
