@@ -1015,7 +1015,8 @@ await test('Game Arena: teacher host controls and visual arena monitoring are wi
   assert.match(serverSource, /\/api\/game-arena\/admin\/config/);
   assert.match(serverSource, /\/api\/game-arena\/admin\/rooms/);
   assert.match(serverSource, /\/api\/game-arena\/admin\/room-action/);
-  assert.match(serverSource, /requireRole\(\['teacher', 'guru', 'admin', 'bos', 'superadmin'\]\)/);
+  assert.match(serverSource, /app\.post\("\/api\/game-arena\/admin\/rooms", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
+  assert.match(serverSource, /app\.post\("\/api\/game-arena\/admin\/room-action", requireAuth, requireRole\(\['admin', 'bos', 'superadmin'\]\)/);
   assert.match(serverSource, /Mode Arena ini tidak diaktifkan untuk kelasmu/);
   assert.match(serverSource, /Guru belum membuat Hosted Room untuk kelasmu/);
   assert.match(serverSource, /sourceGameIds/);
