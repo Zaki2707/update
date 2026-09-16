@@ -372,6 +372,37 @@ export function renderGameAdminModule(container) {
     const attempts = Array.isArray(appState.gameAttempts) ? appState.gameAttempts : [];
     const totalAttempts = attempts.length;
     const isGameModuleEnabled = appState.settings?.gameModuleEnabled !== false;
+    ensureGameArenaAdminConfigLoaded();
+
+    if (activeSubTab === 'arena-monitoring') {
+        if (gameMonitoringPollTimer) {
+            clearInterval(gameMonitoringPollTimer);
+            gameMonitoringPollTimer = null;
+        }
+        container.innerHTML = `
+            <div class="space-y-6 pb-12 animate-fade-in">
+                <div class="flex items-center gap-2 border-b border-slate-200 pb-3 overflow-x-auto">
+                    <button type="button" onclick="window.__adminGameSubTab='kelola'; renderGameAdminModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-black bg-white text-slate-600 border border-slate-200 cursor-pointer"><i class="fa-solid fa-gamepad mr-1"></i> Kelola Game & Mode</button>
+                    <button type="button" onclick="window.__adminGameSubTab='monitoring'; renderGameAdminModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-black bg-white text-slate-600 border border-slate-200 cursor-pointer"><i class="fa-solid fa-desktop mr-1"></i> Monitoring Game</button>
+                    <button type="button" class="px-5 py-2.5 rounded-2xl text-xs font-black bg-fuchsia-600 text-white cursor-pointer"><i class="fa-solid fa-users-viewfinder mr-1"></i> Monitoring Arena <span class="ml-1 px-2 py-0.5 rounded-full bg-emerald-500 text-[9px]">LIVE</span></button>
+                </div>
+                <div class="bg-gradient-to-br from-slate-950 via-violet-950 to-slate-950 rounded-3xl p-5 sm:p-6 text-white border border-violet-500/30 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div><span class="text-[10px] font-black uppercase tracking-widest text-fuchsia-300">Teacher Arena View</span><h2 class="text-xl font-black mt-1">Monitoring Arena Siswa</h2><p class="text-xs text-slate-300 mt-1">Tampilan arena berasal dari state pertandingan yang sama dengan akun siswa. Semua avatar, posisi permainan, progress, dan status tim diperbarui otomatis.</p></div>
+                    <button type="button" onclick="refreshAdminGameArenaMonitoring(true)" class="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-arrows-rotate mr-1"></i> Refresh</button>
+                </div>
+                <div id="game-arena-monitoring-content" class="space-y-5"><div class="p-10 text-center text-slate-500 font-bold"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-fuchsia-500 block mb-2"></i>Menyiapkan arena live...</div></div>
+            </div>
+        `;
+        window.refreshAdminGameArenaMonitoring(false);
+        if (adminArenaMonitoringTimer) clearInterval(adminArenaMonitoringTimer);
+        adminArenaMonitoringTimer = setInterval(() => window.refreshAdminGameArenaMonitoring(false), 1200);
+        return;
+    }
+
+    if (adminArenaMonitoringTimer) {
+        clearInterval(adminArenaMonitoringTimer);
+        adminArenaMonitoringTimer = null;
+    }
 
     if (activeSubTab === 'monitoring') {
         container.innerHTML = `
@@ -386,6 +417,9 @@ export function renderGameAdminModule(container) {
                         <i class="fa-solid fa-desktop text-sm"></i>
                         <span>Dashboard Monitoring Game</span>
                         <span class="px-2 py-0.5 bg-emerald-500 text-white font-extrabold text-[9px] rounded-full animate-pulse ml-1">LIVE</span>
+                    </button>
+                    <button type="button" onclick="window.__adminGameSubTab='arena-monitoring'; renderGameAdminModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-black transition flex items-center gap-2 cursor-pointer bg-white text-slate-600 hover:bg-fuchsia-50 border border-slate-200 shadow-sm">
+                        <i class="fa-solid fa-users-viewfinder text-sm text-fuchsia-600"></i><span>Monitoring Arena</span>
                     </button>
                 </div>
 
@@ -458,6 +492,9 @@ export function renderGameAdminModule(container) {
                     <i class="fa-solid fa-desktop text-sm"></i>
                     <span>Dashboard Monitoring Game</span>
                     <span class="px-2 py-0.5 bg-emerald-500 text-white font-extrabold text-[9px] rounded-full animate-pulse ml-1">LIVE</span>
+                </button>
+                <button type="button" onclick="window.__adminGameSubTab='arena-monitoring'; renderGameAdminModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-black transition flex items-center gap-2 cursor-pointer bg-white text-slate-600 hover:bg-fuchsia-50 border border-slate-200 shadow-sm">
+                    <i class="fa-solid fa-users-viewfinder text-sm text-fuchsia-600"></i><span>Monitoring Arena</span>
                 </button>
             </div>
 
@@ -539,6 +576,8 @@ export function renderGameAdminModule(container) {
                     </div>
                 </div>
             </div>
+
+            ${renderAdminArenaManagementSection()}
 
             <!-- SECTION: KARTU MODE GAME (ADVENTURE ROADMAP & TOWER QUEST) -->
             <div class="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-950 p-6 sm:p-8 rounded-3xl text-white shadow-xl space-y-5 border border-indigo-500/30">
@@ -4329,8 +4368,11 @@ function renderGameArenaModeCard(mode, currentAvatarId) {
 }
 
 function renderStudentArenaTab(games) {
+    ensureGameArenaStudentConfigLoaded();
     const currentAvatarId = getCurrentGameArenaAvatarId();
     const compatibleGames = getArenaCompatibleClientGames(games);
+    const studentArenaConfig = appState.gameArenaStudentConfig || defaultClientArenaConfig();
+    const visibleArenaModes = GAME_ARENA_MODE_META.filter(mode => studentArenaConfig.modes?.[mode.id]?.enabled !== false);
     return `
         <div class="space-y-6 animate-fade-in">
             <div class="bg-gradient-to-br from-slate-950 via-indigo-950 to-purple-950 rounded-3xl p-6 sm:p-8 text-white shadow-2xl border border-indigo-500/30 relative overflow-hidden">
@@ -4341,7 +4383,7 @@ function renderStudentArenaTab(games) {
                         <h2 class="text-2xl sm:text-3xl font-black">5 mode PvP dan tim dalam satu Arena.</h2>
                         <p class="text-xs sm:text-sm text-indigo-100/80 leading-relaxed">Soal menjadi sumber daya gameplay: daya laser, tarikan tim, energi, boost balap, atau mana strategi. Arena terpisah dari CBT serta tidak meminta kamera maupun audio.</p>
                         <div class="flex flex-wrap gap-2 text-[10px] font-extrabold">
-                            <span class="px-3 py-1.5 rounded-xl bg-white/10 border border-white/10"><i class="fa-solid fa-gamepad mr-1"></i> 5 mode playable</span>
+                            <span class="px-3 py-1.5 rounded-xl bg-white/10 border border-white/10"><i class="fa-solid fa-gamepad mr-1"></i> ${visibleArenaModes.length} mode tersedia</span>
                             <span class="px-3 py-1.5 rounded-xl bg-white/10 border border-white/10"><i class="fa-solid fa-book-open mr-1"></i> ${compatibleGames.length} tantangan kompatibel</span>
                             <span class="px-3 py-1.5 rounded-xl bg-white/10 border border-white/10"><i class="fa-solid fa-shield-halved mr-1"></i> Kunci jawaban tetap di server</span>
                         </div>
@@ -4358,7 +4400,7 @@ function renderStudentArenaTab(games) {
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                ${GAME_ARENA_MODE_META.map(mode => renderGameArenaModeCard(mode, currentAvatarId)).join('')}
+                ${visibleArenaModes.length ? visibleArenaModes.map(mode => renderGameArenaModeCard(mode, currentAvatarId)).join('') : '<div class="col-span-full rounded-3xl bg-white border border-slate-200 p-10 text-center"><div class="text-4xl mb-2">🎮</div><h3 class="font-black text-slate-800">Belum ada mode Arena aktif untuk kelasmu</h3><p class="text-xs text-slate-500 mt-1">Guru dapat mengaktifkannya dari Kelola Game Arena.</p></div>'}
             </div>
 
             <div class="bg-white rounded-3xl border border-slate-100 p-5 sm:p-6 shadow-sm">
