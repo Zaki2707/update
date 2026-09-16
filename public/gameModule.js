@@ -3870,7 +3870,14 @@ function renderGameArenaAvatar(presetId, sizeClass = 'w-16 h-16', extraClass = '
 }
 
 function getCurrentGameArenaAvatarId() {
-    return String(appState.currentUser?.gameAvatar?.presetId || 'bintang').toLowerCase();
+    const currentId = String(appState.currentUser?.id || '');
+    const storedStudent = (Array.isArray(appState.students) ? appState.students : [])
+        .find(student => String(student?.id || '') === currentId);
+    return String(
+        appState.currentUser?.gameAvatar?.presetId ||
+        storedStudent?.gameAvatar?.presetId ||
+        'bintang'
+    ).toLowerCase();
 }
 
 function getArenaCompatibleClientGames(games) {
@@ -4047,6 +4054,12 @@ function renderGameArenaQuestionPanel(state, preservedDraft = '') {
             <div class="flex items-center justify-between gap-3"><span class="px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-black uppercase tracking-wider"><i class="fa-solid fa-battery-three-quarters mr-1"></i> Recharge Knowledge</span><span class="text-[10px] font-bold text-slate-400">${gameEscapeHtml(question.title || 'Tantangan')}</span></div>
             ${question.imageUrl ? `<img src="${gameSafeImageSrc(question.imageUrl)}" class="w-full max-h-44 object-cover rounded-2xl border border-slate-200">` : ''}
             <p class="text-sm sm:text-base font-black text-slate-900 leading-relaxed">${gameEscapeHtml(question.prompt || '')}</p>
+            ${Array.isArray(question.scrambledLetters) && question.scrambledLetters.length ? `
+                <div class="flex flex-wrap items-center justify-center gap-2 rounded-2xl bg-violet-50 border border-violet-200 p-3">
+                    <span class="w-full text-center text-[10px] font-black uppercase tracking-wider text-violet-700">Susun huruf berikut</span>
+                    ${question.scrambledLetters.map(letter => `<span class="w-9 h-10 rounded-xl bg-white border border-violet-200 shadow-sm flex items-center justify-center text-base font-black text-violet-900">${gameEscapeHtml(letter)}</span>`).join('')}
+                </div>
+            ` : ''}
             ${question.type === 'choice' ? `<div class="grid grid-cols-2 gap-2">${(question.options || []).map(option => `<button type="button" onclick="submitGameArenaAnswer(${gameInlineArg(option)})" class="px-4 py-3 rounded-2xl bg-slate-100 hover:bg-indigo-600 hover:text-white text-slate-800 text-xs font-black transition cursor-pointer">${gameEscapeHtml(option)}</button>`).join('')}</div>` : `<form onsubmit="submitGameArenaTextAnswer(event)" class="flex flex-col sm:flex-row gap-2"><input id="game-arena-answer-input" value="${gameEscapeAttr(preservedDraft)}" autocomplete="off" placeholder="Ketik jawaban..." class="flex-1 px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 text-sm font-black uppercase focus:outline-none focus:ring-2 focus:ring-indigo-400"><button type="submit" class="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-bolt mr-1"></i> Kirim Daya</button></form>`}
             <div id="game-arena-answer-feedback" class="min-h-5 text-center text-[11px] font-black"></div>
         </div>`;

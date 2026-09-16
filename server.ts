@@ -4950,7 +4950,10 @@ function sanitizeStudentPeerProfile(student: any) {
     class_id: student.class_id || student.classId || '',
     photo: normalizePhotoReferenceForClient(student.photo),
     photoHistory: normalizePhotoHistoryForClient(student.photoHistory),
-    role: normalizeStudentStoredRole(student.role)
+    role: normalizeStudentStoredRole(student.role),
+    gameAvatar: {
+      presetId: String(student?.gameAvatar?.presetId || 'bintang').trim().toLowerCase() || 'bintang'
+    }
   };
 }
 
@@ -6174,6 +6177,7 @@ type GameArenaPlayer = {
   correctAnswers: number;
   totalAnswers: number;
   joinedAt: number;
+  lastSeenAt: number;
   lastAnswerAt?: number;
 };
 
@@ -6185,6 +6189,7 @@ type GameArenaQuestion = {
   imageUrl?: string;
   type: 'choice' | 'text';
   options: string[];
+  scrambledLetters?: string[];
 };
 
 type GameArenaRoom = {
@@ -6207,6 +6212,7 @@ type GameArenaRoom = {
 let gameArenaRoomsServer: Record<string, GameArenaRoom> = {};
 const GAME_ARENA_ROOM_TTL_MS = 30 * 60 * 1000;
 const GAME_ARENA_FINISHED_TTL_MS = 10 * 60 * 1000;
+const GAME_ARENA_PLAYER_STALE_MS = 60 * 1000;
 const GAME_ARENA_AVATAR_PRESETS = new Set(['bintang', 'roket', 'buku', 'komet', 'bulan', 'petir']);
 const GAME_ARENA_COMPATIBLE_TYPES = new Set(['tebak_kata', 'tebak_gambar', 'susun_kata', 'true_false']);
 
@@ -6214,8 +6220,28 @@ function isGameArenaStudentRole(role: any): boolean {
   return ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(String(role || '').toLowerCase());
 }
 
-function cleanupGameArenaRooms(now = Date.now()) {
+function cleanupGameArenaRooms(now = Date.now(), preservePlayerId = '') {
   for (const [roomId, room] of Object.entries(gameArenaRoomsServer)) {
+    const stalePlayerIds = new Set(
+      room.players
+        .filter(player =>
+          player.id !== preservePlayerId &&
+          now - Number(player.lastSeenAt || player.lastAnswerAt || player.joinedAt || 0) > GAME_ARENA_PLAYER_STALE_MS
+        )
+        .map(player => player.id)
+    );
+
+    if (stalePlayerIds.size > 0) {
+      room.players = room.players.filter(player => !stalePlayerIds.has(player.id));
+      for (const staleId of stalePlayerIds) delete room.questions[staleId];
+      if (!room.players.length) {
+        delete gameArenaRoomsServer[roomId];
+        continue;
+      }
+      rebalanceGameArenaAfterLeave(room);
+      touchGameArenaRoom(room);
+    }
+
     const ttl = room.status === 'finished' ? GAME_ARENA_FINISHED_TTL_MS : GAME_ARENA_ROOM_TTL_MS;
     const anchor = room.status === 'finished' ? Number(room.finishedAt || room.updatedAt) : Number(room.updatedAt || room.createdAt);
     if (!anchor || now - anchor > ttl) delete gameArenaRoomsServer[roomId];
@@ -6287,7 +6313,15 @@ function createGameArenaQuestion(req: any, student: any, previousGameId = ''): G
   const game = candidates[crypto.randomInt(0, candidates.length)];
 
   let options: string[] = [];
+  let scrambledLetters: string[] = [];
   if (game.gameType === 'true_false') options = shuffleGameArenaItems(['BENAR', 'SALAH']);
+  if (game.gameType === 'susun_kata') {
+    const letters = Array.from(String(game.answerKey || '').trim().replace(/\s+/g, ''));
+    scrambledLetters = shuffleGameArenaItems(letters);
+    if (scrambledLetters.length > 1 && scrambledLetters.join('') === letters.join('')) {
+      [scrambledLetters[0], scrambledLetters[1]] = [scrambledLetters[1], scrambledLetters[0]];
+    }
+  }
 
   return {
     id: `AQ_${crypto.randomUUID()}`,
@@ -6296,7 +6330,8 @@ function createGameArenaQuestion(req: any, student: any, previousGameId = ''): G
     prompt: String(game.prompt || game.title || 'Jawab tantangan berikut.'),
     imageUrl: game.imageUrl ? String(game.imageUrl) : undefined,
     type: options.length ? 'choice' : 'text',
-    options
+    options,
+    scrambledLetters
   };
 }
 
@@ -6357,7 +6392,8 @@ function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
       prompt: question.prompt,
       imageUrl: question.imageUrl || '',
       type: question.type,
-      options: question.options
+      options: question.options,
+      scrambledLetters: Array.isArray(question.scrambledLetters) ? question.scrambledLetters : []
     } : null,
     serverTime: Date.now()
   };
@@ -6473,9 +6509,13 @@ app.post("/api/game-arena/join", (req: any, res) => {
         streak: 0,
         correctAnswers: 0,
         totalAnswers: 0,
-        joinedAt: now
+        joinedAt: now,
+        lastSeenAt: now
       });
     }
+
+    const joiningPlayer = room.players.find(player => player.id === studentId);
+    if (joiningPlayer) joiningPlayer.lastSeenAt = now;
 
     const wasWaiting = room.status === 'waiting';
     if (room.players.length >= 2) room.status = 'playing';
@@ -6496,24 +6536,28 @@ app.post("/api/game-arena/join", (req: any, res) => {
 });
 
 app.get("/api/game-arena/state", (req: any, res) => {
-  cleanupGameArenaRooms();
   const student = getGameArenaStudent(req);
   if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
 
+  const studentId = String(student.id);
+  cleanupGameArenaRooms(Date.now(), studentId);
   const room = getGameArenaRoomForRequest(req, req.query?.roomId);
-  if (!room || !room.players.some(player => player.id === String(student.id))) {
+  const player = room?.players.find(item => item.id === studentId);
+  if (!room || !player) {
     return res.status(404).json({ success: false, message: "Sesi arena tidak ditemukan atau sudah berakhir." });
   }
 
+  player.lastSeenAt = Date.now();
+  room.updatedAt = Date.now();
   if (room.status === 'playing') ensureGameArenaQuestion(req, room, student);
-  res.json({ success: true, state: sanitizeGameArenaState(room, String(student.id)) });
+  res.json({ success: true, state: sanitizeGameArenaState(room, studentId) });
 });
 
 app.post("/api/game-arena/answer", (req: any, res) => {
   try {
-    cleanupGameArenaRooms();
     const student = getGameArenaStudent(req);
     if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
+    cleanupGameArenaRooms(Date.now(), String(student.id));
     if (!enforceApiRateLimit(req, res, `game-arena-answer:${student.id}`, 180, 60 * 1000)) return;
 
     const submitted = String(req.body?.submittedAnswer ?? '');
@@ -6553,6 +6597,7 @@ app.post("/api/game-arena/answer", (req: any, res) => {
     }
 
     const player = room.players.find(item => item.id === studentId)!;
+    player.lastSeenAt = Date.now();
     const isCorrect = gameArenaValidateAnswer(game, submitted);
     let pushPower = 0;
     player.totalAnswers += 1;
@@ -7536,7 +7581,10 @@ app.post("/api/login", async (req, res) => {
       madrasahId: student.madrasahId || requestedTenant?.id || student.madrasahSlug || 'default',
       madrasahSlug: student.madrasahSlug || requestedTenant?.slug || student.madrasahId || 'default',
       photo: normalizePhotoReferenceForClient(student.photo),
-      no_hp: student.no_hp
+      no_hp: student.no_hp,
+      gameAvatar: {
+        presetId: String(student?.gameAvatar?.presetId || 'bintang').trim().toLowerCase() || 'bintang'
+      }
     };
     const token = createAuthToken(studentUser, student.password);
     return res.json({
@@ -9483,7 +9531,10 @@ app.put("/api/student/profile", requireAuth, requireRole(['student', 'siswa', 'c
     madrasahId: student.madrasahId || authUser.madrasahId || 'default',
     madrasahSlug: student.madrasahSlug || (authUser as any).madrasahSlug || student.madrasahId || 'default',
     photo: normalizePhotoReferenceForClient(student.photo),
-    no_hp: student.no_hp
+    no_hp: student.no_hp,
+    gameAvatar: {
+      presetId: String(student?.gameAvatar?.presetId || 'bintang').trim().toLowerCase() || 'bintang'
+    }
   };
   const token = createAuthToken(sessionUser, student.password);
   const { password: _, passwordRaw: __, ...safeStudent } = student;
