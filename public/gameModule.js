@@ -3864,9 +3864,11 @@ export function renderGameStudentModule(container) {
             <!-- Sub Tabs Navigation (Conditional: Only visible if modes are active) -->
             ${showSubTabs ? `
                 <div class="flex items-center space-x-2 border-b border-slate-200 pb-2 overflow-x-auto">
-                    ${hasCatalog ? `<button type="button" onclick="window.__studentGameSubTab='katalog'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'katalog' ? 'bg-slate-900 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">`
-                        🎮 Katalog Semua Game
-                    </button>` : ''}
+                    ${hasCatalog ? `
+                        <button type="button" onclick="window.__studentGameSubTab='katalog'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'katalog' ? 'bg-slate-900 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">
+                            🎮 Katalog Semua Game
+                        </button>
+                    ` : ''}
                     ${hasArena ? `
                         <button type="button" onclick="window.__studentGameSubTab='arena'; renderGameStudentModule(document.getElementById('view-container'));" class="px-5 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${activeSubTab === 'arena' ? 'bg-fuchsia-600 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100'}">
                             ⚔️ Game Arena
