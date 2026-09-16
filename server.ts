@@ -6162,6 +6162,467 @@ function gameBroadcastStorageKey(req: any): string {
   return `${gameTenantNamespace(req)}::broadcast`;
 }
 
+type GameArenaMode = 'laser_duel' | 'tug_war';
+type GameArenaSide = 'A' | 'B';
+
+type GameArenaPlayer = {
+  id: string;
+  name: string;
+  side: GameArenaSide;
+  avatar: { presetId: string };
+  streak: number;
+  correctAnswers: number;
+  totalAnswers: number;
+  joinedAt: number;
+  lastAnswerAt?: number;
+};
+
+type GameArenaQuestion = {
+  id: string;
+  gameId: string;
+  title: string;
+  prompt: string;
+  imageUrl?: string;
+  type: 'choice' | 'text';
+  options: string[];
+};
+
+type GameArenaRoom = {
+  id: string;
+  tenantId: string;
+  classKey: string;
+  className: string;
+  mode: GameArenaMode;
+  status: 'waiting' | 'playing' | 'finished';
+  position: number;
+  players: GameArenaPlayer[];
+  questions: Record<string, GameArenaQuestion>;
+  version: number;
+  winnerSide?: GameArenaSide;
+  createdAt: number;
+  updatedAt: number;
+  finishedAt?: number;
+};
+
+let gameArenaRoomsServer: Record<string, GameArenaRoom> = {};
+const GAME_ARENA_ROOM_TTL_MS = 30 * 60 * 1000;
+const GAME_ARENA_FINISHED_TTL_MS = 10 * 60 * 1000;
+const GAME_ARENA_AVATAR_PRESETS = new Set(['bintang', 'roket', 'buku', 'komet', 'bulan', 'petir']);
+const GAME_ARENA_COMPATIBLE_TYPES = new Set(['tebak_kata', 'tebak_gambar', 'susun_kata', 'true_false']);
+
+function isGameArenaStudentRole(role: any): boolean {
+  return ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(String(role || '').toLowerCase());
+}
+
+function cleanupGameArenaRooms(now = Date.now()) {
+  for (const [roomId, room] of Object.entries(gameArenaRoomsServer)) {
+    const ttl = room.status === 'finished' ? GAME_ARENA_FINISHED_TTL_MS : GAME_ARENA_ROOM_TTL_MS;
+    const anchor = room.status === 'finished' ? Number(room.finishedAt || room.updatedAt) : Number(room.updatedAt || room.createdAt);
+    if (!anchor || now - anchor > ttl) delete gameArenaRoomsServer[roomId];
+  }
+}
+
+function getGameArenaStudent(req: any): any | null {
+  const authUser = req.user || getAuthUser(req);
+  if (!authUser || !isGameArenaStudentRole(authUser.role)) return null;
+  const resolved = findStudentForRequest(req, authUser.id);
+  return resolved.ambiguous ? null : resolved.student;
+}
+
+function getGameArenaClassKey(student: any): string {
+  return String(student?.classId || student?.class_id || student?.className || student?.kelas || 'UNASSIGNED');
+}
+
+function getGameArenaClassName(student: any): string {
+  const classId = String(student?.classId || student?.class_id || '');
+  const classRow = (classes || []).find((item: any) => String(item?.id || '') === classId);
+  return String(classRow?.name || student?.className || student?.kelas || classId || 'Kelas');
+}
+
+function gameArenaTargetsStudentClass(game: any, student: any): boolean {
+  const classKey = getGameArenaClassKey(student);
+  const className = getGameArenaClassName(student);
+  const targets = Array.isArray(game?.classIds) && game.classIds.length
+    ? game.classIds.map((x: any) => String(x))
+    : [String(game?.classId || '')];
+
+  return targets.some((target: string) => {
+    const normalized = target.trim().toLowerCase();
+    return !normalized ||
+      normalized === 'semua kelas' ||
+      normalized === 'all' ||
+      normalized === '*' ||
+      target === classKey ||
+      target === className;
+  });
+}
+
+function getGameArenaGamePool(req: any, student: any): any[] {
+  const custom = filterByMadrasah(Array.isArray(eduGames) ? eduGames : [], req);
+  const list = custom.length > 0 ? custom : DEFAULT_SERVER_SEED_GAMES;
+  return list.filter((game: any) => {
+    if (!game || game.status === 'inactive') return false;
+    if (!GAME_ARENA_COMPATIBLE_TYPES.has(String(game.gameType || ''))) return false;
+    if (!gameArenaTargetsStudentClass(game, student)) return false;
+    if (game.gameType === 'true_false') return Boolean(String(game.correctAnswer || '').trim());
+    return Boolean(String(game.answerKey || '').trim());
+  });
+}
+
+function shuffleGameArenaItems<T>(items: T[]): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(0, i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+function createGameArenaQuestion(req: any, student: any, previousGameId = ''): GameArenaQuestion | null {
+  const pool = getGameArenaGamePool(req, student);
+  if (!pool.length) return null;
+
+  const alternatives = pool.filter((game: any) => String(game.id) !== String(previousGameId));
+  const candidates = alternatives.length ? alternatives : pool;
+  const game = candidates[crypto.randomInt(0, candidates.length)];
+
+  let options: string[] = [];
+  if (game.gameType === 'true_false') options = shuffleGameArenaItems(['BENAR', 'SALAH']);
+
+  return {
+    id: `AQ_${crypto.randomUUID()}`,
+    gameId: String(game.id),
+    title: String(game.title || 'Tantangan Arena'),
+    prompt: String(game.prompt || game.title || 'Jawab tantangan berikut.'),
+    imageUrl: game.imageUrl ? String(game.imageUrl) : undefined,
+    type: options.length ? 'choice' : 'text',
+    options
+  };
+}
+
+function gameArenaValidateAnswer(game: any, submittedAnswer: any): boolean {
+  const submitted = normalizeGameText(String(submittedAnswer ?? ''));
+  if (!submitted) return false;
+  if (game?.gameType === 'true_false') {
+    return submitted === normalizeGameText(String(game.correctAnswer || 'BENAR'));
+  }
+  return submitted === normalizeGameText(String(game?.answerKey || ''));
+}
+
+function touchGameArenaRoom(room: GameArenaRoom) {
+  room.version = Number(room.version || 0) + 1;
+  room.updatedAt = Date.now();
+}
+
+function pickGameArenaSide(players: GameArenaPlayer[]): GameArenaSide {
+  const a = players.filter(p => p.side === 'A').length;
+  const b = players.filter(p => p.side === 'B').length;
+  return a <= b ? 'A' : 'B';
+}
+
+function ensureGameArenaQuestion(req: any, room: GameArenaRoom, student: any, forceNew = false) {
+  const studentId = String(student?.id || '');
+  if (!studentId) return;
+  const previous = room.questions[studentId];
+  if (!forceNew && previous) return;
+  const next = createGameArenaQuestion(req, student, previous?.gameId || '');
+  if (next) room.questions[studentId] = next;
+  else delete room.questions[studentId];
+}
+
+function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
+  const me = room.players.find(p => p.id === viewerId) || null;
+  const question = room.status === 'playing' ? (room.questions[viewerId] || null) : null;
+  return {
+    id: room.id,
+    mode: room.mode,
+    status: room.status,
+    position: Math.max(0, Math.min(100, Number(room.position || 50))),
+    version: room.version,
+    className: room.className,
+    winnerSide: room.winnerSide || null,
+    players: room.players.map(player => ({
+      id: player.id,
+      name: player.name,
+      side: player.side,
+      avatar: player.avatar,
+      streak: player.streak,
+      correctAnswers: player.correctAnswers,
+      totalAnswers: player.totalAnswers
+    })),
+    me: me ? { id: me.id, side: me.side } : null,
+    question: question ? {
+      id: question.id,
+      title: question.title,
+      prompt: question.prompt,
+      imageUrl: question.imageUrl || '',
+      type: question.type,
+      options: question.options
+    } : null,
+    serverTime: Date.now()
+  };
+}
+
+function getGameArenaRoomForRequest(req: any, roomId: any): GameArenaRoom | null {
+  const room = gameArenaRoomsServer[String(roomId || '')];
+  if (!room || room.tenantId !== gameTenantNamespace(req)) return null;
+  return room;
+}
+
+function rebalanceGameArenaAfterLeave(room: GameArenaRoom) {
+  if (room.players.length < 2) {
+    room.status = 'waiting';
+    room.position = 50;
+    room.winnerSide = undefined;
+    room.finishedAt = undefined;
+    room.questions = {};
+    for (const player of room.players) player.streak = 0;
+  }
+}
+
+app.post("/api/game-arena/avatar", async (req: any, res) => {
+  try {
+    const student = getGameArenaStudent(req);
+    if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
+
+    const presetId = String(req.body?.presetId || '').trim().toLowerCase();
+    if (!GAME_ARENA_AVATAR_PRESETS.has(presetId)) {
+      return res.status(400).json({ success: false, message: "Avatar arena tidak valid." });
+    }
+
+    student.gameAvatar = { presetId };
+    await saveData("students", students);
+    res.json({ success: true, avatar: student.gameAvatar });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal menyimpan avatar arena.") });
+  }
+});
+
+app.post("/api/game-arena/join", (req: any, res) => {
+  try {
+    cleanupGameArenaRooms();
+    if (appSettings?.gameArenaEnabled === false) {
+      return res.status(403).json({ success: false, message: "Game Arena sedang dinonaktifkan." });
+    }
+
+    const student = getGameArenaStudent(req);
+    if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
+
+    const mode = String(req.body?.mode || '') as GameArenaMode;
+    if (mode !== 'laser_duel' && mode !== 'tug_war') {
+      return res.status(400).json({ success: false, message: "Mode arena tidak valid." });
+    }
+
+    if (!getGameArenaGamePool(req, student).length) {
+      return res.status(409).json({
+        success: false,
+        message: "Belum ada game aktif yang kompatibel untuk kelasmu. Guru perlu menyiapkan Tebak Kata, Tebak Gambar, Susun Kata, atau Benar/Salah."
+      });
+    }
+
+    const tenantId = gameTenantNamespace(req);
+    const classKey = getGameArenaClassKey(student);
+    const studentId = String(student.id);
+    const now = Date.now();
+
+    let room = Object.values(gameArenaRoomsServer).find(item =>
+      item.tenantId === tenantId &&
+      item.classKey === classKey &&
+      item.mode === mode &&
+      item.status !== 'finished' &&
+      item.players.some(player => player.id === studentId)
+    );
+
+    if (!room) {
+      room = Object.values(gameArenaRoomsServer).find(item => {
+        if (item.tenantId !== tenantId || item.classKey !== classKey || item.mode !== mode || item.status === 'finished') return false;
+        if (mode === 'laser_duel') return item.status === 'waiting' && item.players.length < 2;
+        return item.players.length < 20;
+      });
+    }
+
+    if (!room) {
+      room = {
+        id: `ARENA_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+        tenantId,
+        classKey,
+        className: getGameArenaClassName(student),
+        mode,
+        status: 'waiting',
+        position: 50,
+        players: [],
+        questions: {},
+        version: 0,
+        createdAt: now,
+        updatedAt: now
+      };
+      gameArenaRoomsServer[room.id] = room;
+    }
+
+    if (!room.players.some(player => player.id === studentId)) {
+      const side = pickGameArenaSide(room.players);
+      room.players.push({
+        id: studentId,
+        name: String(student.name || student.username || 'Siswa'),
+        side,
+        avatar: {
+          presetId: GAME_ARENA_AVATAR_PRESETS.has(String(student?.gameAvatar?.presetId || '').toLowerCase())
+            ? String(student.gameAvatar.presetId).toLowerCase()
+            : 'bintang'
+        },
+        streak: 0,
+        correctAnswers: 0,
+        totalAnswers: 0,
+        joinedAt: now
+      });
+    }
+
+    const wasWaiting = room.status === 'waiting';
+    if (room.players.length >= 2) room.status = 'playing';
+
+    if (room.status === 'playing') {
+      for (const player of room.players) {
+        const playerResolution = findStudentForRequest(req, player.id);
+        if (playerResolution.student) ensureGameArenaQuestion(req, room, playerResolution.student);
+      }
+    }
+
+    if (wasWaiting && room.status === 'playing') room.position = 50;
+    touchGameArenaRoom(room);
+    res.json({ success: true, state: sanitizeGameArenaState(room, studentId) });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal masuk ke Game Arena.") });
+  }
+});
+
+app.get("/api/game-arena/state", (req: any, res) => {
+  cleanupGameArenaRooms();
+  const student = getGameArenaStudent(req);
+  if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
+
+  const room = getGameArenaRoomForRequest(req, req.query?.roomId);
+  if (!room || !room.players.some(player => player.id === String(student.id))) {
+    return res.status(404).json({ success: false, message: "Sesi arena tidak ditemukan atau sudah berakhir." });
+  }
+
+  if (room.status === 'playing') ensureGameArenaQuestion(req, room, student);
+  res.json({ success: true, state: sanitizeGameArenaState(room, String(student.id)) });
+});
+
+app.post("/api/game-arena/answer", (req: any, res) => {
+  try {
+    cleanupGameArenaRooms();
+    const student = getGameArenaStudent(req);
+    if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
+    if (!enforceApiRateLimit(req, res, `game-arena-answer:${student.id}`, 180, 60 * 1000)) return;
+
+    const submitted = String(req.body?.submittedAnswer ?? '');
+    if (Buffer.byteLength(submitted, 'utf8') > 4096) {
+      return res.status(413).json({ success: false, message: "Jawaban arena terlalu besar." });
+    }
+
+    const room = getGameArenaRoomForRequest(req, req.body?.roomId);
+    const studentId = String(student.id);
+    if (!room || !room.players.some(player => player.id === studentId)) {
+      return res.status(404).json({ success: false, message: "Sesi arena tidak ditemukan." });
+    }
+    if (room.status !== 'playing') {
+      return res.status(409).json({ success: false, message: "Pertandingan belum aktif." });
+    }
+
+    const currentQuestion = room.questions[studentId];
+    if (!currentQuestion || String(req.body?.questionId || '') !== currentQuestion.id) {
+      return res.status(409).json({
+        success: false,
+        message: "Soal arena sudah berubah. Muat soal terbaru.",
+        state: sanitizeGameArenaState(room, studentId)
+      });
+    }
+
+    const pool = getGameArenaGamePool(req, student);
+    const game = pool.find((item: any) => String(item.id) === currentQuestion.gameId);
+    if (!game) {
+      delete room.questions[studentId];
+      ensureGameArenaQuestion(req, room, student, true);
+      touchGameArenaRoom(room);
+      return res.status(409).json({
+        success: false,
+        message: "Tantangan arena sudah tidak tersedia.",
+        state: sanitizeGameArenaState(room, studentId)
+      });
+    }
+
+    const player = room.players.find(item => item.id === studentId)!;
+    const isCorrect = gameArenaValidateAnswer(game, submitted);
+    let pushPower = 0;
+    player.totalAnswers += 1;
+    player.lastAnswerAt = Date.now();
+
+    if (isCorrect) {
+      player.correctAnswers += 1;
+      player.streak += 1;
+      if (room.mode === 'laser_duel') {
+        pushPower = 9 + Math.min(6, Math.max(0, player.streak - 1) * 2);
+      } else {
+        pushPower = 4 + Math.min(3, Math.floor(Math.max(0, player.streak - 1) / 2));
+      }
+      room.position += player.side === 'A' ? pushPower : -pushPower;
+      room.position = Math.max(0, Math.min(100, room.position));
+    } else {
+      player.streak = 0;
+    }
+
+    if (room.position >= 95) {
+      room.status = 'finished';
+      room.winnerSide = 'A';
+      room.finishedAt = Date.now();
+      room.questions = {};
+    } else if (room.position <= 5) {
+      room.status = 'finished';
+      room.winnerSide = 'B';
+      room.finishedAt = Date.now();
+      room.questions = {};
+    } else {
+      ensureGameArenaQuestion(req, room, student, true);
+    }
+
+    touchGameArenaRoom(room);
+    res.json({
+      success: true,
+      isCorrect,
+      pushPower,
+      state: sanitizeGameArenaState(room, studentId)
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal memproses jawaban arena.") });
+  }
+});
+
+app.post("/api/game-arena/leave", (req: any, res) => {
+  try {
+    cleanupGameArenaRooms();
+    const student = getGameArenaStudent(req);
+    if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
+
+    const room = getGameArenaRoomForRequest(req, req.body?.roomId);
+    if (!room) return res.json({ success: true });
+
+    const studentId = String(student.id);
+    room.players = room.players.filter(player => player.id !== studentId);
+    delete room.questions[studentId];
+
+    if (!room.players.length) {
+      delete gameArenaRoomsServer[room.id];
+    } else {
+      rebalanceGameArenaAfterLeave(room);
+      touchGameArenaRoom(room);
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal keluar dari arena.") });
+  }
+});
+
 app.get("/api/game/active-sessions", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), (req, res) => {
   const allowed = new Set((filterByMadrasah(students || [], req) || []).map((x: any) => String(x.id)));
   const scoped: Record<string, any> = {};
