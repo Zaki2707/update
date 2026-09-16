@@ -4044,7 +4044,9 @@ function ensureGameArenaFxStyles() {
             animation:arenaSceneDrift 12s ease-in-out infinite;
         }
         .arena-stage > * { position:relative; z-index:1; }
+        .arena-stage .arena-stage-hud,
         .arena-stage [data-arena-stage-hud],
+        .arena-stage .arena-question-panel,
         .arena-stage [data-arena-question-panel] { animation:arenaQuestionReveal .35s ease-out both; }
         .arena-stage [data-arena-stage-hud] {
             border-bottom:1px solid rgba(255,255,255,.14);
@@ -5158,7 +5160,7 @@ function renderGameArenaQuestionPanel(state, preservedDraft = '') {
                 : 'Recharge Knowledge';
 
     return `
-        <div class="rounded-3xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
+        <div data-arena-question-panel class="arena-question-panel rounded-3xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
             <div class="flex items-center justify-between gap-3"><span class="px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-black uppercase tracking-wider"><i class="fa-solid fa-battery-three-quarters mr-1"></i> ${rechargeLabel}</span><span class="text-[10px] font-bold text-slate-400">${gameEscapeHtml(question.title || 'Tantangan')}</span></div>
             ${question.imageUrl ? `<img src="${gameSafeImageSrc(question.imageUrl)}" class="w-full max-h-44 object-cover rounded-2xl border border-slate-200">` : ''}
             <p class="text-sm sm:text-base font-black text-slate-900 leading-relaxed">${gameEscapeHtml(question.prompt || '')}</p>
