@@ -4022,6 +4022,59 @@ function ensureGameArenaFxStyles() {
         @keyframes arenaSpark { 0%{transform:scale(.3) rotate(0);opacity:1} 100%{transform:scale(1.7) rotate(95deg);opacity:0} }
         @keyframes arenaBoostFlame { 0%,100%{transform:scaleX(.75);opacity:.55} 50%{transform:scaleX(1.25);opacity:1} }
 
+        @keyframes arenaHudPulse { 0%,100%{opacity:.72;transform:scaleX(.98)} 50%{opacity:1;transform:scaleX(1)} }
+        @keyframes arenaSceneDrift { 0%,100%{background-position:0 0,0 0} 50%{background-position:12px -8px,-10px 6px} }
+        @keyframes arenaQuestionReveal { 0%{opacity:0;transform:translateY(5px)} 100%{opacity:1;transform:translateY(0)} }
+
+        .arena-stage {
+            isolation:isolate;
+            min-height:clamp(260px, 34vw, 420px);
+            box-shadow:inset 0 1px rgba(255,255,255,.12), 0 18px 40px rgba(15,23,42,.16);
+        }
+        .arena-stage::before {
+            content:"";
+            position:absolute;
+            inset:0;
+            pointer-events:none;
+            z-index:0;
+            opacity:.34;
+            background-image:linear-gradient(135deg,rgba(255,255,255,.08) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.05) 50%,rgba(255,255,255,.05) 75%,transparent 75%);
+            background-size:34px 34px;
+            mix-blend-mode:screen;
+            animation:arenaSceneDrift 12s ease-in-out infinite;
+        }
+        .arena-stage > * { position:relative; z-index:1; }
+        .arena-stage .arena-stage-hud,
+        .arena-stage [data-arena-stage-hud],
+        .arena-stage .arena-question-panel,
+        .arena-stage [data-arena-question-panel] { animation:arenaQuestionReveal .35s ease-out both; }
+        .arena-stage [data-arena-stage-hud] {
+            border-bottom:1px solid rgba(255,255,255,.14);
+            padding-bottom:.65rem;
+        }
+        .arena-stage [data-arena-stage-hud]::after {
+            content:"";
+            display:block;
+            height:2px;
+            margin-top:.5rem;
+            border-radius:999px;
+            background:linear-gradient(90deg,transparent,currentColor,transparent);
+            animation:arenaHudPulse 2.4s ease-in-out infinite;
+        }
+        .arena-stage .arena-character-wrap { filter:drop-shadow(0 8px 6px rgba(15,23,42,.28)); }
+        [data-arena-stage="laser_duel"] { background-image:radial-gradient(circle at 50% 42%,rgba(34,211,238,.18),transparent 36%),linear-gradient(135deg,#020617,#164e63 52%,#3b0764); }
+        [data-arena-stage="tug_war"] { background-image:linear-gradient(180deg,rgba(255,255,255,.18),transparent 42%),repeating-linear-gradient(90deg,rgba(22,101,52,.08) 0 18px,transparent 18px 36px); }
+        [data-arena-stage="battle_royale"] { background-image:radial-gradient(circle at 50% 52%,rgba(217,70,239,.22),transparent 34%),linear-gradient(135deg,#2e1065,#701a75 52%,#0f172a); }
+        [data-arena-stage="quiz_race"] { background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.05) 0 28px,transparent 28px 56px),linear-gradient(135deg,#082f49,#1d4ed8,#155e75); }
+        [data-arena-stage="base_battle"] { background-image:linear-gradient(90deg,rgba(251,191,36,.1),transparent 48%,rgba(251,113,133,.1)),linear-gradient(135deg,#451a03,#7c2d12,#1c1917); }
+        [data-arena-fx="eco"] .arena-stage::before { animation:none; opacity:.14; }
+        @media (prefers-reduced-motion:reduce) {
+            .arena-stage::before,
+            .arena-stage [data-arena-stage-hud]::after,
+            .arena-stage [data-arena-stage-hud],
+            .arena-stage [data-arena-question-panel] { animation:none !important; }
+        }
+
         [data-arena-fx="full"] .arena-character-core { animation:arenaAvatarIdle 2.4s ease-in-out infinite; transform-origin:center bottom; }
         [data-arena-fx="light"] .arena-character-core { animation:arenaAvatarIdle 3.6s ease-in-out infinite; transform-origin:center bottom; }
         [data-arena-fx="full"] .arena-laser-beam,
@@ -5107,7 +5160,7 @@ function renderGameArenaQuestionPanel(state, preservedDraft = '') {
                 : 'Recharge Knowledge';
 
     return `
-        <div class="rounded-3xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
+        <div data-arena-question-panel class="arena-question-panel rounded-3xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
             <div class="flex items-center justify-between gap-3"><span class="px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-black uppercase tracking-wider"><i class="fa-solid fa-battery-three-quarters mr-1"></i> ${rechargeLabel}</span><span class="text-[10px] font-bold text-slate-400">${gameEscapeHtml(question.title || 'Tantangan')}</span></div>
             ${question.imageUrl ? `<img src="${gameSafeImageSrc(question.imageUrl)}" class="w-full max-h-44 object-cover rounded-2xl border border-slate-200">` : ''}
             <p class="text-sm sm:text-base font-black text-slate-900 leading-relaxed">${gameEscapeHtml(question.prompt || '')}</p>
