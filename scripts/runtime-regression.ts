@@ -961,7 +961,7 @@ await test('Game Arena: answers are server-authoritative and sanitized per stude
 });
 
 await test('Game Arena: tenant/class isolation, player limits, rate limits and stale cleanup are enforced', () => {
-  assert.match(serverSource, /room\.tenantId === tenantId &&\s*room\.classKey === classKey/);
+  assert.match(serverSource, /item\.tenantId === tenantId &&\s*item\.classKey === classKey/);
   assert.match(serverSource, /function gameArenaTargetsStudentClass/);
   assert.match(serverSource, /if \(mode === 'laser_duel'\) return 2/);
   assert.match(serverSource, /if \(mode === 'battle_royale'\) return 24/);
