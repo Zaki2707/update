@@ -3377,7 +3377,7 @@ window.showScheduleExpiredAlert = function(examId) {
     }
 };
 
-window.openStudentExamReviewModal = function(examId) {
+window.openStudentExamReviewModal = async function(examId) {
     const ex = (appState.exams || []).find(e => String(e.id) === String(examId));
     if (!ex) {
         showToast('Ujian tidak ditemukan!', 'error');
@@ -3395,12 +3395,31 @@ window.openStudentExamReviewModal = function(examId) {
     const key1 = stId + '_' + ex.id;
     const key2 = String(stId) + '_' + String(ex.id);
     
-    // Retrieve student exam questions
-    const questions = getExamQuestions(ex, st.id);
-    const answers = (appState.studentExamAnswers && (appState.studentExamAnswers[key1] || appState.studentExamAnswers[key2])) || {};
-    const grades = appState.studentExamGrades || {};
-    const gr = grades[key1] || grades[key2];
-    const scoreText = gr ? (gr.finalScore !== null && gr.finalScore !== undefined ? `${gr.finalScore} / 100` : 'Sedang Dikoreksi') : 'Belum Dinilai / Ujian Tidak Dikerjakan';
+    // Load the authoritative completed attempt from the server. The response contains
+    // only the assigned question packet plus this student's submitted answers.
+    let reviewData = null;
+    try {
+        const reviewResponse = await fetch(`/api/exam/my-review?examId=${encodeURIComponent(ex.id)}`, { cache: 'no-store' });
+        reviewData = await reviewResponse.json().catch(() => null);
+        if (!reviewResponse.ok || !reviewData || reviewData.success !== true) {
+            throw new Error(reviewData?.message || 'Gagal memuat jawaban ujian.');
+        }
+    } catch (error) {
+        console.error('Gagal memuat review jawaban siswa:', error);
+        showToast(error.message || 'Gagal memuat jawaban ujian.', 'error');
+        return;
+    }
+
+    const questions = Array.isArray(reviewData.questions) ? reviewData.questions : [];
+    const answers = {};
+    questions.forEach((question) => {
+        if (question && question.id !== undefined && question.studentAnswer !== undefined && question.studentAnswer !== null) {
+            answers[String(question.id)] = question.studentAnswer;
+        }
+    });
+    const scoreText = reviewData.showScore === false
+        ? 'Disembunyikan Guru'
+        : (reviewData.finalScore !== null && reviewData.finalScore !== undefined ? `${reviewData.finalScore} / 100` : 'Sedang Dikoreksi');
 
     const modal = document.getElementById('modal-container');
     if (!modal) return;
@@ -3418,21 +3437,9 @@ window.openStudentExamReviewModal = function(examId) {
             const studentAns = answers[q.id] !== undefined ? answers[q.id] : answers[String(q.id)];
             const hasAnswered = studentAns !== undefined && studentAns !== null && String(studentAns).trim() !== '';
             
-            let isCorrect = false;
-            let statusBadge = '';
-            
-            if (q.type === 'esay' || q.type === 'essay') {
-                statusBadge = `<span class="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-xl text-[10px] font-bold">Soal Esay</span>`;
-            } else {
-                isCorrect = isCorrectAnswer(q, studentAns);
-                if (hasAnswered) {
-                    statusBadge = isCorrect 
-                        ? `<span class="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-xl text-[10px] font-bold"><i class="fa-solid fa-circle-check mr-1"></i> Benar</span>`
-                        : `<span class="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-xl text-[10px] font-bold"><i class="fa-solid fa-circle-xmark mr-1"></i> Salah</span>`;
-                } else {
-                    statusBadge = `<span class="px-2.5 py-1 bg-slate-100 text-slate-500 rounded-xl text-[10px] font-bold"><i class="fa-solid fa-circle-minus mr-1"></i> Tidak Dijawab</span>`;
-                }
-            }
+            const statusBadge = hasAnswered
+                ? `<span class="px-2.5 py-1 bg-indigo-100 text-indigo-800 rounded-xl text-[10px] font-bold"><i class="fa-solid fa-floppy-disk mr-1"></i> Jawaban Tersimpan</span>`
+                : `<span class="px-2.5 py-1 bg-slate-100 text-slate-500 rounded-xl text-[10px] font-bold"><i class="fa-solid fa-circle-minus mr-1"></i> Tidak Dijawab</span>`;
 
             // Options display
             let optionsHtml = '';
@@ -3443,23 +3450,20 @@ window.openStudentExamReviewModal = function(examId) {
                         ${opts.map((opt, oIdx) => {
                             const optLetter = String.fromCharCode(65 + oIdx);
                             const isStudentSelection = String(studentAns).trim().toLowerCase() === optLetter.toLowerCase() || String(studentAns).trim() === String(opt).trim();
-                            const isCorrectOpt = isOptionAnswerKey(q, opt) || String(q.answer || '').trim().toLowerCase() === optLetter.toLowerCase();
                             
                             let optClass = 'bg-slate-50 border-slate-200 text-slate-700';
                             let iconHtml = `<span class="w-6 h-6 rounded-lg bg-slate-200 text-slate-600 flex items-center justify-center text-xs font-black">${optLetter}</span>`;
                             
-                            if (isCorrectOpt) {
-                                optClass = 'bg-emerald-50 border-emerald-300 text-emerald-950 font-semibold';
-                                iconHtml = `<span class="w-6 h-6 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xs font-black"><i class="fa-solid fa-check"></i></span>`;
-                            } else if (isStudentSelection) {
-                                optClass = 'bg-rose-50 border-rose-300 text-rose-950 font-semibold';
-                                iconHtml = `<span class="w-6 h-6 rounded-lg bg-rose-600 text-white flex items-center justify-center text-xs font-black"><i class="fa-solid fa-xmark"></i></span>`;
+                            if (isStudentSelection) {
+                                optClass = 'bg-indigo-50 border-indigo-300 text-indigo-950 font-semibold ring-1 ring-indigo-200';
+                                iconHtml = `<span class="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center text-xs font-black">${optLetter}</span>`;
                             }
                             
                             return `
                                 <div class="p-3 rounded-2xl border flex items-center gap-3 text-xs transition ${optClass}">
                                     ${iconHtml}
                                     <div class="flex-1 leading-relaxed">${assessmentEscapeHtml(opt)}</div>
+                                    ${isStudentSelection ? '<span class="px-2 py-1 rounded-lg bg-indigo-100 text-indigo-700 text-[9px] font-black uppercase tracking-wide">Pilihan Anda</span>' : ''}
                                 </div>
                             `;
                         }).join('')}
@@ -3484,14 +3488,8 @@ window.openStudentExamReviewModal = function(examId) {
                 </div>
             ` : '';
 
-            // Explanation
-            const explain = q.explanation || q.explain || q.pembahasan;
-            const explainHtml = explain ? `
-                <div class="mt-4 p-4 bg-indigo-50/50 border border-indigo-100/60 rounded-2xl text-xs space-y-1">
-                    <p class="font-extrabold text-indigo-950 flex items-center gap-1.5"><i class="fa-solid fa-circle-info text-indigo-600"></i> Pembahasan / Penjelasan:</p>
-                    <p class="text-indigo-900 leading-relaxed font-medium">${assessmentEscapeHtml(explain)}</p>
-                </div>
-            ` : '';
+            // Student review intentionally never displays answer keys or explanations.
+            const explainHtml = '';
 
             return `
                 <div class="bg-white p-5 sm:p-6 rounded-3xl border border-slate-100 shadow-xs space-y-3">
@@ -3517,7 +3515,7 @@ window.openStudentExamReviewModal = function(examId) {
                 <div class="p-5 sm:p-6 bg-white border-b border-slate-200 flex items-center justify-between shrink-0">
                     <div>
                         <h3 class="font-extrabold text-slate-800 text-sm sm:text-base flex items-center gap-2">
-                            <i class="fa-solid fa-graduation-cap text-indigo-600"></i> Review Lembar Kerja & Soal Ujian
+                            <i class="fa-solid fa-clipboard-check text-indigo-600"></i> Review Jawaban Ujian Anda
                         </h3>
                         <p class="text-[11px] text-slate-500 font-medium mt-0.5">${assessmentEscapeHtml(ex.title)} &nbsp;|&nbsp; Mapel: ${assessmentEscapeHtml(ex.subject || '-')}</p>
                     </div>
@@ -3537,8 +3535,8 @@ window.openStudentExamReviewModal = function(examId) {
                         <p class="text-slate-900 font-black">${st.className || 'Semua Kelas'}</p>
                     </div>
                     <div class="space-y-0.5">
-                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total Soal</p>
-                        <p class="text-slate-900 font-black">${questions.length} Butir Soal</p>
+                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Jawaban Tersimpan</p>
+                        <p class="text-slate-900 font-black">${Number(reviewData.answeredCount || 0)} / ${questions.length} Soal</p>
                     </div>
                     <div class="space-y-0.5">
                         <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Nilai Perolehan</p>
@@ -3548,6 +3546,10 @@ window.openStudentExamReviewModal = function(examId) {
 
                 <!-- Content Area -->
                 <div class="flex-1 overflow-y-auto p-5 sm:p-6 space-y-4" id="exam-review-scroll-container">
+                    <div class="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl text-[11px] text-indigo-800 font-medium flex items-start gap-2">
+                        <i class="fa-solid fa-circle-info mt-0.5"></i>
+                        <span>Review ini hanya menampilkan soal dan jawaban yang Anda kirimkan. Kunci jawaban, pembahasan, serta penanda benar/salah tidak ditampilkan.</span>
+                    </div>
                     ${questionItemsHtml}
                 </div>
 
@@ -3859,11 +3861,18 @@ async function renderStudentCBTList(container, isRefresh = false) {
         if (isDone) {
             badgeHtml = `<span class="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-xl text-[10px] font-bold">Sudah Dikerjakan</span>`;
             let downloadBtnHtml = '';
-            if (ex.allowDownloadResult) {
+            const resultIsFinal = Boolean(gr && gr.isGraded === true && gr.finalScore !== null && gr.finalScore !== undefined);
+            if (ex.allowDownloadResult && resultIsFinal) {
                 downloadBtnHtml = `
                     <button type="button" onclick="downloadStudentExamPDF('${ex.id}')" class="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm">
                         <i class="fa-solid fa-file-pdf"></i> Download Hasil Ujian
                     </button>
+                `;
+            } else if (ex.allowDownloadResult && !resultIsFinal) {
+                downloadBtnHtml = `
+                    <div class="mt-2 w-full py-2.5 px-3 bg-amber-50 border border-amber-100 text-amber-700 font-semibold rounded-xl text-[11px] text-center">
+                        <i class="fa-solid fa-hourglass-half mr-1"></i> PDF hasil tersedia setelah koreksi selesai
+                    </div>
                 `;
             }
             actionBtnHtml = `
@@ -3888,9 +3897,9 @@ async function renderStudentCBTList(container, isRefresh = false) {
                 actionBtnHtml = `
                     <div class="space-y-2 w-full">
                         <button type="button" onclick="showScheduleExpiredAlert('${ex.id}')" class="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 font-semibold rounded-2xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5"><i class="fa-solid fa-calendar-xmark text-rose-500"></i> Jadwal Sudah Lewat</button>
-                        <button type="button" onclick="window.openStudentExamReviewModal('${ex.id}')" class="w-full py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-2xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5">
-                            <i class="fa-solid fa-eye"></i> Lihat Soal Ujian
-                        </button>
+                        <div class="w-full py-2 px-3 bg-slate-50 border border-slate-100 text-slate-500 font-semibold rounded-2xl text-[11px] text-center">
+                            Review jawaban tersedia hanya untuk ujian yang sudah dikerjakan.
+                        </div>
                     </div>
                 `;
                 statusNoticeHtml = `<div class="p-2.5 bg-rose-50 border border-rose-100 rounded-2xl text-[11px] text-rose-700 flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation text-rose-500"></i> Batas jadwal pelaksanaan ujian ini telah berakhir</div>`;
@@ -10449,7 +10458,7 @@ setInterval(() => {
     }
 }, 3000);
 
-function downloadStudentExamPDF(examId) {
+async function downloadStudentExamPDF(examId) {
     if (!window.jspdf) {
         showToast('Library PDF belum siap.', 'error');
         return;
@@ -10469,8 +10478,19 @@ function downloadStudentExamPDF(examId) {
     const grades = appState.studentExamGrades || {};
     const gr = grades[key1] || grades[key2] || {};
     
-    const answers = (appState.studentExamAnswers && (appState.studentExamAnswers[key1] || appState.studentExamAnswers[key2])) || {};
-    const questions = getExamQuestions(ex, st.id);
+    let reviewData = null;
+    try {
+        const reviewResponse = await fetch(`/api/exam/my-result-download?examId=${encodeURIComponent(ex.id)}`, { cache: 'no-store' });
+        reviewData = await reviewResponse.json().catch(() => null);
+        if (!reviewResponse.ok || !reviewData || reviewData.success !== true) {
+            throw new Error(reviewData?.message || 'Gagal memuat jawaban ujian.');
+        }
+    } catch (error) {
+        console.error('Gagal memuat data PDF hasil siswa:', error);
+        showToast(error.message || 'Gagal memuat jawaban ujian.', 'error');
+        return;
+    }
+    const questions = Array.isArray(reviewData.questions) ? reviewData.questions : [];
 
     // Header Sekolah / Madrasah
     doc.setFont("helvetica", "bold");
@@ -10520,7 +10540,7 @@ function downloadStudentExamPDF(examId) {
     doc.text("Nilai Ujian:", 105, 54);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(220, 38, 38); // red-600
-    const finalScoreStr = gr.finalScore !== null && gr.finalScore !== undefined ? String(gr.finalScore) : 'Sedang Dikoreksi';
+    const finalScoreStr = reviewData.finalScore !== null && reviewData.finalScore !== undefined ? String(reviewData.finalScore) : 'Sedang Dikoreksi';
     doc.text(finalScoreStr, 135, 54);
 
     doc.setTextColor(51, 65, 85); // reset slate-700
@@ -10528,7 +10548,7 @@ function downloadStudentExamPDF(examId) {
 
     // List of questions and answers
     doc.setFont("helvetica", "bold");
-    doc.text("DAFTAR SOAL, KUNCI JAWABAN, DAN JAWABAN SISWA", 14, 68);
+    doc.text("DAFTAR SOAL, KUNCI, DAN HASIL KOREKSI", 14, 68);
     
     let y = 75;
     const pageHeight = doc.internal.pageSize.height;
@@ -10540,16 +10560,21 @@ function downloadStudentExamPDF(examId) {
         const rawQuestionText = String(q.question || '').replace(/<[^>]*>/g, ''); // strip HTML tags
         const questionLines = doc.splitTextToSize(`${idx + 1}. ${rawQuestionText}`, 175);
         
-        const userAns = answers[q.id] !== undefined ? answers[q.id] : (answers[String(q.id)] || '-');
-        const correctAns = String(q.answer || '-');
-        
-        const userAnsLines = doc.splitTextToSize(`Jawaban Siswa: ${userAns}`, 175);
+        const userAns = q.studentAnswer !== undefined && q.studentAnswer !== null && String(q.studentAnswer).trim() !== ''
+            ? q.studentAnswer
+            : 'Tidak dijawab';
+        const correctAns = q.correctAnswer !== undefined && q.correctAnswer !== null && String(q.correctAnswer).trim() !== ''
+            ? q.correctAnswer
+            : '-';
+        const userStatus = q.isCorrect === true ? 'Benar' : (q.isCorrect === false ? 'Salah' : 'Esai');
+        const userAnsLines = doc.splitTextToSize(`Jawaban Anda: ${userAns}${q.isCorrect === null ? '' : ` (${userStatus})`}`, 175);
         const correctAnsLines = doc.splitTextToSize(`Kunci Jawaban: ${correctAns}`, 175);
-        
-        const explanationText = q.explanation ? String(q.explanation) : 'Tidak ada penjelasan.';
-        const explanationLines = doc.splitTextToSize(`Penjelasan: ${explanationText}`, 175);
-        
-        let blockHeight = (questionLines.length * 5) + (userAnsLines.length * 5) + (correctAnsLines.length * 5) + (explanationLines.length * 5) + 12;
+        const explanationText = q.explanation ? String(q.explanation) : 'Tidak ada pembahasan.';
+        const explanationLines = doc.splitTextToSize(`Pembahasan: ${explanationText}`, 175);
+        const essayScoreLines = q.isCorrect === null && q.essayScore !== null && q.essayScore !== undefined
+            ? doc.splitTextToSize(`Nilai Esai: ${q.essayScore}`, 175)
+            : [];
+        let blockHeight = (questionLines.length * 5) + (userAnsLines.length * 5) + (correctAnsLines.length * 5) + (explanationLines.length * 5) + (essayScoreLines.length * 5) + 14;
 
         if (q.options && Array.isArray(q.options) && q.options.length > 0) {
             q.options.forEach(opt => {
@@ -10595,39 +10620,35 @@ function downloadStudentExamPDF(examId) {
 
         y += 1.5;
 
-        // Write User Answer
+        // Corrected details are exposed only by the guarded result-download endpoint.
         doc.setFontSize(9);
-        const isCorrect = q.type === 'esay' || q.type === 'essay' ? null : isCorrectAnswer(q, userAns);
-        
         doc.setFont("helvetica", "bold");
-        if (isCorrect === true) {
-            doc.setTextColor(16, 185, 129); // emerald-600 (Correct)
-            doc.text(`Jawaban Anda: ${userAns} (Benar)`, 15, y);
-        } else if (isCorrect === false) {
-            doc.setTextColor(220, 38, 38); // red-600 (Incorrect)
-            doc.text(`Jawaban Anda: ${userAns} (Salah)`, 15, y);
-        } else {
-            doc.setTextColor(202, 138, 4); // yellow-600 (Essay - Needs Grading)
-            doc.text(`Jawaban Anda: ${userAns}`, 15, y);
-        }
-        y += 4.5;
+        if (q.isCorrect === true) doc.setTextColor(16, 185, 129);
+        else if (q.isCorrect === false) doc.setTextColor(220, 38, 38);
+        else doc.setTextColor(202, 138, 4);
+        userAnsLines.forEach((line) => {
+            doc.text(line, 15, y);
+            y += 4.5;
+        });
 
-        // Write Correct Answer
-        doc.setFont("helvetica", "bold");
-        doc.setTextColor(79, 70, 229); // indigo-600
-        doc.text(`Kunci Jawaban: ${correctAns}`, 15, y);
-        y += 4.5;
+        doc.setTextColor(79, 70, 229);
+        correctAnsLines.forEach((line) => {
+            doc.text(line, 15, y);
+            y += 4.5;
+        });
 
-        // Write Explanation
-        doc.setFont("helvetica", "italic");
-        doc.setTextColor(100, 116, 139); // slate-500
-        explanationLines.forEach((line, lIdx) => {
-            if (lIdx === 0) {
-                const prefix = "Penjelasan: ";
-                doc.text(prefix + (q.explanation || 'Tidak ada penjelasan.'), 15, y);
-            } else {
+        if (essayScoreLines.length > 0) {
+            doc.setTextColor(5, 150, 105);
+            essayScoreLines.forEach((line) => {
                 doc.text(line, 15, y);
-            }
+                y += 4.5;
+            });
+        }
+
+        doc.setFont("helvetica", "italic");
+        doc.setTextColor(100, 116, 139);
+        explanationLines.forEach((line) => {
+            doc.text(line, 15, y);
             y += 4.5;
         });
 

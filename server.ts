@@ -12324,6 +12324,159 @@ app.get("/api/exam/review", requireAuth, requireRole(['teacher', 'guru', 'admin'
   }
 });
 
+// Student self-review: return only the exact assigned questions and the student's own submitted answers.
+// Never expose answer keys, correctness flags, master-key fields, or explanations to student clients.
+app.get("/api/exam/my-review", requireAuth, requireRole(['student', 'siswa', 'class_leader', 'ketua_kelas']), (req: any, res) => {
+  try {
+    const authUser = req.user || getAuthUser(req);
+    const studentId = resolveStudentId(req, authUser);
+    const examId = String(req.query?.examId || '').trim();
+    if (!studentId || !examId) {
+      return res.status(400).json({ success: false, message: "examId wajib diisi." });
+    }
+
+    const context = getExamAttemptContext(req, authUser, studentId, examId);
+    if (rejectExamAttemptContext(res, context)) return;
+
+    const key = resolveExamStateKey(req, studentId, examId);
+    const completed = Boolean(completedExams[key] || forceFinishedExams[key]);
+    if (!completed) {
+      return res.status(409).json({ success: false, message: "Review tersedia setelah ujian selesai dikerjakan." });
+    }
+
+    const assignedQuestions = Array.isArray(studentExamQuestions[key]) ? studentExamQuestions[key] : [];
+    const masterQuestions = Array.isArray(studentExamMasterQuestions[key]) ? studentExamMasterQuestions[key] : [];
+    const sourceQuestions = assignedQuestions.length > 0
+      ? assignedQuestions
+      : masterQuestions.map((question: any) => sanitizeQuestionForStudent(question)).filter(Boolean);
+
+    if (sourceQuestions.length === 0) {
+      return res.status(404).json({ success: false, message: "Paket soal ujian siswa tidak ditemukan." });
+    }
+
+    const persistedAnswers = studentExamAnswers[key] && typeof studentExamAnswers[key] === 'object'
+      ? studentExamAnswers[key]
+      : {};
+    const liveAnswers = activeExamSessions[key]?.answers && typeof activeExamSessions[key].answers === 'object'
+      ? activeExamSessions[key].answers
+      : {};
+    const answers = { ...persistedAnswers, ...liveAnswers };
+
+    const reviewQuestions = sourceQuestions.map((question: any, index: number) => {
+      const safeQuestion = sanitizeQuestionForStudent(question);
+      const studentAnswer = answers[question.id] !== undefined
+        ? answers[question.id]
+        : answers[String(question.id)];
+      const answered = studentAnswer !== undefined && studentAnswer !== null && String(studentAnswer).trim() !== '';
+      return {
+        ...safeQuestion,
+        number: index + 1,
+        studentAnswer: studentAnswer === undefined ? null : studentAnswer,
+        answered
+      };
+    });
+
+    const grade = studentExamGrades[key] || null;
+    const showScore = context.exam?.showScore !== false;
+    return res.json({
+      success: true,
+      studentId,
+      examId,
+      questions: reviewQuestions,
+      answeredCount: reviewQuestions.filter((question: any) => question.answered).length,
+      totalQuestions: reviewQuestions.length,
+      showScore,
+      finalScore: showScore && grade?.finalScore !== undefined && grade?.finalScore !== null ? grade.finalScore : null
+    });
+  } catch (error: any) {
+    console.error('[Student Exam Review Error]:', error);
+    return res.status(500).json({ success: false, message: safeServerError(error, 'Gagal memuat jawaban ujian siswa.') });
+  }
+});
+
+// Corrected student result for downloadable PDF.
+// Detailed correction data is available only after final grading
+// and only when the teacher explicitly enabled result downloads on the exam schedule.
+app.get("/api/exam/my-result-download", requireAuth, requireRole(['student', 'siswa', 'class_leader', 'ketua_kelas']), async (req: any, res) => {
+  try {
+    const authUser = req.user || getAuthUser(req);
+    const studentId = resolveStudentId(req, authUser);
+    const examId = String(req.query?.examId || '').trim();
+    if (!studentId || !examId) {
+      return res.status(400).json({ success: false, message: "examId wajib diisi." });
+    }
+
+    const context = getExamAttemptContext(req, authUser, studentId, examId);
+    if (rejectExamAttemptContext(res, context)) return;
+    if (context.exam?.allowDownloadResult !== true) {
+      return res.status(403).json({ success: false, message: "Unduh hasil ujian tidak diaktifkan oleh guru." });
+    }
+
+    const key = resolveExamStateKey(req, studentId, examId);
+    const completed = Boolean(completedExams[key] || forceFinishedExams[key]);
+    if (!completed) {
+      return res.status(409).json({ success: false, message: "Hasil ujian belum tersedia karena ujian belum selesai." });
+    }
+
+    const grade = studentExamGrades[key] || null;
+    const resultIsFinal = Boolean(
+      grade &&
+      grade.isGraded === true &&
+      grade.finalScore !== undefined &&
+      grade.finalScore !== null
+    );
+    if (!resultIsFinal) {
+      return res.status(409).json({ success: false, message: "Hasil ujian masih menunggu koreksi guru." });
+    }
+
+    let masterQuestions = studentExamMasterQuestions[key];
+    if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
+      masterQuestions = await recoverMissingExamMasterQuestions(key, context.exam);
+    }
+    if (!Array.isArray(masterQuestions) || masterQuestions.length === 0) {
+      return res.status(409).json({ success: false, message: "Paket hasil ujian tidak dapat dipulihkan dengan aman." });
+    }
+
+    const persistedAnswers = studentExamAnswers[key] && typeof studentExamAnswers[key] === 'object' ? studentExamAnswers[key] : {};
+    const liveAnswers = activeExamSessions[key]?.answers && typeof activeExamSessions[key].answers === 'object' ? activeExamSessions[key].answers : {};
+    const answers = { ...persistedAnswers, ...liveAnswers };
+
+    const resultQuestions = masterQuestions.map((question: any, index: number) => {
+      const studentAnswer = answers[question.id] !== undefined ? answers[question.id] : answers[String(question.id)];
+      const answered = studentAnswer !== undefined && studentAnswer !== null && String(studentAnswer).trim() !== '';
+      const isEssay = question.type === 'esay' || question.type === 'essay';
+      const correctAnswer = isEssay
+        ? String(question.answer || '').trim()
+        : String(question.correctOptionText || question.answer || '').trim();
+      const essayScore = isEssay
+        ? (grade.essayGrades?.[question.id] ?? grade.essayGrades?.[String(question.id)] ?? null)
+        : null;
+
+      return {
+        ...sanitizeQuestionForStudent(question),
+        number: index + 1,
+        studentAnswer: studentAnswer === undefined ? null : studentAnswer,
+        answered,
+        correctAnswer,
+        isCorrect: isEssay ? null : isMasterMultipleChoiceAnswerCorrect(question, studentAnswer),
+        explanation: String(question.explanation || question.explain || question.pembahasan || '').trim(),
+        essayScore
+      };
+    });
+
+    return res.json({
+      success: true,
+      studentId,
+      examId,
+      finalScore: grade.finalScore,
+      questions: resultQuestions
+    });
+  } catch (error: any) {
+    console.error('[Student Result Download Error]:', error);
+    return res.status(500).json({ success: false, message: safeServerError(error, 'Gagal memuat hasil ujian terkoreksi.') });
+  }
+});
+
 app.post("/api/exam/attempt/start-questions", async (req, res) => {
   const authUser = getAuthUser(req);
   if (!authUser) {
