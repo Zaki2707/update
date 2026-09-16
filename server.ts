@@ -6230,6 +6230,37 @@ const GAME_ARENA_AVATAR_PRESETS = new Set(['bintang', 'roket', 'buku', 'komet', 
 const GAME_ARENA_COMPATIBLE_TYPES = new Set(['tebak_kata', 'tebak_gambar', 'susun_kata', 'true_false']);
 const GAME_ARENA_MODES = new Set<GameArenaMode>(['laser_duel', 'tug_war', 'battle_royale', 'quiz_race', 'base_battle']);
 
+
+function normalizeArenaList(value: any, maxItems = 500): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((item: any) => String(item || '').trim()).filter(Boolean))).slice(0, maxItems);
+}
+
+function defaultArenaModeConfig() {
+  return { enabled: true, quickMatch: true, classIds: [] as string[], gameIds: [] as string[] };
+}
+
+function getArenaTenantConfig(req: any) {
+  const tenantId = gameTenantNamespace(req);
+  const raw = gameArenaConfigs?.[tenantId];
+  const modes: Record<string, any> = {};
+  for (const mode of GAME_ARENA_MODES) {
+    const item = raw?.modes?.[mode];
+    modes[mode] = {
+      enabled: item?.enabled !== false,
+      quickMatch: item?.quickMatch !== false,
+      classIds: normalizeArenaList(item?.classIds, 200),
+      gameIds: normalizeArenaList(item?.gameIds, 500)
+    };
+  }
+  return { version: 1, modes };
+}
+
+function arenaClassAllowed(config: any, classKey: string, className = '') {
+  const ids = Array.isArray(config?.classIds) ? config.classIds.map((x: any) => String(x)) : [];
+  return ids.length === 0 || ids.includes(String(classKey || '')) || ids.includes(String(className || ''));
+}
+
 function isGameArenaStudentRole(role: any): boolean {
   return ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(String(role || '').toLowerCase());
 }
