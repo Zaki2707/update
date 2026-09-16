@@ -3402,7 +3402,24 @@ app.use((req: any, res, next) => {
 
   const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
   const exactStaffWrite = p === '/api/exams' || p === '/api/lkpds' || p === '/api/games';
-  if (isMutation && (exactStaffWrite || staffWritePrefixes.some(prefix => p.startsWith(prefix))) && !staffRoles.has(role)) {
+
+  // Student self-service photo routes intentionally live under /api/students,
+  // which is otherwise staff-write-only. Allow only these two narrowly-scoped
+  // mutations through the global staff gate; each route still enforces that
+  // student actors may operate only on their own JWT identity and tenant.
+  const isStudentSelfServicePhotoMutation =
+    isStudentAuthRole(role) &&
+    (
+      (method === 'POST' && /^\/api\/students\/[^/]+\/set-profile-photo$/.test(p)) ||
+      (method === 'DELETE' && /^\/api\/students\/[^/]+\/photo-history$/.test(p))
+    );
+
+  if (
+    isMutation &&
+    (exactStaffWrite || staffWritePrefixes.some(prefix => p.startsWith(prefix))) &&
+    !staffRoles.has(role) &&
+    !isStudentSelfServicePhotoMutation
+  ) {
     return res.status(403).json({ success: false, message: 'Aksi ini hanya dapat dilakukan guru atau administrator.' });
   }
   if (isMutation && !enforceTenantMutationOwnership(req, res, authUser)) return;
