@@ -453,12 +453,16 @@ async function loadStoreFromFirestore(): Promise<Record<string, any>> {
 // ONLINE: Cloudinary is the photo source of truth; Cloud Run filesystem is never used as photo storage/cache.
 const uploadsDir = path.join(process.cwd(), "uploads");
 const photosDir = path.join(uploadsDir, "attendance_photos");
+const learningAssetsDir = path.join(uploadsDir, "learning_assets");
 if (isOfflineMode) {
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
   if (!fs.existsSync(photosDir)) {
     fs.mkdirSync(photosDir, { recursive: true });
+  }
+  if (!fs.existsSync(learningAssetsDir)) {
+    fs.mkdirSync(learningAssetsDir, { recursive: true });
   }
 }
 
@@ -840,6 +844,39 @@ function parseSafeRasterDataUrl(value: string): { mime: string; buffer: Buffer }
   const actualMime = sniffSafeRasterMime(buffer);
   if (!actualMime || actualMime !== declaredMime) return null;
   return { mime: actualMime, buffer };
+}
+
+const MAX_LEARNING_PDF_BYTES = 15 * 1024 * 1024;
+
+function parseSafePdfDataUrl(value: string): { mime: string; buffer: Buffer } | null {
+  const match = String(value || '').match(/^data:application\/pdf;base64,([A-Za-z0-9+/=\r\n]+)$/i);
+  if (!match) return null;
+  const buffer = Buffer.from(match[1].replace(/\s+/g, ''), 'base64');
+  if (!buffer.length || buffer.length > MAX_LEARNING_PDF_BYTES) return null;
+  if (buffer.length < 5 || buffer.subarray(0, 5).toString('ascii') !== '%PDF-') return null;
+  return { mime: 'application/pdf', buffer };
+}
+
+function sanitizeLearningAssetName(value: any, fallback: string): string {
+  const cleaned = String(value || fallback || 'lampiran')
+    .replace(/[\u0000-\u001F\u007F<>:"/\\|?*]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+  return cleaned || fallback || 'lampiran';
+}
+
+function isTrustedLearningAssetUrl(value: any): boolean {
+  const raw = String(value || '').trim();
+  if (/^\/api\/learning-assets\/[A-Za-z0-9._-]{20,180}$/.test(raw)) return true;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' &&
+      url.hostname === 'res.cloudinary.com' &&
+      url.pathname.includes('/madrasah_learning_assets/');
+  } catch {
+    return false;
+  }
 }
 
 function isSafeManagedPhotoId(value: any): boolean {
@@ -5281,6 +5318,14 @@ function sanitizeLearningBlocks(rawBlocks: any): any[] {
     if (type === 'video' || type === 'link') {
       const url = String(raw.url || '').trim().slice(0, 2048);
       if (/^https?:\/\//i.test(url)) blocks.push({ type, url });
+      continue;
+    }
+    if (type === 'image' || type === 'pdf') {
+      const url = String(raw.url || '').trim().slice(0, 2048);
+      if (!isTrustedLearningAssetUrl(url)) continue;
+      const fallbackName = type === 'pdf' ? 'Materi PDF' : 'Gambar materi';
+      const name = sanitizeLearningAssetName(raw.name || raw.alt || raw.caption, fallbackName);
+      blocks.push({ type, url, name });
       continue;
     }
   }
@@ -15920,6 +15965,121 @@ app.post("/api/lesson-plans/recover-legacy-bundle", requireAuth, requireRole(['a
       success: false,
       message: safeServerError(err, 'Recovery modul ajar legacy gagal.')
     });
+  }
+});
+
+app.post("/api/learning/assets", requireAuth, requireRole(['teacher', 'guru', 'admin', 'bos', 'superadmin']), async (req: any, res) => {
+  try {
+    const rawData = String(req.body?.data || '');
+    const originalName = String(req.body?.name || '');
+    const parsedImage = parseSafeRasterDataUrl(rawData);
+    const parsedPdf = parsedImage ? null : parseSafePdfDataUrl(rawData);
+    const parsed = parsedImage || parsedPdf;
+    if (!parsed) {
+      return res.status(400).json({
+        success: false,
+        message: 'File tidak didukung. Gunakan JPG/PNG/WebP maksimal 10 MB atau PDF maksimal 15 MB.'
+      });
+    }
+
+    const isPdf = parsed.mime === 'application/pdf';
+    const extension = isPdf
+      ? '.pdf'
+      : (parsed.mime === 'image/png' ? '.png' : parsed.mime === 'image/webp' ? '.webp' : '.jpg');
+    const tenantHash = crypto.createHash('sha256')
+      .update(String(getRequestMadrasahId(req) || 'default'))
+      .digest('hex')
+      .slice(0, 12);
+    const assetId = `la_${tenantHash}_${crypto.randomBytes(18).toString('hex')}${extension}`;
+    const displayName = sanitizeLearningAssetName(
+      originalName,
+      isPdf ? 'Materi.pdf' : `Gambar${extension}`
+    );
+
+    if (isOfflineMode) {
+      if (!fs.existsSync(learningAssetsDir)) fs.mkdirSync(learningAssetsDir, { recursive: true });
+      const targetPath = path.join(learningAssetsDir, assetId);
+      if (!targetPath.startsWith(path.resolve(learningAssetsDir) + path.sep) && path.resolve(targetPath) !== path.resolve(learningAssetsDir, assetId)) {
+        return res.status(400).json({ success: false, message: 'Nama aset tidak valid.' });
+      }
+      fs.writeFileSync(targetPath, parsed.buffer);
+      return res.json({
+        success: true,
+        asset: {
+          type: isPdf ? 'pdf' : 'image',
+          url: `/api/learning-assets/${assetId}`,
+          name: displayName,
+          mime: parsed.mime,
+          size: parsed.buffer.length
+        }
+      });
+    }
+
+    if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+      throw new Error('Cloudinary wajib dikonfigurasi pada mode online.');
+    }
+
+    const publicId = isPdf ? assetId : assetId.replace(/\.[A-Za-z0-9]+$/, '');
+    const uploadOptions: any = {
+      folder: `madrasah_learning_assets/${tenantHash}`,
+      resource_type: isPdf ? 'raw' : 'image',
+      public_id: publicId,
+      overwrite: false
+    };
+    const uploaded = await new Promise<any>((resolve, reject) => {
+      cloudinary.uploader.upload(rawData, uploadOptions, (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      });
+    });
+    const url = String(uploaded?.secure_url || uploaded?.url || '');
+    if (!url || !isTrustedLearningAssetUrl(url)) {
+      throw new Error('Cloudinary tidak mengembalikan URL aset materi yang valid.');
+    }
+
+    return res.json({
+      success: true,
+      asset: {
+        type: isPdf ? 'pdf' : 'image',
+        url,
+        name: displayName,
+        mime: parsed.mime,
+        size: parsed.buffer.length
+      }
+    });
+  } catch (err: any) {
+    console.warn('[Learning Asset Upload] Failed:', err?.message || err);
+    return res.status(500).json({ success: false, message: safeServerError(err, 'Upload aset materi gagal.') });
+  }
+});
+
+app.get("/api/learning-assets/:assetId", (req, res) => {
+  if (!isOfflineMode) return res.status(404).end();
+  const assetId = String(req.params.assetId || '');
+  if (!assetId || assetId.length > 180 || !/^[A-Za-z0-9._-]+$/.test(assetId) || path.basename(assetId) !== assetId) {
+    return res.status(400).end();
+  }
+  const filePath = path.join(learningAssetsDir, assetId);
+  const root = path.resolve(learningAssetsDir) + path.sep;
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(root) || !fs.existsSync(resolved)) return res.status(404).end();
+
+  try {
+    const buffer = fs.readFileSync(resolved);
+    const rasterMime = sniffSafeRasterMime(buffer);
+    const isPdf = buffer.length >= 5 && buffer.subarray(0, 5).toString('ascii') === '%PDF-';
+    const mime = rasterMime || (isPdf ? 'application/pdf' : '');
+    if (!mime) return res.status(415).end();
+    res.setHeader('Content-Type', mime);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    if (isPdf) {
+      res.setHeader('Content-Disposition', `inline; filename="${sanitizeLearningAssetName(assetId, 'materi.pdf')}"`);
+      res.setHeader('Content-Security-Policy', "sandbox");
+    }
+    return res.send(buffer);
+  } catch (_) {
+    return res.status(404).end();
   }
 });
 
