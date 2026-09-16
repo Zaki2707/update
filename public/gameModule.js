@@ -3967,7 +3967,7 @@ const GAME_ARENA_FX_LEVELS = ['full', 'light', 'eco'];
 const GAME_ARENA_FX_LABELS = { full: '✨ Penuh', light: '⚡ Ringan', eco: '🔋 Hemat' };
 const GAME_ARENA_ASSET_ROOT = '/assets/game-arena';
 const GAME_ARENA_VEHICLES = ['car-blue.svg','car-red.svg','car-green.svg','car-yellow.svg','car-purple.svg'];
-function gameArenaAsset(path){ return `${GAME_ARENA_ASSET_ROOT}/${String(path||'').replace(/^\\/+/, '')}`; }
+function gameArenaAsset(path){ return `${GAME_ARENA_ASSET_ROOT}/${String(path||'').replace(/^\/+/, '')}`; }
 function gameArenaVehicleAsset(index=0){ return gameArenaAsset(`vehicles/${GAME_ARENA_VEHICLES[Math.abs(Number(index||0)) % GAME_ARENA_VEHICLES.length]}`); }
 
 let adminArenaFxSnapshots = Object.create(null);
