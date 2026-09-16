@@ -1710,7 +1710,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                         <!-- Toggle Mode Livecam -->
                                         <button type="button" onclick="toggleLivecamMode('${activeExam.id}')" class="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-2xl text-xs shadow flex items-center space-x-1.5 transition cursor-pointer">
                                             <i class="fa-solid ${appState.livecamMode === 'video' ? 'fa-video' : 'fa-image'} text-[11px]"></i>
-                                            <span>Mode Semua: ${appState.livecamMode === 'video' ? 'Video Live' : 'Foto Absen'}</span>
+                                            <span>Mode Grup: ${appState.livecamMode === 'video' ? 'Video Live (maks. 4)' : 'Foto Absen'}</span>
                                         </button>
                                         <!-- Log Pelanggaran Anti-Cheat -->
                                         <button type="button" onclick="openViolationsLogModal('${activeExam.id}')" class="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-2xl text-xs shadow flex items-center space-x-1.5 transition cursor-pointer">
@@ -1782,8 +1782,7 @@ function renderAssessmentModule(container, activeSubTab = 'jadwal', examId = nul
                                             const isActive = sessionData !== undefined;
                                             const answeredCount = sessionData ? (sessionData.answeredCount || 0) : 0;
                                             const totalQs = sessionData ? (sessionData.totalQuestions || 0) : 0;
-                                            const stCamMode = (appState.livecamModes && appState.livecamModes[st.id]) ? appState.livecamModes[st.id] : (appState.livecamMode || 'gambar');
-                                            const isStudentVideo = stCamMode === 'video';
+                                            const isStudentVideo = isStudentLivecamVideoRequested(st.id);
                                             const isCurrentlyOutOfTab = isActive && !isDone && (outOfTabMap[k1] === true || outOfTabMap[k2] === true);
                                             
                                             // Get student's latest attendance photo for Mode Gambar
@@ -4924,17 +4923,12 @@ window.initStudentExamCamera = function() {
                 window.sendStudentSingleSnapshot();
             }, 2500);
             
-            // Start LiveKit publishing if configured, else register WebSocket signaling for P2P
+            // P2P_ONLY_LIVECAM_V5: student always registers for direct WebRTC signaling.
             const st = appState.currentUser && appState.currentUser.id ? appState.currentUser : (appState.students[0] || {});
-            if (activeExamSession && activeExamSession.exam) {
-                if (isLiveKitConfigured()) {
-                    startStudentLiveKit(activeExamSession.exam.id, st.id);
-                } else {
-                    // Start WebSocket signaling for WebRTC P2P if LiveKit is not configured
-                    window.initSignalingWebSocket(String(st.id), (senderId, signal) => {
-                        window.handleSingleIncomingSignalForStudent(senderId, signal, st.id);
-                    });
-                }
+            if (activeExamSession && activeExamSession.exam && st.id) {
+                window.initSignalingWebSocket(String(st.id), (senderId, signal) => {
+                    window.handleSingleIncomingSignalForStudent(senderId, signal, st.id);
+                });
             }
         })
         .catch(err => {
@@ -6292,6 +6286,8 @@ window.promptVideoDurationAndDeductTokens = function(onSuccess) {
                     appState.gameMonitoringLivecamMode = 'gambar';
                     appState.lkpdLivecamMode = 'gambar';
                     if (appState.livecamModes) appState.livecamModes = {};
+                    window._globalLivecamStudentIds = [];
+                    closeAllAdminPeerConnections();
                     if (appState.gameMonitoringStudentModes) appState.gameMonitoringStudentModes = {};
                     if (appState.lkpdLivecamModes) appState.lkpdLivecamModes = {};
 
@@ -6352,42 +6348,56 @@ function showTokenDeductionConfirmModal(message, onConfirm) {
 async function toggleLivecamMode(examId) {
     const currentMode = appState.livecamMode || 'gambar';
     const targetMode = currentMode === 'gambar' ? 'video' : 'gambar';
-    
-    if (targetMode === 'video') {
-        if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
-            window.promptVideoDurationAndDeductTokens((minutes) => {
-                appState.livecamMode = 'video';
-                renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
-            });
-        } else {
-            appState.livecamMode = 'video';
-            renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
-        }
-    } else {
+    if (targetMode === 'gambar') {
         appState.livecamMode = 'gambar';
+        appState.livecamModes = {};
+        window._globalLivecamStudentIds = [];
+        closeAllAdminPeerConnections();
         renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
+        return;
     }
+    const candidates = getVisibleActiveMonitorStudentIds(examId);
+    if (candidates.length === 0) {
+        if (window.showToast) window.showToast('Belum ada siswa aktif yang dapat dibuka kameranya.', 'info');
+        return;
+    }
+    const selected = candidates.slice(0, MAX_P2P_LIVECAM_STREAMS);
+    const enable = () => {
+        appState.livecamModes = {};
+        appState.livecamMode = 'video';
+        window._globalLivecamStudentIds = selected;
+        renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
+        if (candidates.length > MAX_P2P_LIVECAM_STREAMS && window.showToast) {
+            window.showToast(`WebRTC P2P dibatasi ${MAX_P2P_LIVECAM_STREAMS} stream bersamaan. Gunakan Spotlight atau pilih siswa lain setelah menutup salah satu kamera.`, 'info');
+        }
+    };
+    if (typeof window.promptVideoDurationAndDeductTokens === 'function') window.promptVideoDurationAndDeductTokens(() => enable());
+    else enable();
 }
 
 async function toggleStudentLivecamMode(examId, studentId) {
     if (!appState.livecamModes) appState.livecamModes = {};
-    const currentMode = appState.livecamModes[studentId] || 'gambar';
+    const id = String(studentId);
+    const currentMode = isStudentLivecamVideoRequested(id) ? 'video' : 'gambar';
     const targetMode = currentMode === 'gambar' ? 'video' : 'gambar';
-    
-    if (targetMode === 'video') {
-        if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
-            window.promptVideoDurationAndDeductTokens((minutes) => {
-                appState.livecamModes[studentId] = 'video';
-                renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
-            });
-        } else {
-            appState.livecamModes[studentId] = 'video';
-            renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
-        }
-    } else {
-        appState.livecamModes[studentId] = 'gambar';
+    if (targetMode === 'gambar') {
+        appState.livecamModes[id] = 'gambar';
+        window._globalLivecamStudentIds = (window._globalLivecamStudentIds || []).map(String).filter(value => value !== id);
+        closeAdminPeerConnection(id, true);
         renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
+        return;
     }
+    const occupiedSlots = getOccupiedLivecamSlotIds();
+    if (!occupiedSlots.has(id) && occupiedSlots.size >= MAX_P2P_LIVECAM_STREAMS) {
+        if (window.showToast) window.showToast(`Maksimal ${MAX_P2P_LIVECAM_STREAMS} kamera live P2P dapat aktif bersamaan. Tutup salah satu kamera terlebih dahulu.`, 'warning');
+        return;
+    }
+    const enable = () => {
+        appState.livecamModes[id] = 'video';
+        renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
+    };
+    if (typeof window.promptVideoDurationAndDeductTokens === 'function') window.promptVideoDurationAndDeductTokens(() => enable());
+    else enable();
 }
 
 function onMonitoringFilterChange(examId) {
@@ -9308,7 +9318,129 @@ window.confirmImportEvaluasiToHarian = async function(classId, examId) {
 
 window._adminPeerConnections = window._adminPeerConnections || {};
 window._adminPendingCandidates = window._adminPendingCandidates || {};
+window._adminRemoteStreams = window._adminRemoteStreams || {};
+window._adminPeerPollIntervals = window._adminPeerPollIntervals || {};
+window._globalLivecamStudentIds = window._globalLivecamStudentIds || [];
 window._signalingWs = null;
+
+// P2P_ONLY_LIVECAM_V5: Livecam runs directly browser-to-browser.
+// Bound simultaneous video streams to protect proctor CPU and network bandwidth.
+const MAX_P2P_LIVECAM_STREAMS = 4;
+
+function isStudentLivecamVideoRequested(studentId) {
+    const id = String(studentId);
+    const explicit = appState.livecamModes && appState.livecamModes[id];
+    if (explicit === 'video') return true;
+    if (explicit === 'gambar') return false;
+    return appState.livecamMode === 'video' && (window._globalLivecamStudentIds || []).map(String).includes(id);
+}
+
+function getRequestedLivecamStudentIds() {
+    return (appState.students || []).map(st => String(st.id)).filter(id => isStudentLivecamVideoRequested(id));
+}
+
+function getOccupiedLivecamSlotIds() {
+    const occupied = new Set();
+    Object.entries(window._adminPeerConnections || {}).forEach(([id, pc]) => {
+        if (pc && pc.connectionState !== 'closed' && pc.connectionState !== 'failed') occupied.add(String(id));
+    });
+    document.querySelectorAll('[id^="webrtc-video-"]').forEach(video => {
+        const id = String(video.id || '').replace('webrtc-video-', '');
+        if (id) occupied.add(id);
+    });
+    if (window._focusedStudentId && document.getElementById('focus-livecam-video')) {
+        occupied.add(String(window._focusedStudentId));
+    }
+    return occupied;
+}
+
+function getVisibleActiveMonitorStudentIds(examId) {
+    const visible = Array.from(document.querySelectorAll('[id^="monitor-card-"]'))
+        .map(el => String(el.id || '').replace('monitor-card-', ''))
+        .filter(Boolean);
+    const sessions = appState.activeExamSessions || {};
+    const completed = appState.completedExams || {};
+    const forced = appState.forceFinishedExams || {};
+    return visible.filter(id => {
+        const key = id + '_' + String(examId);
+        return Boolean(sessions[key]) && !completed[key] && !forced[key];
+    });
+}
+
+function activeAdminPeerCount() {
+    return Object.values(window._adminPeerConnections || {}).filter(pc =>
+        pc && pc.connectionState !== 'closed' && pc.connectionState !== 'failed'
+    ).length;
+}
+
+function canStartAdminPeer(studentId) {
+    const id = String(studentId);
+    const existing = window._adminPeerConnections && window._adminPeerConnections[id];
+    if (existing && existing.connectionState !== 'closed' && existing.connectionState !== 'failed') return true;
+    return activeAdminPeerCount() < MAX_P2P_LIVECAM_STREAMS;
+}
+
+function bindAdminRemoteStream(studentId, stream) {
+    if (!stream) return false;
+    const id = String(studentId);
+    window._adminRemoteStreams[id] = stream;
+    const targets = [];
+    const gridVideo = document.getElementById(`webrtc-video-${id}`);
+    if (gridVideo) targets.push(gridVideo);
+    if (window._focusedStudentId === id) {
+        const focusVideo = document.getElementById('focus-livecam-video');
+        if (focusVideo) targets.push(focusVideo);
+    }
+    targets.forEach(video => {
+        try {
+            if (video.srcObject !== stream) video.srcObject = stream;
+            video.muted = true;
+            const playPromise = video.play();
+            if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(err => console.warn('WebRTC video play blocked:', err));
+        } catch (err) { console.warn('Gagal memasang remote WebRTC stream:', err); }
+    });
+    const fallbackEl = document.getElementById(`webrtc-fallback-${id}`);
+    if (fallbackEl) fallbackEl.style.opacity = '0';
+    if (window._focusedStudentId === id) {
+        const focusLoader = document.getElementById('focus-livecam-loader');
+        if (focusLoader) focusLoader.style.display = 'none';
+    }
+    return targets.length > 0;
+}
+
+function startFocusLivecamStats(studentId) {
+    if (window._focusStatsInterval) clearInterval(window._focusStatsInterval);
+    window._focusStatsInterval = setInterval(() => {
+        if (window._focusedStudentId !== String(studentId)) {
+            clearInterval(window._focusStatsInterval);
+            window._focusStatsInterval = null;
+            return;
+        }
+        const video = document.getElementById('focus-livecam-video');
+        const stats = document.getElementById('focus-livecam-stats');
+        if (video && stats && video.videoWidth > 0) stats.innerText = `Resolusi: ${video.videoWidth}x${video.videoHeight} | P2P WebRTC`;
+    }, 1500);
+}
+
+function closeAdminPeerConnection(studentId, notifyStudent = true) {
+    const id = String(studentId);
+    if (window._adminPeerPollIntervals && window._adminPeerPollIntervals[id]) {
+        clearInterval(window._adminPeerPollIntervals[id]);
+        delete window._adminPeerPollIntervals[id];
+    }
+    const pc = window._adminPeerConnections && window._adminPeerConnections[id];
+    if (pc) {
+        if (notifyStudent) { try { sendSignalingMessage(id, 'admin', { type: 'stop_stream' }); } catch (_) {} }
+        try { pc.close(); } catch (_) {}
+        delete window._adminPeerConnections[id];
+    }
+    if (window._adminPendingCandidates) delete window._adminPendingCandidates[id];
+    if (window._adminRemoteStreams) delete window._adminRemoteStreams[id];
+}
+
+function closeAllAdminPeerConnections() {
+    Object.keys(window._adminPeerConnections || {}).forEach(id => closeAdminPeerConnection(id, true));
+}
 
 // Helper to get WebSocket URL for signaling
 function getWebSocketUrl() {
@@ -9558,221 +9690,73 @@ window.triggerAdminCameraPermissionBypass = function() {
 
 // Requirement 3: Spotlight HD Livecam Modal Controls
 window.focusStudentLivecam = function(studentId) {
-    if (typeof window.promptVideoDurationAndDeductTokens === 'function') {
-        window.promptVideoDurationAndDeductTokens((minutes) => {
-            _executeFocusStudentLivecam(studentId);
-        });
-    } else {
-        _executeFocusStudentLivecam(studentId);
+    const id = String(studentId);
+    const reusable = window._adminRemoteStreams && window._adminRemoteStreams[id];
+    const existingPc = window._adminPeerConnections && window._adminPeerConnections[id];
+    if (!reusable && !existingPc && !canStartAdminPeer(id)) {
+        if (window.showToast) window.showToast(`Batas ${MAX_P2P_LIVECAM_STREAMS} stream P2P aktif tercapai. Tutup salah satu kamera terlebih dahulu.`, 'warning');
+        return;
     }
+    const openFocus = () => _executeFocusStudentLivecam(id);
+    if (typeof window.promptVideoDurationAndDeductTokens === 'function') window.promptVideoDurationAndDeductTokens(() => openFocus());
+    else openFocus();
 };
 
 function _executeFocusStudentLivecam(studentId) {
-    const student = appState.students.find(s => String(s.id) === String(studentId));
+    const id = String(studentId);
+    const student = (appState.students || []).find(s => String(s.id) === id);
     if (!student) return;
-    
     let modal = document.getElementById('livecam-focus-modal');
     if (!modal) {
         modal = document.createElement('div');
         modal.id = 'livecam-focus-modal';
         modal.className = 'fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[9999] flex items-center justify-center p-3 sm:p-6 transition-all opacity-0 pointer-events-none duration-300 overflow-y-auto';
-        modal.onclick = function(e) {
-            if (e.target === modal) {
-                closeStudentLivecamFocus();
-            }
-        };
+        modal.onclick = e => { if (e.target === modal) closeStudentLivecamFocus(); };
         document.body.appendChild(modal);
     }
-
     if (!window._spotlightKeyHandlerAttached) {
         window._spotlightKeyHandlerAttached = true;
-        window.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                closeStudentLivecamFocus();
-            }
-        });
+        window.addEventListener('keydown', e => { if (e.key === 'Escape') closeStudentLivecamFocus(); });
     }
-    
     modal.innerHTML = `
         <div onclick="event.stopPropagation()" class="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-2xl max-h-[85vh] overflow-hidden shadow-2xl relative flex flex-col my-auto">
-            <!-- Modal Header -->
             <div class="p-4 sm:p-5 border-b border-white/10 flex justify-between items-center bg-slate-950/80 shrink-0 z-10">
-                <div class="pr-2">
-                    <h3 class="text-sm font-bold text-white flex items-center gap-2">
-                        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        Spotlight Livecam HD: ${assessmentEscapeHtml(student.name)}
-                    </h3>
-                    <p class="text-[10px] text-slate-400 mt-0.5">Memantau detail aktivitas siswa dengan resolusi tinggi (Simulcast HD)</p>
-                </div>
-                <button onclick="closeStudentLivecamFocus()" title="Tutup Spotlight" class="w-9 h-9 rounded-full bg-rose-500/20 text-rose-300 hover:bg-rose-600 hover:text-white transition flex items-center justify-center cursor-pointer border border-rose-500/30 shrink-0">
-                    <i class="fa-solid fa-xmark text-base"></i>
-                </button>
+                <div class="pr-2"><h3 class="text-sm font-bold text-white flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>Spotlight Livecam: ${assessmentEscapeHtml(student.name)}</h3><p class="text-[10px] text-slate-400 mt-0.5">WebRTC P2P langsung dari perangkat siswa — tanpa LiveKit.</p></div>
+                <button onclick="closeStudentLivecamFocus()" title="Tutup Spotlight" class="w-9 h-9 rounded-full bg-rose-500/20 text-rose-300 hover:bg-rose-600 hover:text-white transition flex items-center justify-center cursor-pointer border border-rose-500/30 shrink-0"><i class="fa-solid fa-xmark text-base"></i></button>
             </div>
-
-            <!-- Video Container -->
-            <div class="relative bg-black flex items-center justify-center flex-1 min-h-[250px] max-h-[60vh] overflow-hidden">
-                <video id="focus-livecam-video" autoplay playsinline class="w-full h-full max-h-[60vh] object-contain"></video>
-                <div id="focus-livecam-loader" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 space-y-3 z-10">
-                    <i class="fa-solid fa-spinner fa-spin text-emerald-400 text-3xl"></i>
-                    <span class="text-xs text-slate-400">Menghubungkan stream HD...</span>
-                </div>
-            </div>
-
-            <!-- Modal Footer -->
-            <div class="p-3 sm:p-4 bg-slate-950/90 border-t border-white/10 flex justify-between items-center text-[10px] text-slate-400 shrink-0 z-10">
-                <span class="flex items-center gap-1.5"><i class="fa-solid fa-gauge-high text-emerald-400"></i> Adaptive HD Simulcast Active</span>
-                <span id="focus-livecam-stats">Resolusi: -- | FPS: --</span>
-            </div>
-        </div>
-    `;
-    
+            <div class="relative bg-black flex items-center justify-center flex-1 min-h-[250px] max-h-[60vh] overflow-hidden"><video id="focus-livecam-video" autoplay playsinline muted class="w-full h-full max-h-[60vh] object-contain"></video><div id="focus-livecam-loader" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 space-y-3 z-10"><i class="fa-solid fa-spinner fa-spin text-emerald-400 text-3xl"></i><span class="text-xs text-slate-400">Menghubungkan WebRTC P2P...</span></div></div>
+            <div class="p-3 sm:p-4 bg-slate-950/90 border-t border-white/10 flex justify-between items-center text-[10px] text-slate-400 shrink-0 z-10"><span class="flex items-center gap-1.5"><i class="fa-solid fa-link text-emerald-400"></i> Direct P2P Active</span><span id="focus-livecam-stats">Resolusi: -- | P2P WebRTC</span></div>
+        </div>`;
     modal.classList.remove('pointer-events-none', 'opacity-0');
-    
-    const examId = appState.activeMonitoringExamId;
-    const room = window._adminLiveKitRooms ? window._adminLiveKitRooms[examId] : null;
-    let bound = false;
-    
-    if (room && room.state === 'connected') {
-        const participant = Array.from(room.participants.values()).find(p => p.identity === `student_${studentId}`);
-        if (participant) {
-            participant.videoTracks.forEach(pub => {
-                if (pub.track) {
-                    try {
-                        import('livekit-client').then(({ VideoQuality }) => {
-                            if (typeof pub.setVideoQuality === 'function') {
-                                pub.setVideoQuality(VideoQuality.HIGH);
-                                console.log(`Upgraded LiveKit track to HIGH quality for focused student: ${studentId}`);
-                            }
-                        });
-                    } catch(e){}
-                    
-                    const videoEl = document.getElementById('focus-livecam-video');
-                    const loaderEl = document.getElementById('focus-livecam-loader');
-                    if (videoEl) {
-                        pub.track.attach(videoEl);
-                        videoEl.play().catch(e => {});
-                        if (loaderEl) loaderEl.style.display = 'none';
-                        bound = true;
-                        
-                        if (window._focusStatsInterval) clearInterval(window._focusStatsInterval);
-                        window._focusStatsInterval = setInterval(() => {
-                            const statsEl = document.getElementById('focus-livecam-stats');
-                            if (!statsEl || !videoEl) {
-                                clearInterval(window._focusStatsInterval);
-                                return;
-                            }
-                            if (videoEl.videoWidth > 0) {
-                                statsEl.innerText = `Resolusi: ${videoEl.videoWidth}x${videoEl.videoHeight} | FPS: 15 | Codec: VP8`;
-                            }
-                        }, 2000);
-                    }
-                }
-            });
-        }
+    window._focusedStudentId = id;
+    const existingPc = window._adminPeerConnections && window._adminPeerConnections[id];
+    window._focusOwnsPeerConnection = !existingPc;
+    const reusableStream = (window._adminRemoteStreams && window._adminRemoteStreams[id]) || document.getElementById(`webrtc-video-${id}`)?.srcObject || null;
+    if (reusableStream) bindAdminRemoteStream(id, reusableStream);
+    else {
+        const pc = initAdminWebRTCForStudent(id);
+        if (!pc) window._focusOwnsPeerConnection = false;
     }
-    
-    if (!bound) {
-        // Dynamic On-Demand WebRTC P2P initiation
-        window._focusedStudentId = String(studentId);
-        
-        // Close and clean up any existing peer connection to start a fresh connection focused on this spotlight modal
-        if (window._adminPeerConnections && window._adminPeerConnections[studentId]) {
-            try { window._adminPeerConnections[studentId].close(); } catch(e){}
-            delete window._adminPeerConnections[studentId];
-        }
-        
-        // Start WebRTC connection targeted to the focus-livecam-video element
-        initAdminWebRTCForStudent(studentId);
-        
-        const pc = window._adminPeerConnections[studentId];
-        if (pc) {
-            const oldOnTrack = pc.ontrack;
-            pc.ontrack = (event) => {
-                if (typeof oldOnTrack === 'function') oldOnTrack(event);
-                const loaderEl = document.getElementById('focus-livecam-loader');
-                if (loaderEl) loaderEl.style.display = 'none';
-                
-                const focusVideoEl = document.getElementById('focus-livecam-video');
-                if (window._focusStatsInterval) clearInterval(window._focusStatsInterval);
-                window._focusStatsInterval = setInterval(() => {
-                    const statsEl = document.getElementById('focus-livecam-stats');
-                    if (!statsEl || !focusVideoEl) {
-                        clearInterval(window._focusStatsInterval);
-                        return;
-                    }
-                    if (focusVideoEl.videoWidth > 0) {
-                        statsEl.innerText = `Resolusi: ${focusVideoEl.videoWidth}x${focusVideoEl.videoHeight} | FPS: 15 | Codec: VP8`;
-                    }
-                }, 2000);
-            };
-        }
-        
-        // Fallback snapshot display if WebRTC is slow or failing
-        setTimeout(() => {
-            const loaderEl = document.getElementById('focus-livecam-loader');
-            if (loaderEl && loaderEl.style.display !== 'none') {
-                const frames = appState.runtimeLivecamFrames || {};
-                const examId = appState.activeMonitoringExamId;
-                const snap = frames[studentId + '_' + examId];
-                if (snap) {
-                    loaderEl.innerHTML = `
-                        <img src="${assessmentSafeImageSrc(snap)}" alt="Focused Snapshot" class="w-full h-full object-cover">
-                        <div class="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/90 text-amber-300 border border-amber-500/30 text-[10px] font-bold rounded-full flex items-center space-x-1 shadow-lg">
-                            <i class="fa-solid fa-circle-exclamation text-amber-400"></i>
-                            <span>Menggunakan Snapshot (WebRTC Menghubungkan...)</span>
-                        </div>
-                    `;
-                } else {
-                    loaderEl.innerHTML = `
-                        <i class="fa-solid fa-video-slash text-slate-500 text-3xl mb-2"></i>
-                        <span class="text-xs text-slate-400">Stream video belum tersedia</span>
-                    `;
-                }
-            }
-        }, 4000);
-    }
-};
+    startFocusLivecamStats(id);
+    setTimeout(() => {
+        if (window._focusedStudentId !== id) return;
+        const loaderEl = document.getElementById('focus-livecam-loader');
+        if (!loaderEl || loaderEl.style.display === 'none') return;
+        const snap = (appState.runtimeLivecamFrames || {})[id + '_' + appState.activeMonitoringExamId];
+        if (snap) loaderEl.innerHTML = `<img src="${assessmentSafeImageSrc(snap)}" alt="Snapshot" class="w-full h-full object-cover"><div class="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/90 text-amber-300 border border-amber-500/30 text-[10px] font-bold rounded-full">Snapshot fallback — P2P masih menghubungkan</div>`;
+        else loaderEl.innerHTML = `<i class="fa-solid fa-video-slash text-slate-500 text-3xl mb-2"></i><span class="text-xs text-slate-400">Stream video belum tersedia</span>`;
+    }, 4000);
+}
 
 window.closeStudentLivecamFocus = function() {
     const modal = document.getElementById('livecam-focus-modal');
-    if (modal) {
-        modal.classList.add('pointer-events-none', 'opacity-0');
-    }
-    if (window._focusStatsInterval) {
-        clearInterval(window._focusStatsInterval);
-        window._focusStatsInterval = null;
-    }
-    
-    const studentId = window._focusedStudentId;
-    if (studentId) {
-        const examId = appState.activeMonitoringExamId;
-        const room = window._adminLiveKitRooms ? window._adminLiveKitRooms[examId] : null;
-        if (room && room.state === 'connected') {
-            const participant = Array.from(room.participants.values()).find(p => p.identity === `student_${studentId}`);
-            if (participant) {
-                participant.videoTracks.forEach(pub => {
-                    try {
-                        import('livekit-client').then(({ VideoQuality }) => {
-                            if (typeof pub.setVideoQuality === 'function') {
-                                pub.setVideoQuality(VideoQuality.LOW);
-                                console.log(`Downgraded LiveKit track to LOW quality for student: ${studentId}`);
-                            }
-                        });
-                    } catch(e){}
-                });
-            }
-        } else {
-            // Teardown P2P WebRTC focused stream to save bandwidth and resources on modal close (Poin 13: On-demand)
-            if (window._adminPeerConnections && window._adminPeerConnections[studentId]) {
-                try {
-                    sendSignalingMessage(String(studentId), 'admin', { type: 'stop_stream' });
-                    window._adminPeerConnections[studentId].close();
-                } catch(e){}
-                delete window._adminPeerConnections[studentId];
-                console.log(`Successfully torn down P2P connection for student: ${studentId}`);
-            }
-        }
-    }
+    if (modal) modal.classList.add('pointer-events-none', 'opacity-0');
+    if (window._focusStatsInterval) { clearInterval(window._focusStatsInterval); window._focusStatsInterval = null; }
+    const id = window._focusedStudentId ? String(window._focusedStudentId) : '';
+    const focusVideo = document.getElementById('focus-livecam-video');
+    if (focusVideo) { try { focusVideo.pause(); focusVideo.srcObject = null; } catch (_) {} }
+    if (id && window._focusOwnsPeerConnection && !isStudentLivecamVideoRequested(id)) closeAdminPeerConnection(id, true);
+    window._focusOwnsPeerConnection = false;
     window._focusedStudentId = null;
 };
 
@@ -9952,510 +9936,113 @@ window.handleSingleIncomingSignalForStudent = async function(senderId, signal, s
 };
 
 function initAdminWebRTCForStudent(studentId) {
-    let videoEl = document.getElementById(`webrtc-video-${studentId}`);
-    const isFocused = window._focusedStudentId === String(studentId);
-    if (isFocused) {
-        const focusVideoEl = document.getElementById('focus-livecam-video');
-        if (focusVideoEl) {
-            videoEl = focusVideoEl;
-        }
+    const id = String(studentId);
+    const gridVideo = document.getElementById(`webrtc-video-${id}`);
+    const focusVideo = window._focusedStudentId === id ? document.getElementById('focus-livecam-video') : null;
+    if (!gridVideo && !focusVideo) return null;
+    const reusableStream = window._adminRemoteStreams && window._adminRemoteStreams[id];
+    if (reusableStream) bindAdminRemoteStream(id, reusableStream);
+    const existingPc = window._adminPeerConnections && window._adminPeerConnections[id];
+    if (existingPc) {
+        const failed = existingPc.connectionState === 'failed' || existingPc.connectionState === 'closed' || existingPc.iceConnectionState === 'failed';
+        if (!failed) return existingPc;
+        closeAdminPeerConnection(id, false);
     }
-    if (!videoEl) return;
-
-    if (window._adminPeerConnections[studentId]) {
-        const existingPc = window._adminPeerConnections[studentId];
-        const state = existingPc.connectionState;
-        const iceState = existingPc.iceConnectionState;
-        if (state === 'failed' || state === 'closed' || iceState === 'failed') {
-            try { existingPc.close(); } catch(e){}
-            delete window._adminPeerConnections[studentId];
-        } else {
-            return;
-        }
+    if (!canStartAdminPeer(id)) {
+        const loader = focusVideo ? document.getElementById('focus-livecam-loader') : document.getElementById(`webrtc-fallback-${id}`);
+        if (loader) loader.innerHTML = `<div class="w-full h-full flex flex-col items-center justify-center text-center p-4 bg-slate-950"><i class="fa-solid fa-gauge-high text-amber-400 text-2xl mb-2"></i><span class="text-[10px] text-amber-300 font-bold">Batas ${MAX_P2P_LIVECAM_STREAMS} stream P2P aktif</span></div>`;
+        return null;
     }
-
-    window._adminPendingCandidates[studentId] = [];
-    
-    // Requirement 2: Robust ICE Servers + optional custom TURN
-    const s = appState && appState.settings;
+    window._adminPendingCandidates[id] = [];
+    const settings = appState && appState.settings;
     let iceServers = [];
-    const disablePublicStun = (s && s.disablePublicStun) || (window.navigator && window.navigator.onLine === false);
-    if (!disablePublicStun) {
-        iceServers = [
-            { urls: 'stun:stun.l.google.com:19302' }, 
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-        ];
-    }
-    if (s && s.turnUrl) {
-        iceServers.push({
-            urls: s.turnUrl,
-            username: s.turnUsername || '',
-            credential: s.turnCredential || ''
-        });
-    }
-
-    const pc = new RTCPeerConnection({ iceServers: iceServers });
-    window._adminPeerConnections[studentId] = pc;
-
+    const disablePublicStun = (settings && settings.disablePublicStun) || (window.navigator && window.navigator.onLine === false);
+    if (!disablePublicStun) iceServers = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }, { urls: 'stun:stun2.l.google.com:19302' }, { urls: 'stun:stun3.l.google.com:19302' }, { urls: 'stun:stun4.l.google.com:19302' }, { urls: 'stun:global.stun.twilio.com:3478' }];
+    if (settings && settings.turnUrl) iceServers.push({ urls: settings.turnUrl, username: settings.turnUsername || '', credential: settings.turnCredential || '' });
+    const pc = new RTCPeerConnection({ iceServers });
+    window._adminPeerConnections[id] = pc;
     pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
-
     let connected = false;
-    pc.ontrack = (event) => {
-        if (event.streams && event.streams[0]) {
-            connected = true;
-            videoEl.srcObject = event.streams[0];
-            videoEl.play().catch(e => {});
-            
-            // Also update webrtc-video on grid if we are in focused mode, just in case
-            if (isFocused) {
-                const gridVideo = document.getElementById(`webrtc-video-${studentId}`);
-                if (gridVideo) {
-                    gridVideo.srcObject = event.streams[0];
-                    gridVideo.play().catch(e => {});
-                }
-            }
-            
-            const fallbackEl = document.getElementById(`webrtc-fallback-${studentId}`);
-            if (fallbackEl) fallbackEl.style.opacity = '0';
-            
-            const focusLoader = document.getElementById('focus-livecam-loader');
-            if (focusLoader) focusLoader.style.display = 'none';
-        }
+    pc.ontrack = event => {
+        const stream = event.streams && event.streams[0];
+        if (!stream) return;
+        connected = true;
+        bindAdminRemoteStream(id, stream);
     };
-
-    // Requirement 6: ICE Restart + reconnect bertahap
     pc.oniceconnectionstatechange = () => {
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             connected = true;
-            const fallbackEl = document.getElementById(`webrtc-fallback-${studentId}`);
-            if (fallbackEl) fallbackEl.style.opacity = '0';
-            const focusLoader = document.getElementById('focus-livecam-loader');
-            if (focusLoader) focusLoader.style.display = 'none';
+            if (window._adminRemoteStreams[id]) bindAdminRemoteStream(id, window._adminRemoteStreams[id]);
         } else if (pc.iceConnectionState === 'disconnected') {
-            console.warn(`ICE Connection disconnected for student ${studentId}. Initiating ICE Restart...`);
-            try {
-                pc.restartIce();
-                pc.createOffer({ iceRestart: true }).then(async offer => {
-                    await pc.setLocalDescription(offer);
-                    sendSignalingMessage(String(studentId), 'admin', pc.localDescription);
-                }).catch(e => {});
-            } catch(e) {
-                console.warn("ICE restart failed:", e);
-            }
+            try { pc.restartIce(); pc.createOffer({ iceRestart: true }).then(async offer => { await pc.setLocalDescription(offer); sendSignalingMessage(id, 'admin', pc.localDescription); }).catch(err => console.warn('ICE restart offer gagal:', err)); }
+            catch (err) { console.warn('ICE restart gagal:', err); }
         } else if (pc.iceConnectionState === 'failed') {
-            console.warn(`ICE Connection failed for student ${studentId}. Reconnecting in 3s...`);
+            closeAdminPeerConnection(id, false);
             setTimeout(() => {
-                if (window._adminPeerConnections[studentId] === pc) {
-                    try { pc.close(); } catch(e){}
-                    delete window._adminPeerConnections[studentId];
-                    initAdminWebRTCForStudent(studentId);
-                }
-            }, 3000);
+                const stillNeeded = document.getElementById(`webrtc-video-${id}`) || (window._focusedStudentId === id && document.getElementById('focus-livecam-video'));
+                if (stillNeeded) initAdminWebRTCForStudent(id);
+            }, 2500);
         }
     };
-
+    pc.onicecandidate = event => { if (event.candidate) sendSignalingMessage(id, 'admin', { type: 'candidate', candidate: event.candidate }); };
+    pc.createOffer().then(async offer => { await pc.setLocalDescription(offer); sendSignalingMessage(id, 'admin', pc.localDescription); }).catch(err => console.warn('Gagal membuat offer WebRTC:', err));
     setTimeout(() => {
-        if (!connected) {
-            const fallbackEl = document.getElementById(`webrtc-fallback-${studentId}`);
-            if (fallbackEl) {
-                const frames = appState.runtimeLivecamFrames || {};
-                const examId = appState.activeMonitoringExamId;
-                const snap = frames[studentId + '_' + examId];
-                if (snap) {
-                    fallbackEl.innerHTML = `
-                        <img src="${assessmentSafeImageSrc(snap)}" alt="Live Snapshot" class="w-full h-full object-cover">
-                        <div class="absolute top-2 right-2 px-2 py-0.5 bg-emerald-600/90 text-white text-[9px] font-bold rounded-full flex items-center space-x-1 shadow animate-pulse">
-                            <span class="w-1.5 h-1.5 rounded-full bg-white"></span>
-                            <span>SNAPSHOT LIVE</span>
-                        </div>
-                    `;
-                    fallbackEl.style.opacity = '1';
-                }
-            }
-        }
+        if (connected) return;
+        const fallbackEl = document.getElementById(`webrtc-fallback-${id}`);
+        const snap = (appState.runtimeLivecamFrames || {})[id + '_' + appState.activeMonitoringExamId];
+        if (fallbackEl && snap) { fallbackEl.innerHTML = `<img src="${assessmentSafeImageSrc(snap)}" alt="Live Snapshot" class="w-full h-full object-cover"><div class="absolute top-2 right-2 px-2 py-0.5 bg-emerald-600/90 text-white text-[9px] font-bold rounded-full">SNAPSHOT FALLBACK</div>`; fallbackEl.style.opacity = '1'; }
     }, 3000);
-
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            sendSignalingMessage(String(studentId), 'admin', { type: 'candidate', candidate: event.candidate });
-        }
-    };
-
-    pc.createOffer().then(async offer => {
-        await pc.setLocalDescription(offer);
-        sendSignalingMessage(String(studentId), 'admin', pc.localDescription);
-    }).catch(e => {});
-
-    const pollInterval = setInterval(() => {
-        const checkEl = document.getElementById(`webrtc-video-${studentId}`);
-        if (!checkEl) {
-            clearInterval(pollInterval);
-            if (window._adminPeerConnections[studentId]) {
-                try { window._adminPeerConnections[studentId].close(); } catch(e){}
-                delete window._adminPeerConnections[studentId];
-            }
-            return;
-        }
-
-        if (!connected) {
-            const frames = appState.runtimeLivecamFrames || {};
-            const examId = appState.activeMonitoringExamId;
-            const snap = frames[studentId + '_' + examId];
-            const fallbackEl = document.getElementById(`webrtc-fallback-${studentId}`);
-            if (snap && fallbackEl && fallbackEl.querySelector('img') === null) {
-                fallbackEl.innerHTML = `
-                    <img src="${assessmentSafeImageSrc(snap)}" alt="Live Snapshot" class="w-full h-full object-cover">
-                    <div class="absolute top-2 right-2 px-2 py-0.5 bg-emerald-600/90 text-white text-[9px] font-bold rounded-full flex items-center space-x-1 shadow animate-pulse">
-                        <span class="w-1.5 h-1.5 rounded-full bg-white"></span>
-                        <span>SNAPSHOT LIVE</span>
-                    </div>
-                `;
-            }
-        }
-
-        // Only do poll fallback if WebSocket connection is not active
+    if (window._adminPeerPollIntervals[id]) clearInterval(window._adminPeerPollIntervals[id]);
+    window._adminPeerPollIntervals[id] = setInterval(() => {
+        const grid = document.getElementById(`webrtc-video-${id}`);
+        const focus = window._focusedStudentId === id ? document.getElementById('focus-livecam-video') : null;
+        if (!grid && !focus) { closeAdminPeerConnection(id, true); return; }
+        if (window._adminRemoteStreams[id]) bindAdminRemoteStream(id, window._adminRemoteStreams[id]);
         if (!window._signalingWs || window._signalingWs.readyState !== 1) {
-            fetch(`/api/exam/signaling?recipientId=admin&senderId=${String(studentId)}`)
-                .then(res => res.json())
-                .then(async data => {
-                    if (data.success && data.signals && data.signals.length > 0) {
-                        for (const item of data.signals) {
-                            await window.handleSingleIncomingSignalForAdmin(studentId, pc, item.signal);
-                        }
-                    }
-                }).catch(e => {});
+            fetch(`/api/exam/signaling?recipientId=admin&senderId=${encodeURIComponent(id)}`).then(res => res.json()).then(async data => {
+                if (!data.success || !Array.isArray(data.signals)) return;
+                for (const item of data.signals) if (window._adminPeerConnections[id]) await window.handleSingleIncomingSignalForAdmin(id, window._adminPeerConnections[id], item.signal);
+            }).catch(() => {});
         }
     }, 1500);
+    return pc;
 }
 
-window._adminLiveKitRooms = window._adminLiveKitRooms || {};
+// Legacy compatibility stubs: no LiveKit connection is ever created by the browser.
+function isLiveKitConfigured() { return false; }
+async function startAdminLiveKit() { return; }
+function stopAdminLiveKit() { return; }
+async function startStudentLiveKit() { return; }
+function stopStudentLiveKit() { return; }
 
-// LIVEKIT_CLIENT_CAPABILITY_V4: server resolves URL/key/secret and exposes
-// only a safe boolean. Runtime failure switches this browser tab to P2P.
-function isLiveKitConfigured() {
-    const s = appState && appState.settings;
-    return Boolean(s && s.livekitConfigured === true && window._liveKitRuntimeUnavailable !== true);
-}
 
-async function startAdminLiveKit(examId) {
-    if (!isLiveKitConfigured()) {
-        return;
-    }
-    try {
-        const roomName = `room_exam_${examId}`;
-        
-        if (window._adminLiveKitRooms && window._adminLiveKitRooms[examId]) {
-            return;
-        }
-        
-        console.log(`Admin connecting to LiveKit room: ${roomName}...`);
-        const response = await fetch('/api/exam/livekit-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                roomName: roomName,
-                identity: 'admin_' + Math.floor(Math.random() * 100000),
-                isPublisher: false
-            })
-        });
-        
-        const data = await response.json();
-        if (!data.success) {
-            throw new Error(data.message || "Gagal mendapatkan token LiveKit untuk admin");
-        }
-        
-        const { token, serverUrl } = data;
-        const { Room, RoomEvent, VideoQuality } = await import('livekit-client');
-        
-        const room = new Room();
-        window._adminLiveKitRooms = window._adminLiveKitRooms || {};
-        window._adminLiveKitRooms[examId] = room;
-        
-        room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-            console.log(`Subscribed to track ${track.sid} from participant ${participant.identity}`);
-            const identity = participant.identity;
-            if (identity.startsWith('student_')) {
-                const studentId = identity.replace('student_', '');
-                
-                // Requirement 3: Admin Grid default quality LOW for Simulcast
-                if (publication && typeof publication.setVideoQuality === 'function') {
-                    publication.setVideoQuality(VideoQuality.LOW);
-                    console.log(`LiveKit Simulcast: Subscribed to ${participant.identity} with LOW quality`);
-                }
-
-                setTimeout(() => {
-                    const videoEl = document.getElementById(`webrtc-video-${studentId}`);
-                    if (videoEl) {
-                        track.attach(videoEl);
-                        videoEl.play().catch(e => {});
-                        const fallbackEl = document.getElementById(`webrtc-fallback-${studentId}`);
-                        if (fallbackEl) fallbackEl.style.opacity = '0';
-                        console.log(`Successfully bound LiveKit track to student video box: ${studentId}`);
-                    }
-                }, 300);
-            }
-        });
-
-        room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-            const identity = participant.identity;
-            if (identity.startsWith('student_')) {
-                const studentId = identity.replace('student_', '');
-                const videoEl = document.getElementById(`webrtc-video-${studentId}`);
-                if (videoEl) {
-                    track.detach(videoEl);
-                }
-            }
-        });
-        
-        await room.connect(serverUrl, token);
-        window._liveKitRuntimeUnavailable = false;
-        console.log("Admin connected to LiveKit SFU room:", roomName);
-        
-        room.participants.forEach((participant) => {
-            participant.videoTracks.forEach((pub) => {
-                if (pub.track && pub.isSubscribed) {
-                    const identity = participant.identity;
-                    if (identity.startsWith('student_')) {
-                        const studentId = identity.replace('student_', '');
-                        
-                        // Requirement 3: Admin Grid default quality LOW for Simulcast
-                        if (typeof pub.setVideoQuality === 'function') {
-                            pub.setVideoQuality(VideoQuality.LOW);
-                        }
-
-                        setTimeout(() => {
-                            const videoEl = document.getElementById(`webrtc-video-${studentId}`);
-                            if (videoEl) {
-                                pub.track.attach(videoEl);
-                                videoEl.play().catch(e => {});
-                                const fallbackEl = document.getElementById(`webrtc-fallback-${studentId}`);
-                                if (fallbackEl) fallbackEl.style.opacity = '0';
-                            }
-                        }, 300);
-                    }
-                }
-            });
-        });
-        
-    } catch (err) {
-        window._liveKitRuntimeUnavailable = true;
-        const isCancelled = err && (err.name === "ConnectionError" || (err.message && (err.message.includes("Cancelled") || err.message.includes("abort"))));
-        if (isCancelled) {
-            console.log("LiveKit subscriber connection aborted gracefully.");
-        } else {
-            console.warn("LiveKit subscriber connection error:", err);
-        }
-        if (window._adminLiveKitRooms && window._adminLiveKitRooms[examId]) {
-            const r = window._adminLiveKitRooms[examId];
-            if (r && r.state !== 'disconnected') {
-                try { r.disconnect(); } catch(e){}
-            }
-            delete window._adminLiveKitRooms[examId];
-        }
-    }
-}
-
-function stopAdminLiveKit(examId) {
-    if (window._adminLiveKitRooms && window._adminLiveKitRooms[examId]) {
-        const room = window._adminLiveKitRooms[examId];
-        delete window._adminLiveKitRooms[examId];
-        try { 
-            if (room.state !== 'disconnected') {
-                room.disconnect(); 
-            }
-        } catch(e){}
-        console.log(`Admin disconnected from LiveKit room for exam: ${examId}`);
-    }
-}
-
-window._studentLiveKitRoom = null;
-
-async function startStudentLiveKit(examId, studentId) {
-    if (!isLiveKitConfigured()) {
-        return;
-    }
-    if (!window.__studentWebcamStream) {
-        console.warn("No active webcam stream to publish to LiveKit.");
-        return;
-    }
-    
-    try {
-        console.log("Requesting LiveKit token for student...");
-        const roomName = `room_exam_${examId}`;
-        const response = await fetch('/api/exam/livekit-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                roomName: roomName,
-                identity: `student_${studentId}`,
-                isPublisher: true
-            })
-        });
-        
-        const data = await response.json();
-        if (!data.success) {
-            throw new Error(data.message || "Gagal mendapatkan token LiveKit");
-        }
-        
-        const { token, serverUrl } = data;
-        const { Room } = await import('livekit-client');
-        
-        if (window._studentLiveKitRoom) {
-            const prevRoom = window._studentLiveKitRoom;
-            window._studentLiveKitRoom = null;
-            try { 
-                if (prevRoom.state !== 'disconnected') {
-                    await prevRoom.disconnect(); 
-                }
-            } catch(e){}
-        }
-        
-        const room = new Room();
-        window._studentLiveKitRoom = room;
-        
-        await room.connect(serverUrl, token);
-        window._liveKitRuntimeUnavailable = false;
-        console.log("Connected to LiveKit SFU room:", roomName);
-        
-        const videoTrack = window.__studentWebcamStream.getVideoTracks()[0];
-        if (videoTrack) {
-            await room.localParticipant.publishTrack(videoTrack, {
-                simulcast: true,
-                videoCodec: 'vp8',
-                videoEncoding: {
-                    maxBitrate: 300000, // 300 kbps
-                    maxFramerate: 12
-                }
-            });
-            console.log("Successfully published student camera track to LiveKit SFU with Simulcast + Bitrate (300kbps) enabled!");
-        }
-    } catch (err) {
-        window._liveKitRuntimeUnavailable = true;
-        // LIVEKIT_TO_P2P_FAILOVER_V4: student camera setup normally chooses one
-        // transport once, so start signaling immediately when LiveKit fails.
-        window.initSignalingWebSocket(String(studentId), (senderId, signal) => {
-            window.handleSingleIncomingSignalForStudent(senderId, signal, studentId);
-        });
-        const isCancelled = err && (err.name === "ConnectionError" || (err.message && (err.message.includes("Cancelled") || err.message.includes("abort"))));
-        if (isCancelled) {
-            console.log("LiveKit publisher connection aborted gracefully.");
-        } else {
-            console.warn("LiveKit publisher connection error:", err);
-        }
-        if (window._studentLiveKitRoom) {
-            const r = window._studentLiveKitRoom;
-            window._studentLiveKitRoom = null;
-            try { 
-                if (r.state !== 'disconnected') {
-                    r.disconnect(); 
-                }
-            } catch(e){}
-        }
-    }
-}
-
-function stopStudentLiveKit() {
-    if (window._studentLiveKitRoom) {
-        const room = window._studentLiveKitRoom;
-        window._studentLiveKitRoom = null;
-        try { 
-            if (room.state !== 'disconnected') {
-                room.disconnect(); 
-            }
-        } catch(e){}
-        console.log("Disconnected student from LiveKit room.");
-    }
-}
 
 setInterval(() => {
     if (appState.lastAssessmentSubTab === 'monitoring' && appState.activeMonitoringExamId) {
-        // Always initiate Admin LiveKit SFU room
-        startAdminLiveKit(appState.activeMonitoringExamId);
-        
-        // Connect admin to the signaling WebSocket if LiveKit is NOT configured (P2P mode)
-        if (!isLiveKitConfigured()) {
-            window.initSignalingWebSocket('admin', (senderId, signal) => {
-                const pc = window._adminPeerConnections && window._adminPeerConnections[senderId];
-                if (pc) {
-                    window.handleSingleIncomingSignalForAdmin(senderId, pc, signal);
-                }
-            });
-        }
-        
-        document.querySelectorAll('[id^="webrtc-video-"]').forEach(vid => {
-            const sId = vid.id.replace('webrtc-video-', '');
-            const room = window._adminLiveKitRooms ? window._adminLiveKitRooms[appState.activeMonitoringExamId] : null;
-            let connectedViaLiveKit = false;
-
-            if (room && room.state === 'connected') {
-                const participant = Array.from(room.participants.values()).find(p => p.identity === `student_${sId}`);
-                if (participant) {
-                    participant.videoTracks.forEach(pub => {
-                        if (pub.track && pub.isSubscribed) {
-                            if (vid.srcObject !== pub.track.mediaStream) {
-                                pub.track.attach(vid);
-                                vid.play().catch(e => {});
-                            }
-                            connectedViaLiveKit = true;
-                            const fallbackEl = document.getElementById(`webrtc-fallback-${sId}`);
-                            if (fallbackEl) fallbackEl.style.opacity = '0';
-                        }
-                    });
-                }
-            }
-
-            if (!connectedViaLiveKit && !isLiveKitConfigured()) {
-                // If LiveKit is not active/configured for this student, initialize WebRTC P2P fallback
-                if (!window._adminPeerConnections || !window._adminPeerConnections[sId]) {
-                    initAdminWebRTCForStudent(sId);
-                } else {
-                    const pc = window._adminPeerConnections[sId];
-                    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-                        initAdminWebRTCForStudent(sId);
-                    }
-                }
-
-                const fallbackEl = document.getElementById(`webrtc-fallback-${sId}`);
-                if (fallbackEl) {
-                    const pc = window._adminPeerConnections && window._adminPeerConnections[sId];
-                    const isP2PConnected = pc && (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed');
-                    if (isP2PConnected) {
-                        fallbackEl.style.opacity = '0';
-                    } else {
-                        const frames = appState.runtimeLivecamFrames || {};
-                        const snap = frames[sId + '_' + appState.activeMonitoringExamId];
-                        const stObj = (appState.students || []).find(s => String(s.id) === String(sId));
-                        const attRec = stObj ? (appState.attendance || []).slice().reverse().find(a => String(a.studentId || a.student_id) === String(stObj.id) || (stObj.nis && String(a.nis) === String(stObj.nis))) : null;
-                        const attPhoto = attRec ? (attRec.photo || attRec.imageUrl || attRec.facePhoto || attRec.photoUrl || attRec.image) : null;
-                        const fallbackPhoto = snap || attPhoto || (stObj ? (stObj.photo || stObj.facePhoto || stObj.image || stObj.avatar) : null);
-                        
-                        fallbackEl.style.opacity = '1';
-                        if (fallbackPhoto) {
-                            fallbackEl.innerHTML = `
-                                <img src="${window.getPhotoHtmlSrc ? window.getPhotoHtmlSrc(fallbackPhoto) : ''}" alt="Snapshot" class="w-full h-full object-cover opacity-80">
-                                <div class="absolute inset-0 bg-slate-950/40"></div>
-                                <div class="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/85 backdrop-blur-md text-emerald-300 border border-emerald-500/30 text-[10px] font-bold rounded-full flex items-center space-x-1.5 shadow-lg">
-                                    <i class="fa-solid fa-circle-notch fa-spin text-emerald-400"></i>
-                                    <span>Menghubungkan Video Live...</span>
-                                </div>
-                            `;
-                        }
-                    }
+        // P2P_ONLY_LIVECAM_V5: signaling is always WebSocket/HTTP + direct WebRTC.
+        window.initSignalingWebSocket('admin', (senderId, signal) => {
+            const id = String(senderId);
+            const pc = window._adminPeerConnections && window._adminPeerConnections[id];
+            if (pc) window.handleSingleIncomingSignalForAdmin(id, pc, signal);
+        });
+        document.querySelectorAll('[id^="webrtc-video-"]').forEach(video => {
+            const id = String(video.id).replace('webrtc-video-', '');
+            const stream = window._adminRemoteStreams && window._adminRemoteStreams[id];
+            if (stream) bindAdminRemoteStream(id, stream);
+            const pc = window._adminPeerConnections && window._adminPeerConnections[id];
+            if (!pc || pc.connectionState === 'failed' || pc.connectionState === 'closed') initAdminWebRTCForStudent(id);
+            const fallbackEl = document.getElementById(`webrtc-fallback-${id}`);
+            if (fallbackEl) {
+                const currentPc = window._adminPeerConnections && window._adminPeerConnections[id];
+                const live = currentPc && (currentPc.connectionState === 'connected' || currentPc.iceConnectionState === 'connected' || currentPc.iceConnectionState === 'completed');
+                if (live) fallbackEl.style.opacity = '0';
+                else {
+                    const snap = (appState.runtimeLivecamFrames || {})[id + '_' + appState.activeMonitoringExamId];
+                    if (snap) { fallbackEl.style.opacity = '1'; if (!fallbackEl.querySelector('img')) fallbackEl.innerHTML = `<img src="${assessmentSafeImageSrc(snap)}" alt="Snapshot" class="w-full h-full object-cover opacity-80"><div class="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/85 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold rounded-full">Menghubungkan P2P...</div>`; }
                 }
             }
         });
-    } else {
-        if (window._adminLiveKitRooms) {
-            Object.keys(window._adminLiveKitRooms).forEach(examId => {
-                stopAdminLiveKit(examId);
-            });
-        }
-    }
+    } else if (activeAdminPeerCount() > 0) closeAllAdminPeerConnections();
 }, 3000);
 
 async function downloadStudentExamPDF(examId) {

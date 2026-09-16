@@ -28,6 +28,7 @@ window.stopCameraStreamTrack = function(stream) {
 };
 
 window.requestCameraStream = async function() {
+    // P2P_ONLY_LIVECAM_V5: camera features never require microphone permission.
     if (window.__persistentStudentCameraStream) {
         try {
             const tracks = window.__persistentStudentCameraStream.getTracks();
@@ -56,20 +57,20 @@ window.requestCameraStream = async function() {
                 height: { ideal: 360 },
                 frameRate: { ideal: 12, max: 15 }
             },
-            audio: true
+            audio: false
         });
     } catch (e1) {
         console.warn('Camera Attempt 1 (facingMode user + ideal res) failed:', e1);
         try {
             stream = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: 'user' },
-                audio: true
+                audio: false
             });
         } catch (e2) {
             console.warn('Camera Attempt 2 (facingMode user) failed:', e2);
             stream = await navigator.mediaDevices.getUserMedia({
                 video: true,
-                audio: true
+                audio: false
             });
         }
     }
