@@ -5262,9 +5262,12 @@ function isLearningMaterialRecord(item: any): boolean {
 }
 
 function classTargetsFromLearningMaterial(material: any): string[] {
-  const targets = [
+  // Multi-class fields are authoritative so removed legacy targets cannot leak.
+  const explicitTargets = [
     ...(Array.isArray(material?.classes) ? material.classes : []),
-    ...(Array.isArray(material?.targetClasses) ? material.targetClasses : []),
+    ...(Array.isArray(material?.targetClasses) ? material.targetClasses : [])
+  ].filter((value: any) => value !== undefined && value !== null && String(value).trim() !== '');
+  const targets = explicitTargets.length > 0 ? explicitTargets : [
     material?.classId,
     material?.class_id,
     material?.className,

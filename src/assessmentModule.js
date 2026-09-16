@@ -4899,7 +4899,7 @@ window.initStudentExamCamera = function() {
     `;
 
     const requestFn = window.requestCameraStream || function() {
-        return navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        return navigator.mediaDevices.getUserMedia({ video: true, audio: false });
     };
 
     requestFn()
@@ -9861,9 +9861,14 @@ window.handleSingleIncomingSignalForStudent = async function(senderId, signal, s
 
         pc.onconnectionstatechange = () => {
             console.log(`Student overall connection state: ${pc.connectionState}`);
-            if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+            if (pc.connectionState === 'closed') {
                 console.log("WebRTC connection closed. Ensuring snapshots are stopped.");
                 window.stopStudentSnapshots();
+            } else if (pc.connectionState === 'failed') {
+                // A failed P2P connection must keep the snapshot fallback alive
+                // until a new offer succeeds or the teacher sends stop_stream.
+                console.warn("WebRTC connection failed. Keeping snapshot fallback active.");
+                window.startStudentConnectingSnapshots();
             }
         };
 
@@ -11160,4 +11165,3 @@ window.updateStudentMonitoringCard = function(event) {
         }
     }
 };
-
