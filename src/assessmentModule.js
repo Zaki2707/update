@@ -6387,8 +6387,8 @@ async function toggleStudentLivecamMode(examId, studentId) {
         renderAssessmentModule(document.getElementById('view-container'), 'monitoring', examId);
         return;
     }
-    const requested = new Set(getRequestedLivecamStudentIds());
-    if (!requested.has(id) && requested.size >= MAX_P2P_LIVECAM_STREAMS) {
+    const occupiedSlots = getOccupiedLivecamSlotIds();
+    if (!occupiedSlots.has(id) && occupiedSlots.size >= MAX_P2P_LIVECAM_STREAMS) {
         if (window.showToast) window.showToast(`Maksimal ${MAX_P2P_LIVECAM_STREAMS} kamera live P2P dapat aktif bersamaan. Tutup salah satu kamera terlebih dahulu.`, 'warning');
         return;
     }
@@ -9337,6 +9337,21 @@ function isStudentLivecamVideoRequested(studentId) {
 
 function getRequestedLivecamStudentIds() {
     return (appState.students || []).map(st => String(st.id)).filter(id => isStudentLivecamVideoRequested(id));
+}
+
+function getOccupiedLivecamSlotIds() {
+    const occupied = new Set();
+    Object.entries(window._adminPeerConnections || {}).forEach(([id, pc]) => {
+        if (pc && pc.connectionState !== 'closed' && pc.connectionState !== 'failed') occupied.add(String(id));
+    });
+    document.querySelectorAll('[id^="webrtc-video-"]').forEach(video => {
+        const id = String(video.id || '').replace('webrtc-video-', '');
+        if (id) occupied.add(id);
+    });
+    if (window._focusedStudentId && document.getElementById('focus-livecam-video')) {
+        occupied.add(String(window._focusedStudentId));
+    }
+    return occupied;
 }
 
 function getVisibleActiveMonitorStudentIds(examId) {

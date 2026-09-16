@@ -731,6 +731,9 @@ await test('Livecam: hosted LiveKit is disabled to avoid quota usage', () => {
 await test('Livecam: browser runtime is P2P-only, video-only, bounded and spotlight-safe', () => {
   assert.match(assessmentSource, /P2P_ONLY_LIVECAM_V5/);
   assert.match(assessmentSource, /MAX_P2P_LIVECAM_STREAMS = 4/);
+  assert.match(assessmentSource, /function getOccupiedLivecamSlotIds\(/);
+  assert.match(assessmentSource, /const occupiedSlots = getOccupiedLivecamSlotIds\(\)/);
+  assert.doesNotMatch(assessmentSource, /requested\.size >= MAX_P2P_LIVECAM_STREAMS/);
   assert.match(assessmentSource, /window\._adminRemoteStreams/);
   assert.match(assessmentSource, /focus-livecam-video" autoplay playsinline muted/);
   assert.match(assessmentSource, /pc\.addTransceiver\('video', \{ direction: 'recvonly' \}\)/);
