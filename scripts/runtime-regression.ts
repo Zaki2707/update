@@ -717,30 +717,41 @@ await test('Livecam: runtime frames are ephemeral, TTL-pruned, and cleared on fi
   assert.equal(context.studentLivecamFrames.fresh, undefined);
 });
 
-await test('LiveKit: token minting requires explicit credentials in every mode', () => {
+await test('Livecam: hosted LiveKit is disabled to avoid quota usage', () => {
   const start = serverSource.indexOf('app.post("/api/exam/livekit-token"');
   const end = serverSource.indexOf('\nfunction sanitizeChatAttachment', start);
   const route = serverSource.slice(start, end > start ? end : undefined);
-  assert.match(route, /LIVEKIT_EXPLICIT_CREDENTIALS_V3/);
-  assert.match(route, /if \(!apiKey \|\| !apiSecret \|\| !serverUrl\)/);
-  assert.match(route, /new AccessToken\(apiKey, apiSecret/);
-  assert.match(route, /serverUrl, roomName: physicalRoomName/);
-  assert.doesNotMatch(route, /devkey/);
-  assert.doesNotMatch(route, /apiSecret \|\| "secret"/);
-  assert.doesNotMatch(route, /ws:\/\/localhost:7880/);
+  assert.match(serverSource, /P2P_ONLY_LIVECAM_SERVER_V5/);
+  assert.match(serverSource, /configured: false/);
+  assert.match(route, /status\(410\)/);
+  assert.match(route, /Livecam menggunakan WebRTC P2P langsung/);
+  assert.doesNotMatch(route, /new AccessToken/);
 });
 
-await test('LiveKit: browser capability is server-authoritative and falls back to P2P on runtime failure', () => {
-  assert.match(serverSource, /LIVEKIT_RUNTIME_CAPABILITY_V4/);
-  assert.match(serverSource, /function resolveLiveKitRuntimeConfig/);
-  assert.match(serverSource, /safeSettings\.livekitConfigured = resolveLiveKitRuntimeConfig\(\)\.configured/);
-  assert.match(serverSource, /sanitizedSettings\.livekitConfigured = resolveLiveKitRuntimeConfig\(\)\.configured/);
-  assert.match(assessmentSource, /LIVEKIT_CLIENT_CAPABILITY_V4/);
-  assert.match(assessmentSource, /s\.livekitConfigured === true/);
-  assert.match(assessmentSource, /LIVEKIT_TO_P2P_FAILOVER_V4/);
-  assert.match(assessmentSource, /window\._liveKitRuntimeUnavailable = true/);
-  assert.match(assessmentSource, /window\.initSignalingWebSocket\(String\(studentId\)/);
-  assert.doesNotMatch(assessmentSource, /const key = s\.livekitApiKey \|\| ''/);
+await test('Livecam: browser runtime is P2P-only, video-only, bounded and spotlight-safe', () => {
+  assert.match(assessmentSource, /P2P_ONLY_LIVECAM_V5/);
+  assert.match(assessmentSource, /MAX_P2P_LIVECAM_STREAMS = 4/);
+  assert.match(assessmentSource, /window\._adminRemoteStreams/);
+  assert.match(assessmentSource, /focus-livecam-video" autoplay playsinline muted/);
+  assert.match(assessmentSource, /pc\.addTransceiver\('video', \{ direction: 'recvonly' \}\)/);
+  assert.doesNotMatch(assessmentSource, /pc\.addTransceiver\('audio'/);
+  const cameraStart = assessmentSource.indexOf('window.initStudentExamCamera = function');
+  const cameraEnd = assessmentSource.indexOf('function isCbtSessionFrozen', cameraStart);
+  const cameraBlock = assessmentSource.slice(cameraStart, cameraEnd);
+  assert.match(cameraBlock, /window\.initSignalingWebSocket\(String\(st\.id\)/);
+  assert.doesNotMatch(cameraBlock, /startStudentLiveKit/);
+  const pdfStart = assessmentSource.indexOf('async function downloadStudentExamPDF');
+  const monitorStart = assessmentSource.lastIndexOf('setInterval(() => {', pdfStart);
+  const monitorBlock = assessmentSource.slice(monitorStart, pdfStart);
+  assert.match(monitorBlock, /window\.initSignalingWebSocket\('admin'/);
+  assert.doesNotMatch(monitorBlock, /startAdminLiveKit/);
+  assert.doesNotMatch(monitorBlock, /room\.participants/);
+  const helperStart = modulesSource.indexOf('window.requestCameraStream = async function');
+  const helperEnd = modulesSource.indexOf('window.getCameraErrorMessage = function', helperStart);
+  const cameraHelper = modulesSource.slice(helperStart, helperEnd);
+  assert.match(cameraHelper, /P2P_ONLY_LIVECAM_V5/);
+  assert.doesNotMatch(cameraHelper, /audio:\s*true/);
+  assert.ok((cameraHelper.match(/audio:\s*false/g) || []).length >= 3);
 });
 
 await test('CBT monitoring: legacy livecam frames use the same bounded raster validation', () => {

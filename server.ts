@@ -20,7 +20,6 @@ import { resolveSqlConnection, SqlConfigurationError } from "./src/db/connection
 import selfsigned from "selfsigned";
 import { GoogleGenAI } from "@google/genai";
 import { v2 as cloudinary } from "cloudinary";
-import { AccessToken } from "livekit-server-sdk";
 import JSZip from "jszip";
 import mammoth from "mammoth";
 import { initializeApp } from "firebase/app";
@@ -5024,18 +5023,10 @@ function sanitizeSettingsForPublic(settings: any) {
 
 // LIVEKIT_RUNTIME_CAPABILITY_V4: expose only a boolean capability to the browser.
 // The API key/secret stay server-side and the same resolver is used by token minting.
+// P2P_ONLY_LIVECAM_SERVER_V5: disable hosted LiveKit so configured credentials
+// cannot consume quota. CBT livecam uses WebRTC P2P + snapshot fallback only.
 function resolveLiveKitRuntimeConfig() {
-  const apiKey = String(appSettings?.livekitApiKey || process.env.LIVEKIT_API_KEY || '').trim();
-  const apiSecret = String(appSettings?.livekitApiSecret || process.env.LIVEKIT_API_SECRET || '').trim();
-  const serverUrl = String(appSettings?.livekitUrl || process.env.LIVEKIT_URL || '').trim();
-  const onlineLocalhost = isOnlineMode && /localhost|127\.0\.0\.1/i.test(serverUrl);
-  return {
-    apiKey,
-    apiSecret,
-    serverUrl,
-    configured: Boolean(apiKey && apiSecret && serverUrl && !onlineLocalhost),
-    onlineLocalhost
-  };
+  return { apiKey: '', apiSecret: '', serverUrl: '', configured: false, onlineLocalhost: false, disabled: true };
 }
 
 const tenantSettingsBlockedKeys = new Set([
@@ -14130,58 +14121,11 @@ app.get("/api/exam/signaling", requireAuth, (req: any, res) => {
 });
 
 // LiveKit grants are derived from authenticated role, never client isPublisher.
-app.post("/api/exam/livekit-token", requireAuth, async (req: any, res) => {
-  try {
-    const user = req.user || getAuthUser(req), roomName = String(req.body?.roomName || '');
-    const m = roomName.match(/^room_exam_(.+)$/);
-    if (!user || !m) return res.status(400).json({ success: false, message: "roomName ujian tidak valid." });
-    const examId = String(m[1]);
-    const role = String(user.role || '').toLowerCase(), student = isStudentAuthRole(role), staff = isStaffAuthRole(role), boss = role === 'bos' || role === 'superadmin';
-    if (!student && !staff) return res.status(403).json({ success: false, message: "Role LiveKit ditolak." });
-
-    const examCandidates = (getMemoryKeyValue('exams') || exams || []).filter((x: any) => String(x.id) === examId);
-    const exam = examCandidates.find((x: any) => isItemForCurrentMadrasah(x, req)) ||
-      (boss && examCandidates.length === 1 ? examCandidates[0] : null);
-    if (!exam) {
-      if (boss && examCandidates.length > 1) {
-        return res.status(409).json({ success: false, message: "ID ujian ambigu lintas tenant; pilih tenant target secara eksplisit." });
-      }
-      return res.status(404).json({ success: false, message: "Ujian tidak ditemukan pada tenant yang diizinkan." });
-    }
-    if (!boss && !isItemForCurrentMadrasah(exam, req)) return res.status(403).json({ success: false, message: "Ujian bukan milik madrasah Anda." });
-    if (isTeacherRequest(req) && !teacherCanUseExamPayload(req, exam)) {
-      return res.status(403).json({ success: false, message: "Guru hanya dapat membuka livecam untuk ujian mata pelajaran/bank soal yang diampu." });
-    }
-    if (student) {
-      const context = getExamAttemptContext(req, user, String(user.id), examId);
-      if (rejectExamAttemptContext(res, context)) return;
-    }
-
-    const { apiKey, apiSecret, serverUrl, configured, onlineLocalhost } = resolveLiveKitRuntimeConfig();
-    // LIVEKIT_EXPLICIT_CREDENTIALS_V3: never mint tokens with public fallback keys.
-    // If LiveKit is not configured, the existing P2P WebRTC path remains the fallback.
-    if (!apiKey || !apiSecret || !serverUrl) {
-      return res.status(503).json({ success: false, message: "LiveKit belum dikonfigurasi; gunakan fallback P2P WebRTC." });
-    }
-    if (onlineLocalhost || !configured) {
-      return res.status(503).json({ success: false, message: "LiveKit online harus menggunakan endpoint non-localhost." });
-    }
-    // Keep the legacy logical room name accepted from the frontend, but isolate the
-    // physical LiveKit room by the exam owner's canonical tenant. This prevents two
-    // madrasahs with the same examId from ever sharing a media room.
-    const roomTenant = canonicalRealtimeTenant(exam?.madrasahId || exam?.madrasahSlug || getRequestMadrasahId(req) || 'default');
-    const physicalRoomName = 'room_tenant_' +
-      Buffer.from(roomTenant, 'utf8').toString('base64url') +
-      '_exam_' + Buffer.from(examId, 'utf8').toString('base64url');
-
-    const at = new AccessToken(apiKey, apiSecret, {
-      identity: student ? ('student_' + String(user.id)) : ('staff_' + String(user.id)),
-      ttl: "2h"
-    });
-    at.addGrant({ room: physicalRoomName, roomJoin: true, canPublish: student, canSubscribe: staff });
-    res.setHeader('Cache-Control', 'no-store');
-    res.json({ success: true, token: await at.toJwt(), serverUrl, roomName: physicalRoomName });
-  } catch (err: any) { res.status(500).json({ success: false, message: safeServerError(err) }); }
+// P2P_ONLY_LIVECAM_SERVER_V5: compatibility endpoint for stale clients; token
+// minting is disabled so no hosted LiveKit quota can be consumed.
+app.post("/api/exam/livekit-token", requireAuth, (_req: any, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(410).json({ success: false, message: 'LiveKit dinonaktifkan. Livecam menggunakan WebRTC P2P langsung.' });
 });
 
 function sanitizeChatAttachment(input: any): any | null {
