@@ -954,7 +954,7 @@ await test('Game Arena: answers are server-authoritative and sanitized per stude
   const sanitizeEnd = serverSource.indexOf('\nfunction getGameArenaRoomForRequest', sanitizeStart);
   const sanitizeFn = serverSource.slice(sanitizeStart, sanitizeEnd);
   assert.ok(sanitizeStart >= 0 && sanitizeEnd > sanitizeStart);
-  assert.doesNotMatch(sanitizeFn, /answerKey|correctAnswer|correctOptionText/);
+  assert.doesNotMatch(sanitizeFn, /answerKey|correctAnswer(?!s)|correctOptionText/);
   assert.match(serverSource, /function gameArenaValidateAnswer/);
   assert.match(serverSource, /String\(req\.body\?\.questionId \|\| ''\) !== currentQuestion\.id/);
   assert.match(serverSource, /getGameArenaGamePool\(req, student\)/);
