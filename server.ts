@@ -6165,7 +6165,7 @@ function gameBroadcastStorageKey(req: any): string {
   return `${gameTenantNamespace(req)}::broadcast`;
 }
 
-type GameArenaMode = 'laser_duel' | 'tug_war';
+type GameArenaMode = 'laser_duel' | 'tug_war' | 'battle_royale' | 'quiz_race' | 'base_battle';
 type GameArenaSide = 'A' | 'B';
 
 type GameArenaPlayer = {
@@ -6179,6 +6179,11 @@ type GameArenaPlayer = {
   joinedAt: number;
   lastSeenAt: number;
   lastAnswerAt?: number;
+  energy: number;
+  hp: number;
+  eliminated: boolean;
+  raceProgress: number;
+  mana: number;
 };
 
 type GameArenaQuestion = {
@@ -6204,6 +6209,11 @@ type GameArenaRoom = {
   questions: Record<string, GameArenaQuestion>;
   version: number;
   winnerSide?: GameArenaSide;
+  winnerPlayerId?: string;
+  baseAHp: number;
+  baseBHp: number;
+  baseAShield: number;
+  baseBShield: number;
   createdAt: number;
   updatedAt: number;
   finishedAt?: number;
@@ -6215,31 +6225,120 @@ const GAME_ARENA_FINISHED_TTL_MS = 10 * 60 * 1000;
 const GAME_ARENA_PLAYER_STALE_MS = 60 * 1000;
 const GAME_ARENA_AVATAR_PRESETS = new Set(['bintang', 'roket', 'buku', 'komet', 'bulan', 'petir']);
 const GAME_ARENA_COMPATIBLE_TYPES = new Set(['tebak_kata', 'tebak_gambar', 'susun_kata', 'true_false']);
+const GAME_ARENA_MODES = new Set<GameArenaMode>(['laser_duel', 'tug_war', 'battle_royale', 'quiz_race', 'base_battle']);
 
 function isGameArenaStudentRole(role: any): boolean {
   return ['student', 'siswa', 'class_leader', 'ketua_kelas'].includes(String(role || '').toLowerCase());
 }
 
+function gameArenaModeMaxPlayers(mode: GameArenaMode): number {
+  if (mode === 'laser_duel') return 2;
+  if (mode === 'battle_royale') return 24;
+  if (mode === 'quiz_race') return 20;
+  return 40;
+}
+
+function gameArenaIsTeamMode(mode: GameArenaMode): boolean {
+  return mode === 'tug_war' || mode === 'base_battle';
+}
+
+function resetGameArenaPlayer(player: GameArenaPlayer) {
+  player.streak = 0;
+  player.correctAnswers = 0;
+  player.totalAnswers = 0;
+  player.energy = 0;
+  player.hp = 3;
+  player.eliminated = false;
+  player.raceProgress = 0;
+  player.mana = 0;
+}
+
+function resetGameArenaRoom(room: GameArenaRoom) {
+  room.position = 50;
+  room.winnerSide = undefined;
+  room.winnerPlayerId = undefined;
+  room.finishedAt = undefined;
+  room.questions = {};
+  room.baseAHp = 100;
+  room.baseBHp = 100;
+  room.baseAShield = 0;
+  room.baseBShield = 0;
+  for (const player of room.players) resetGameArenaPlayer(player);
+}
+
+function touchGameArenaRoom(room: GameArenaRoom) {
+  room.version = Number(room.version || 0) + 1;
+  room.updatedAt = Date.now();
+}
+
+function rebalanceGameArenaAfterLeave(room: GameArenaRoom) {
+  if (room.players.length < 2) {
+    room.status = 'waiting';
+    resetGameArenaRoom(room);
+    return;
+  }
+
+  if (gameArenaIsTeamMode(room.mode)) {
+    const countA = room.players.filter(player => player.side === 'A').length;
+    const countB = room.players.filter(player => player.side === 'B').length;
+    if (!countA || !countB) {
+      room.players
+        .sort((a, b) => a.joinedAt - b.joinedAt)
+        .forEach((player, index) => { player.side = index % 2 === 0 ? 'A' : 'B'; });
+      room.status = 'waiting';
+      resetGameArenaRoom(room);
+    }
+  }
+}
+
+function finishGameArenaRoom(room: GameArenaRoom, winnerSide?: GameArenaSide, winnerPlayerId?: string) {
+  room.status = 'finished';
+  room.winnerSide = winnerSide;
+  room.winnerPlayerId = winnerPlayerId;
+  room.finishedAt = Date.now();
+  room.questions = {};
+}
+
+function evaluateGameArenaWinner(room: GameArenaRoom) {
+  if (room.status !== 'playing') return;
+
+  if (room.mode === 'battle_royale') {
+    const activePlayers = room.players.filter(player => !player.eliminated && player.hp > 0);
+    if (room.players.length >= 2 && activePlayers.length <= 1) {
+      finishGameArenaRoom(room, undefined, activePlayers[0]?.id);
+    }
+    return;
+  }
+
+  if (room.mode === 'base_battle') {
+    if (room.baseAHp <= 0) finishGameArenaRoom(room, 'B');
+    else if (room.baseBHp <= 0) finishGameArenaRoom(room, 'A');
+  }
+}
+
 function cleanupGameArenaRooms(now = Date.now(), preservePlayerId = '') {
   for (const [roomId, room] of Object.entries(gameArenaRoomsServer)) {
-    const stalePlayerIds = new Set(
-      room.players
-        .filter(player =>
-          player.id !== preservePlayerId &&
-          now - Number(player.lastSeenAt || player.lastAnswerAt || player.joinedAt || 0) > GAME_ARENA_PLAYER_STALE_MS
-        )
-        .map(player => player.id)
-    );
+    if (room.status !== 'finished') {
+      const stalePlayerIds = new Set(
+        room.players
+          .filter(player =>
+            player.id !== preservePlayerId &&
+            now - Number(player.lastSeenAt || player.lastAnswerAt || player.joinedAt || 0) > GAME_ARENA_PLAYER_STALE_MS
+          )
+          .map(player => player.id)
+      );
 
-    if (stalePlayerIds.size > 0) {
-      room.players = room.players.filter(player => !stalePlayerIds.has(player.id));
-      for (const staleId of stalePlayerIds) delete room.questions[staleId];
-      if (!room.players.length) {
-        delete gameArenaRoomsServer[roomId];
-        continue;
+      if (stalePlayerIds.size > 0) {
+        room.players = room.players.filter(player => !stalePlayerIds.has(player.id));
+        for (const staleId of stalePlayerIds) delete room.questions[staleId];
+        if (!room.players.length) {
+          delete gameArenaRoomsServer[roomId];
+          continue;
+        }
+        rebalanceGameArenaAfterLeave(room);
+        evaluateGameArenaWinner(room);
+        touchGameArenaRoom(room);
       }
-      rebalanceGameArenaAfterLeave(room);
-      touchGameArenaRoom(room);
     }
 
     const ttl = room.status === 'finished' ? GAME_ARENA_FINISHED_TTL_MS : GAME_ARENA_ROOM_TTL_MS;
@@ -6344,20 +6443,44 @@ function gameArenaValidateAnswer(game: any, submittedAnswer: any): boolean {
   return submitted === normalizeGameText(String(game?.answerKey || ''));
 }
 
-function touchGameArenaRoom(room: GameArenaRoom) {
-  room.version = Number(room.version || 0) + 1;
-  room.updatedAt = Date.now();
+function pickGameArenaSide(players: GameArenaPlayer[]): GameArenaSide {
+  const a = players.filter(player => player.side === 'A').length;
+  const b = players.filter(player => player.side === 'B').length;
+  return a <= b ? 'A' : 'B';
 }
 
-function pickGameArenaSide(players: GameArenaPlayer[]): GameArenaSide {
-  const a = players.filter(p => p.side === 'A').length;
-  const b = players.filter(p => p.side === 'B').length;
-  return a <= b ? 'A' : 'B';
+function createGameArenaPlayer(student: any, players: GameArenaPlayer[], now: number): GameArenaPlayer {
+  return {
+    id: String(student.id),
+    name: String(student.name || student.username || 'Siswa'),
+    side: pickGameArenaSide(players),
+    avatar: {
+      presetId: GAME_ARENA_AVATAR_PRESETS.has(String(student?.gameAvatar?.presetId || '').toLowerCase())
+        ? String(student.gameAvatar.presetId).toLowerCase()
+        : 'bintang'
+    },
+    streak: 0,
+    correctAnswers: 0,
+    totalAnswers: 0,
+    joinedAt: now,
+    lastSeenAt: now,
+    energy: 0,
+    hp: 3,
+    eliminated: false,
+    raceProgress: 0,
+    mana: 0
+  };
 }
 
 function ensureGameArenaQuestion(req: any, room: GameArenaRoom, student: any, forceNew = false) {
   const studentId = String(student?.id || '');
   if (!studentId) return;
+  const player = room.players.find(item => item.id === studentId);
+  if (!player || player.eliminated) {
+    delete room.questions[studentId];
+    return;
+  }
+
   const previous = room.questions[studentId];
   if (!forceNew && previous) return;
   const next = createGameArenaQuestion(req, student, previous?.gameId || '');
@@ -6366,8 +6489,13 @@ function ensureGameArenaQuestion(req: any, room: GameArenaRoom, student: any, fo
 }
 
 function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
-  const me = room.players.find(p => p.id === viewerId) || null;
-  const question = room.status === 'playing' ? (room.questions[viewerId] || null) : null;
+  const me = room.players.find(player => player.id === viewerId) || null;
+  const shouldShowQuestion = room.status === 'playing' &&
+    Boolean(me) &&
+    !me?.eliminated &&
+    !(room.mode === 'battle_royale' && Number(me?.energy || 0) > 0);
+  const question = shouldShowQuestion ? (room.questions[viewerId] || null) : null;
+
   return {
     id: room.id,
     mode: room.mode,
@@ -6376,6 +6504,11 @@ function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
     version: room.version,
     className: room.className,
     winnerSide: room.winnerSide || null,
+    winnerPlayerId: room.winnerPlayerId || null,
+    base: {
+      A: { hp: Math.max(0, room.baseAHp), shield: Math.max(0, room.baseAShield) },
+      B: { hp: Math.max(0, room.baseBHp), shield: Math.max(0, room.baseBShield) }
+    },
     players: room.players.map(player => ({
       id: player.id,
       name: player.name,
@@ -6383,7 +6516,12 @@ function sanitizeGameArenaState(room: GameArenaRoom, viewerId: string) {
       avatar: player.avatar,
       streak: player.streak,
       correctAnswers: player.correctAnswers,
-      totalAnswers: player.totalAnswers
+      totalAnswers: player.totalAnswers,
+      energy: player.energy,
+      hp: player.hp,
+      eliminated: player.eliminated,
+      raceProgress: player.raceProgress,
+      mana: player.mana
     })),
     me: me ? { id: me.id, side: me.side } : null,
     question: question ? {
@@ -6405,15 +6543,52 @@ function getGameArenaRoomForRequest(req: any, roomId: any): GameArenaRoom | null
   return room;
 }
 
-function rebalanceGameArenaAfterLeave(room: GameArenaRoom) {
-  if (room.players.length < 2) {
-    room.status = 'waiting';
-    room.position = 50;
-    room.winnerSide = undefined;
-    room.finishedAt = undefined;
-    room.questions = {};
-    for (const player of room.players) player.streak = 0;
+function canJoinGameArenaRoom(room: GameArenaRoom, mode: GameArenaMode): boolean {
+  if (room.mode !== mode || room.status === 'finished') return false;
+  if (room.players.length >= gameArenaModeMaxPlayers(mode)) return false;
+  if (mode === 'laser_duel') return room.status === 'waiting';
+  return true;
+}
+
+function applyBaseBattleAction(room: GameArenaRoom, player: GameArenaPlayer, action: string): string {
+  const ownSide = player.side;
+  const enemySide: GameArenaSide = ownSide === 'A' ? 'B' : 'A';
+
+  if (action === 'base_attack') {
+    if (player.mana < 20) throw new Error('Mana belum cukup untuk serangan energi.');
+    player.mana -= 20;
+    let damage = 15;
+    if (enemySide === 'A') {
+      const absorbed = Math.min(room.baseAShield, damage);
+      room.baseAShield -= absorbed;
+      damage -= absorbed;
+      room.baseAHp = Math.max(0, room.baseAHp - damage);
+    } else {
+      const absorbed = Math.min(room.baseBShield, damage);
+      room.baseBShield -= absorbed;
+      damage -= absorbed;
+      room.baseBHp = Math.max(0, room.baseBHp - damage);
+    }
+    return `Serangan energi tim mengurangi pertahanan Base ${enemySide}.`;
   }
+
+  if (action === 'base_shield') {
+    if (player.mana < 15) throw new Error('Mana belum cukup untuk Shield.');
+    player.mana -= 15;
+    if (ownSide === 'A') room.baseAShield = Math.min(60, room.baseAShield + 12);
+    else room.baseBShield = Math.min(60, room.baseBShield + 12);
+    return `Shield Base ${ownSide} bertambah.`;
+  }
+
+  if (action === 'base_repair') {
+    if (player.mana < 25) throw new Error('Mana belum cukup untuk Repair.');
+    player.mana -= 25;
+    if (ownSide === 'A') room.baseAHp = Math.min(100, room.baseAHp + 15);
+    else room.baseBHp = Math.min(100, room.baseBHp + 15);
+    return `Base ${ownSide} diperbaiki.`;
+  }
+
+  throw new Error('Aksi Base Battle tidak valid.');
 }
 
 app.post("/api/game-arena/avatar", async (req: any, res) => {
@@ -6445,7 +6620,7 @@ app.post("/api/game-arena/join", (req: any, res) => {
     if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
 
     const mode = String(req.body?.mode || '') as GameArenaMode;
-    if (mode !== 'laser_duel' && mode !== 'tug_war') {
+    if (!GAME_ARENA_MODES.has(mode)) {
       return res.status(400).json({ success: false, message: "Mode arena tidak valid." });
     }
 
@@ -6470,11 +6645,11 @@ app.post("/api/game-arena/join", (req: any, res) => {
     );
 
     if (!room) {
-      room = Object.values(gameArenaRoomsServer).find(item => {
-        if (item.tenantId !== tenantId || item.classKey !== classKey || item.mode !== mode || item.status === 'finished') return false;
-        if (mode === 'laser_duel') return item.status === 'waiting' && item.players.length < 2;
-        return item.players.length < 40;
-      });
+      room = Object.values(gameArenaRoomsServer).find(item =>
+        item.tenantId === tenantId &&
+        item.classKey === classKey &&
+        canJoinGameArenaRoom(item, mode)
+      );
     }
 
     if (!room) {
@@ -6489,6 +6664,10 @@ app.post("/api/game-arena/join", (req: any, res) => {
         players: [],
         questions: {},
         version: 0,
+        baseAHp: 100,
+        baseBHp: 100,
+        baseAShield: 0,
+        baseBShield: 0,
         createdAt: now,
         updatedAt: now
       };
@@ -6496,22 +6675,7 @@ app.post("/api/game-arena/join", (req: any, res) => {
     }
 
     if (!room.players.some(player => player.id === studentId)) {
-      const side = pickGameArenaSide(room.players);
-      room.players.push({
-        id: studentId,
-        name: String(student.name || student.username || 'Siswa'),
-        side,
-        avatar: {
-          presetId: GAME_ARENA_AVATAR_PRESETS.has(String(student?.gameAvatar?.presetId || '').toLowerCase())
-            ? String(student.gameAvatar.presetId).toLowerCase()
-            : 'bintang'
-        },
-        streak: 0,
-        correctAnswers: 0,
-        totalAnswers: 0,
-        joinedAt: now,
-        lastSeenAt: now
-      });
+      room.players.push(createGameArenaPlayer(student, room.players, now));
     }
 
     const joiningPlayer = room.players.find(player => player.id === studentId);
@@ -6520,6 +6684,11 @@ app.post("/api/game-arena/join", (req: any, res) => {
     const wasWaiting = room.status === 'waiting';
     if (room.players.length >= 2) room.status = 'playing';
 
+    if (wasWaiting && room.status === 'playing') {
+      resetGameArenaRoom(room);
+      room.status = 'playing';
+    }
+
     if (room.status === 'playing') {
       for (const player of room.players) {
         const playerResolution = findStudentForRequest(req, player.id);
@@ -6527,7 +6696,6 @@ app.post("/api/game-arena/join", (req: any, res) => {
       }
     }
 
-    if (wasWaiting && room.status === 'playing') room.position = 50;
     touchGameArenaRoom(room);
     res.json({ success: true, state: sanitizeGameArenaState(room, studentId) });
   } catch (err: any) {
@@ -6567,11 +6735,18 @@ app.post("/api/game-arena/answer", (req: any, res) => {
 
     const room = getGameArenaRoomForRequest(req, req.body?.roomId);
     const studentId = String(student.id);
-    if (!room || !room.players.some(player => player.id === studentId)) {
+    const player = room?.players.find(item => item.id === studentId);
+    if (!room || !player) {
       return res.status(404).json({ success: false, message: "Sesi arena tidak ditemukan." });
     }
     if (room.status !== 'playing') {
       return res.status(409).json({ success: false, message: "Pertandingan belum aktif." });
+    }
+    if (player.eliminated) {
+      return res.status(409).json({ success: false, message: "Kamu sudah menjadi penonton pada ronde ini.", state: sanitizeGameArenaState(room, studentId) });
+    }
+    if (room.mode === 'battle_royale' && player.energy > 0) {
+      return res.status(409).json({ success: false, message: "Gunakan energi yang masih tersedia sebelum menjawab soal berikutnya.", state: sanitizeGameArenaState(room, studentId) });
     }
 
     const currentQuestion = room.questions[studentId];
@@ -6596,52 +6771,122 @@ app.post("/api/game-arena/answer", (req: any, res) => {
       });
     }
 
-    const player = room.players.find(item => item.id === studentId)!;
     player.lastSeenAt = Date.now();
-    const isCorrect = gameArenaValidateAnswer(game, submitted);
-    let pushPower = 0;
     player.totalAnswers += 1;
     player.lastAnswerAt = Date.now();
+    const isCorrect = gameArenaValidateAnswer(game, submitted);
+    let gain = 0;
+    let eventText = '';
 
     if (isCorrect) {
       player.correctAnswers += 1;
       player.streak += 1;
+
       if (room.mode === 'laser_duel') {
-        pushPower = 9 + Math.min(6, Math.max(0, player.streak - 1) * 2);
-      } else {
-        pushPower = 4 + Math.min(3, Math.floor(Math.max(0, player.streak - 1) / 2));
+        gain = 9 + Math.min(6, Math.max(0, player.streak - 1) * 2);
+        room.position += player.side === 'A' ? gain : -gain;
+        room.position = Math.max(0, Math.min(100, room.position));
+        eventText = `Benar! Laser terdorong ${gain} daya.`;
+        const winningSide: GameArenaSide | null = room.position >= 95 ? 'A' : room.position <= 5 ? 'B' : null;
+        if (winningSide) finishGameArenaRoom(room, winningSide);
+      } else if (room.mode === 'tug_war') {
+        gain = 4 + Math.min(3, Math.floor(Math.max(0, player.streak - 1) / 2));
+        room.position += player.side === 'A' ? -gain : gain;
+        room.position = Math.max(0, Math.min(100, room.position));
+        eventText = `Benar! Timmu menarik ${gain} daya.`;
+        const winningSide: GameArenaSide | null = room.position <= 5 ? 'A' : room.position >= 95 ? 'B' : null;
+        if (winningSide) finishGameArenaRoom(room, winningSide);
+      } else if (room.mode === 'battle_royale') {
+        gain = 3 + (player.streak >= 3 ? 1 : 0);
+        player.energy = Math.min(6, player.energy + gain);
+        eventText = `Benar! Energi arena +${gain}. Gunakan Energy Pulse sebelum isi ulang lagi.`;
+      } else if (room.mode === 'quiz_race') {
+        gain = 10 + Math.min(5, Math.max(0, player.streak - 1));
+        player.raceProgress = Math.min(100, player.raceProgress + gain);
+        eventText = `Benar! Kendaraan maju ${gain}%.`;
+        if (player.raceProgress >= 100) finishGameArenaRoom(room, undefined, player.id);
+      } else if (room.mode === 'base_battle') {
+        gain = 10 + Math.min(5, Math.max(0, player.streak - 1));
+        player.mana = Math.min(100, player.mana + gain);
+        eventText = `Benar! Mana +${gain}. Pilih strategi tim atau lanjut isi mana.`;
       }
-      const direction = room.mode === 'tug_war'
-        ? (player.side === 'A' ? -1 : 1)
-        : (player.side === 'A' ? 1 : -1);
-      room.position += direction * pushPower;
-      room.position = Math.max(0, Math.min(100, room.position));
     } else {
       player.streak = 0;
+      eventText = room.mode === 'battle_royale'
+        ? 'Belum tepat. Cari jawaban berikutnya untuk mengisi energi.'
+        : 'Belum tepat. Streak kembali ke 0.';
     }
 
-    const winningSide = room.mode === 'tug_war'
-      ? (room.position <= 5 ? 'A' : room.position >= 95 ? 'B' : null)
-      : (room.position >= 95 ? 'A' : room.position <= 5 ? 'B' : null);
-
-    if (winningSide) {
-      room.status = 'finished';
-      room.winnerSide = winningSide;
-      room.finishedAt = Date.now();
-      room.questions = {};
-    } else {
-      ensureGameArenaQuestion(req, room, student, true);
-    }
-
+    if (room.status === 'playing') ensureGameArenaQuestion(req, room, student, true);
     touchGameArenaRoom(room);
+
     res.json({
       success: true,
       isCorrect,
-      pushPower,
+      gain,
+      eventText,
       state: sanitizeGameArenaState(room, studentId)
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: safeServerError(err, "Gagal memproses jawaban arena.") });
+  }
+});
+
+app.post("/api/game-arena/action", (req: any, res) => {
+  try {
+    const student = getGameArenaStudent(req);
+    if (!student) return res.status(403).json({ success: false, message: "Arena hanya tersedia untuk akun siswa." });
+    cleanupGameArenaRooms(Date.now(), String(student.id));
+    if (!enforceApiRateLimit(req, res, `game-arena-action:${student.id}`, 240, 60 * 1000)) return;
+
+    const room = getGameArenaRoomForRequest(req, req.body?.roomId);
+    const studentId = String(student.id);
+    const player = room?.players.find(item => item.id === studentId);
+    if (!room || !player) return res.status(404).json({ success: false, message: "Sesi arena tidak ditemukan." });
+    if (room.status !== 'playing') return res.status(409).json({ success: false, message: "Pertandingan belum aktif." });
+    if (player.eliminated) return res.status(409).json({ success: false, message: "Kamu sudah menjadi penonton pada ronde ini." });
+
+    player.lastSeenAt = Date.now();
+    const action = String(req.body?.action || '');
+    let eventText = '';
+
+    if (room.mode === 'battle_royale') {
+      if (action !== 'energy_pulse') return res.status(400).json({ success: false, message: "Aksi Battle Royale tidak valid." });
+      if (player.energy <= 0) return res.status(409).json({ success: false, message: "Energi habis. Jawab soal untuk mengisi ulang.", state: sanitizeGameArenaState(room, studentId) });
+
+      const targetId = String(req.body?.targetId || '');
+      const target = room.players.find(item => item.id === targetId && !item.eliminated && item.hp > 0);
+      if (!target || target.id === player.id) {
+        return res.status(400).json({ success: false, message: "Pilih target aktif yang berbeda." });
+      }
+
+      player.energy = Math.max(0, player.energy - 1);
+      target.hp = Math.max(0, target.hp - 1);
+      if (target.hp <= 0) {
+        target.eliminated = true;
+        delete room.questions[target.id];
+        eventText = `Energy Pulse menonaktifkan shield ${target.name}.`;
+      } else {
+        eventText = `Energy Pulse mengenai shield ${target.name}.`;
+      }
+
+      evaluateGameArenaWinner(room);
+      if (room.status === 'playing' && player.energy <= 0) ensureGameArenaQuestion(req, room, student);
+    } else if (room.mode === 'base_battle') {
+      try {
+        eventText = applyBaseBattleAction(room, player, action);
+      } catch (err: any) {
+        return res.status(409).json({ success: false, message: err?.message || "Aksi Base Battle gagal.", state: sanitizeGameArenaState(room, studentId) });
+      }
+      evaluateGameArenaWinner(room);
+    } else {
+      return res.status(400).json({ success: false, message: "Mode ini tidak memakai aksi manual." });
+    }
+
+    touchGameArenaRoom(room);
+    res.json({ success: true, eventText, state: sanitizeGameArenaState(room, studentId) });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: safeServerError(err, "Gagal memproses aksi arena.") });
   }
 });
 
@@ -6662,6 +6907,7 @@ app.post("/api/game-arena/leave", (req: any, res) => {
       delete gameArenaRoomsServer[room.id];
     } else {
       rebalanceGameArenaAfterLeave(room);
+      evaluateGameArenaWinner(room);
       touchGameArenaRoom(room);
     }
     res.json({ success: true });
