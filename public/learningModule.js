@@ -400,6 +400,35 @@ function renderMaterialBlocks(blocks = []) {
         if (type === 'text') {
             return `<div data-learning-block-id="${blockId}" class="whitespace-pre-wrap text-sm leading-7 text-slate-700">${learningEsc(block.content || block.text || '')}</div>`;
         }
+        if (type === 'image') {
+            const url = String(block.url || '');
+            if (!url) return '';
+            const name = learningEsc(block.name || 'Gambar materi');
+            return `
+                <figure data-learning-block-id="${blockId}" class="rounded-2xl border border-slate-100 bg-slate-50 p-3 overflow-hidden">
+                    <a href="${learningAttr(url)}" target="_blank" rel="noopener noreferrer" class="block">
+                        <img src="${learningAttr(url)}" alt="${learningAttr(block.name || 'Gambar materi')}" loading="lazy" class="w-full max-h-[560px] object-contain rounded-xl bg-white">
+                    </a>
+                    <figcaption class="mt-2 px-1 text-xs text-slate-500 font-semibold">${name}</figcaption>
+                </figure>`;
+        }
+        if (type === 'pdf') {
+            const url = String(block.url || '');
+            if (!url) return '';
+            const name = learningEsc(block.name || 'Materi PDF');
+            return `
+                <section data-learning-block-id="${blockId}" class="rounded-2xl border border-slate-200 overflow-hidden bg-white">
+                    <div class="flex items-center justify-between gap-3 p-3 bg-rose-50 border-b border-rose-100">
+                        <div class="min-w-0">
+                            <div class="text-xs font-black text-rose-700"><i class="fa-solid fa-file-pdf mr-2"></i>PDF</div>
+                            <div class="text-xs text-slate-600 truncate mt-0.5">${name}</div>
+                        </div>
+                        <a href="${learningAttr(url)}" target="_blank" rel="noopener noreferrer" class="shrink-0 px-3 py-2 rounded-xl bg-white border border-rose-100 text-rose-700 text-xs font-bold">Buka PDF</a>
+                    </div>
+                    <iframe src="${learningAttr(url)}" title="${learningAttr(block.name || 'Materi PDF')}" class="hidden md:block w-full h-[560px] bg-slate-50" loading="lazy"></iframe>
+                    <div class="md:hidden p-4 text-xs text-slate-500 text-center">Ketuk <b>Buka PDF</b> untuk membaca dokumen di perangkat ini.</div>
+                </section>`;
+        }
         if (type === 'video' || type === 'link') {
             const url = String(block.url || '');
             if (!/^https?:\/\//i.test(url)) return '';
@@ -408,13 +437,136 @@ function renderMaterialBlocks(blocks = []) {
         return '';
     }).join('');
 }
+
+function learningEditorAssets() {
+    if (!Array.isArray(window.__learningEditorAssets)) window.__learningEditorAssets = [];
+    return window.__learningEditorAssets;
+}
 function safeBlocksFromForm() {
     const blocks = [{ type: 'text', content: document.getElementById('learning-content')?.value || '' }];
+    for (const asset of learningEditorAssets()) {
+        if (!asset || !['image', 'pdf'].includes(String(asset.type || ''))) continue;
+        if (!asset.url) continue;
+        blocks.push({
+            type: String(asset.type),
+            url: String(asset.url),
+            name: String(asset.name || (asset.type === 'pdf' ? 'Materi PDF' : 'Gambar materi'))
+        });
+    }
     const videoUrl = document.getElementById('learning-video')?.value?.trim() || '';
     const resourceUrl = document.getElementById('learning-resource')?.value?.trim() || '';
     if (videoUrl) blocks.push({ type: 'video', url: videoUrl });
     if (resourceUrl) blocks.push({ type: 'link', url: resourceUrl });
     return blocks;
+}
+function readLearningAssetFile(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('File gagal dibaca.'));
+        reader.readAsDataURL(file);
+    });
+}
+function renderLearningEditorAssets() {
+    const container = document.getElementById('learning-assets-list');
+    if (!container) return;
+    const assets = learningEditorAssets();
+    if (assets.length === 0) {
+        container.innerHTML = '<div class="p-4 text-center text-xs text-slate-400 border border-dashed rounded-xl">Belum ada gambar atau PDF yang disisipkan.</div>';
+        return;
+    }
+    container.innerHTML = assets.map((asset, index) => {
+        const isPdf = asset.type === 'pdf';
+        const preview = asset.preview || asset.url || '';
+        const icon = isPdf
+            ? '<div class="w-16 h-16 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-2xl"><i class="fa-solid fa-file-pdf"></i></div>'
+            : `<img src="${learningAttr(preview)}" alt="" class="w-16 h-16 rounded-xl object-cover bg-slate-100 border">`;
+        return `
+            <div class="flex items-center gap-3 p-3 rounded-2xl border border-slate-100 bg-white">
+                ${icon}
+                <div class="min-w-0 flex-1">
+                    <div class="text-xs font-bold text-slate-800 truncate">${learningEsc(asset.name || (isPdf ? 'Materi PDF' : 'Gambar materi'))}</div>
+                    <div class="text-[10px] text-slate-400 mt-1">${isPdf ? 'PDF' : 'Gambar'}${asset.pending ? ' • siap diunggah saat disimpan' : ' • tersimpan'}</div>
+                </div>
+                <div class="flex items-center gap-1">
+                    <button type="button" onclick="moveLearningEditorAsset(${index}, -1)" ${index === 0 ? 'disabled' : ''} class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 disabled:opacity-30" title="Naik"><i class="fa-solid fa-arrow-up text-[10px]"></i></button>
+                    <button type="button" onclick="moveLearningEditorAsset(${index}, 1)" ${index === assets.length - 1 ? 'disabled' : ''} class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 disabled:opacity-30" title="Turun"><i class="fa-solid fa-arrow-down text-[10px]"></i></button>
+                    <button type="button" onclick="removeLearningEditorAsset(${index})" class="w-8 h-8 rounded-lg bg-rose-50 text-rose-600" title="Hapus"><i class="fa-solid fa-trash-can text-[10px]"></i></button>
+                </div>
+            </div>`;
+    }).join('');
+}
+window.handleLearningAssetSelection = async function(input) {
+    const files = Array.from(input?.files || []);
+    if (files.length === 0) return;
+    const assets = learningEditorAssets();
+    for (const file of files) {
+        const mime = String(file.type || '').toLowerCase();
+        const isImage = ['image/jpeg', 'image/png', 'image/webp'].includes(mime);
+        const isPdf = mime === 'application/pdf';
+        if (!isImage && !isPdf) {
+            learningToast(`${file.name}: hanya JPG, PNG, WebP, atau PDF yang didukung.`, 'warning');
+            continue;
+        }
+        const limit = isPdf ? 15 * 1024 * 1024 : 10 * 1024 * 1024;
+        if (Number(file.size || 0) > limit) {
+            learningToast(`${file.name}: ukuran maksimal ${isPdf ? '15 MB' : '10 MB'}.`, 'warning');
+            continue;
+        }
+        try {
+            const data = await readLearningAssetFile(file);
+            assets.push({
+                type: isPdf ? 'pdf' : 'image',
+                name: file.name || (isPdf ? 'Materi.pdf' : 'Gambar materi'),
+                data,
+                preview: isImage ? data : '',
+                pending: true,
+                url: ''
+            });
+        } catch (err) {
+            learningToast(err.message || `${file.name}: gagal dibaca.`, 'error');
+        }
+    }
+    if (input) input.value = '';
+    renderLearningEditorAssets();
+};
+window.removeLearningEditorAsset = function(index) {
+    const assets = learningEditorAssets();
+    if (index < 0 || index >= assets.length) return;
+    assets.splice(index, 1);
+    renderLearningEditorAssets();
+};
+window.moveLearningEditorAsset = function(index, delta) {
+    const assets = learningEditorAssets();
+    const target = index + Number(delta || 0);
+    if (index < 0 || target < 0 || index >= assets.length || target >= assets.length) return;
+    const [item] = assets.splice(index, 1);
+    assets.splice(target, 0, item);
+    renderLearningEditorAssets();
+};
+async function uploadPendingLearningAssets() {
+    const assets = learningEditorAssets();
+    for (let i = 0; i < assets.length; i++) {
+        const asset = assets[i];
+        if (!asset?.pending) continue;
+        const response = await fetch('/api/learning/assets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: asset.name, data: asset.data })
+        });
+        const data = await response.json();
+        if (!response.ok || data.success === false || !data.asset?.url) {
+            throw new Error(data.message || `Gagal mengunggah ${asset.name || 'lampiran'}.`);
+        }
+        assets[i] = {
+            type: data.asset.type,
+            name: data.asset.name || asset.name,
+            url: data.asset.url,
+            pending: false,
+            preview: data.asset.type === 'image' ? data.asset.url : ''
+        };
+        renderLearningEditorAssets();
+    }
 }
 
 window.renderLearningTeacher = async function(container) {
@@ -500,6 +652,15 @@ window.showLearningEditor = async function(existing = null) {
     const textBlock = (material.blocks || []).find(block => block.type === 'text')?.content || material.content || '';
     const video = (material.blocks || []).find(block => block.type === 'video')?.url || '';
     const resource = (material.blocks || []).find(block => block.type === 'link')?.url || '';
+    window.__learningEditorAssets = (material.blocks || [])
+        .filter(block => ['image', 'pdf'].includes(String(block.type || '').toLowerCase()))
+        .map(block => ({
+            type: String(block.type || '').toLowerCase(),
+            name: String(block.name || (block.type === 'pdf' ? 'Materi PDF' : 'Gambar materi')),
+            url: String(block.url || ''),
+            pending: false,
+            preview: String(block.type || '').toLowerCase() === 'image' ? String(block.url || '') : ''
+        }));
     const policy = learningPolicy(material);
     document.body.insertAdjacentHTML('beforeend', `
         <div id="learning-editor-modal" class="fixed inset-0 z-[120] bg-slate-950/70 backdrop-blur-sm p-4 overflow-y-auto">
@@ -516,6 +677,17 @@ window.showLearningEditor = async function(existing = null) {
                     <label class="text-xs font-bold">Kelas<select id="learning-class" class="mt-1 w-full p-3 border rounded-xl font-normal bg-white">${classOpts}</select></label>
                 </div>
                 <label class="text-xs font-bold block">Isi Materi<textarea id="learning-content" rows="10" class="mt-1 w-full p-3 border rounded-xl font-normal" placeholder="Tulis materi pembelajaran...">${learningEsc(textBlock)}</textarea></label>
+                <div class="p-4 rounded-2xl bg-blue-50/60 border border-blue-100 space-y-3">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <div class="font-bold text-sm text-slate-800">Sisipkan Gambar / PDF</div>
+                            <div class="text-[11px] text-slate-500 mt-1">Pilih langsung dari HP/PC. Gambar maks. 10 MB, PDF maks. 15 MB. Bisa lebih dari satu dan urutannya dapat diubah.</div>
+                        </div>
+                        <button type="button" onclick="document.getElementById('learning-asset-input')?.click()" class="px-3.5 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-bold"><i class="fa-solid fa-paperclip mr-1"></i>Tambah File</button>
+                        <input id="learning-asset-input" type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" class="hidden" onchange="handleLearningAssetSelection(this)">
+                    </div>
+                    <div id="learning-assets-list" class="space-y-2"></div>
+                </div>
                 <div class="grid md:grid-cols-2 gap-3">
                     <label class="text-xs font-bold">Video/tautan video<input id="learning-video" value="${learningAttr(video)}" class="mt-1 w-full p-3 border rounded-xl font-normal" placeholder="https://..."></label>
                     <label class="text-xs font-bold">Sumber/PDF/link<input id="learning-resource" value="${learningAttr(resource)}" class="mt-1 w-full p-3 border rounded-xl font-normal" placeholder="https://..."></label>
@@ -541,6 +713,7 @@ window.showLearningEditor = async function(existing = null) {
                 </div>
             </div>
         </div>`);
+    renderLearningEditorAssets();
 };
 window.saveLearningMaterial = async function(status) {
     const idEl = document.getElementById('learning-id');
@@ -552,33 +725,45 @@ window.saveLearningMaterial = async function(status) {
         id = `MAT_WEB_${Date.now()}_${randomPart}`;
         if (idEl) idEl.value = id;
     }
-    const subjectId = document.getElementById('learning-subject')?.value || '';
-    const subjectName = (learningState().subjects || []).find(subject => String(subject.id) === String(subjectId))?.name || '';
-    const classId = document.getElementById('learning-class')?.value || 'ALL';
-    const lkpdSelection = document.getElementById('learning-lkpd')?.value || '';
-    const examSelection = document.getElementById('learning-exam')?.value || '';
-    const payload = {
-        id,
-        title: document.getElementById('learning-title')?.value?.trim() || '',
-        topic: document.getElementById('learning-topic')?.value?.trim() || '',
-        subjectId,
-        subjectName,
-        classId,
-        classes: classId ? [classId] : [],
-        blocks: safeBlocksFromForm(),
-        lkpdId: lkpdSelection === '__CREATE_DRAFT__' ? '' : lkpdSelection,
-        examId: examSelection === '__CREATE_DRAFT__' ? '' : examSelection,
-        createLkpdDraft: lkpdSelection === '__CREATE_DRAFT__',
-        createExamDraft: examSelection === '__CREATE_DRAFT__',
-        requiresCompletionForLinks: document.getElementById('learning-require-complete')?.checked !== false,
-        engagementPolicy: {
-            minActiveSeconds: Math.max(0, Math.min(3600, Number(document.getElementById('learning-min-active-seconds')?.value || 0) || 0)),
-            requireAllBlocks: document.getElementById('learning-require-all-blocks')?.checked !== false
-        },
-        status
-    };
-    if (!payload.title) return learningToast('Judul materi wajib diisi.', 'warning');
+
+    const title = document.getElementById('learning-title')?.value?.trim() || '';
+    if (!title) return learningToast('Judul materi wajib diisi.', 'warning');
+
+    const saveButtons = Array.from(document.querySelectorAll('#learning-editor-modal button[onclick^="saveLearningMaterial"]'));
+    saveButtons.forEach(button => {
+        button.disabled = true;
+        button.classList.add('opacity-60', 'cursor-wait');
+    });
+
     try {
+        await uploadPendingLearningAssets();
+
+        const subjectId = document.getElementById('learning-subject')?.value || '';
+        const subjectName = (learningState().subjects || []).find(subject => String(subject.id) === String(subjectId))?.name || '';
+        const classId = document.getElementById('learning-class')?.value || 'ALL';
+        const lkpdSelection = document.getElementById('learning-lkpd')?.value || '';
+        const examSelection = document.getElementById('learning-exam')?.value || '';
+        const payload = {
+            id,
+            title,
+            topic: document.getElementById('learning-topic')?.value?.trim() || '',
+            subjectId,
+            subjectName,
+            classId,
+            classes: classId ? [classId] : [],
+            blocks: safeBlocksFromForm(),
+            lkpdId: lkpdSelection === '__CREATE_DRAFT__' ? '' : lkpdSelection,
+            examId: examSelection === '__CREATE_DRAFT__' ? '' : examSelection,
+            createLkpdDraft: lkpdSelection === '__CREATE_DRAFT__',
+            createExamDraft: examSelection === '__CREATE_DRAFT__',
+            requiresCompletionForLinks: document.getElementById('learning-require-complete')?.checked !== false,
+            engagementPolicy: {
+                minActiveSeconds: Math.max(0, Math.min(3600, Number(document.getElementById('learning-min-active-seconds')?.value || 0) || 0)),
+                requireAllBlocks: document.getElementById('learning-require-all-blocks')?.checked !== false
+            },
+            status
+        };
+
         const response = await fetch('/api/learning/materials', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -586,7 +771,9 @@ window.saveLearningMaterial = async function(status) {
         });
         const data = await response.json();
         if (!response.ok || data.success === false) throw new Error(data.message || 'Gagal menyimpan materi.');
+
         document.getElementById('learning-editor-modal')?.remove();
+        window.__learningEditorAssets = [];
         window.__learningLinks = null;
         const created = [];
         if (data.createdDrafts?.lkpdId) created.push('draft LKPD');
@@ -596,6 +783,10 @@ window.saveLearningMaterial = async function(status) {
         window.renderLearningTeacher(document.getElementById('view-container'));
     } catch (err) {
         learningToast(err.message || 'Gagal menyimpan materi.', 'error');
+        saveButtons.forEach(button => {
+            button.disabled = false;
+            button.classList.remove('opacity-60', 'cursor-wait');
+        });
     }
 };
 window.openLearningLinkedActivityEditor = async function(kind, id) {
