@@ -40,6 +40,7 @@ import './gameArenaMasterArtV3.js';
 import './gameArenaLaserDuelV4.js';
 import './gameArenaGeneratedChibiSheet.js';
 import './gameArenaGeneratedBackgroundsV5.js';
+import './gameArenaBackgroundAmbientFix.js';
 import './lkpdModule.js';
 import './learningModule.js';
 
