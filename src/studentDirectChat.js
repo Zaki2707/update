@@ -17,18 +17,19 @@
     }
 
     function ensureChatHeader(table) {
-        if (!table || table.querySelector(`.${CHAT_HEADER_CLASS}`)) return;
+        if (!table || table.querySelector(`.${CHAT_HEADER_CLASS}`)) return false;
         const headerRow = table.querySelector('thead tr');
-        if (!headerRow) return;
+        if (!headerRow) return false;
 
         const th = document.createElement('th');
         th.className = `${CHAT_HEADER_CLASS} p-4 text-center`;
         th.textContent = 'Chat';
         insertBeforeActionCell(headerRow, th);
+        return true;
     }
 
     function ensureChatCell(row, studentId) {
-        if (!row || !studentId || row.querySelector(`.${CHAT_CELL_CLASS}`)) return;
+        if (!row || !studentId || row.querySelector(`.${CHAT_CELL_CLASS}`)) return false;
 
         const td = document.createElement('td');
         td.className = `${CHAT_CELL_CLASS} p-4 text-center`;
@@ -48,6 +49,7 @@
 
         td.appendChild(button);
         insertBeforeActionCell(row, td);
+        return true;
     }
 
     function enhanceStudentTableChat() {
@@ -56,6 +58,7 @@
 
         const checkboxes = document.querySelectorAll('.student-page-checkbox');
         const touchedTables = new Set();
+        let changed = false;
 
         checkboxes.forEach((checkbox) => {
             const studentId = checkbox.value;
@@ -64,14 +67,16 @@
             if (!row || !table || !studentId) return;
 
             touchedTables.add(table);
-            ensureChatCell(row, studentId);
+            changed = ensureChatCell(row, studentId) || changed;
         });
 
-        touchedTables.forEach(ensureChatHeader);
+        touchedTables.forEach((table) => {
+            changed = ensureChatHeader(table) || changed;
+        });
 
-        // Reuse the existing unread-message logic. It already calculates unread
-        // messages per student and targets every .student-chat-btn element.
-        if (typeof window.updateChatNotificationBadges === 'function') {
+        // Reuse the existing unread-message logic only when new direct-chat
+        // controls were inserted. This avoids a MutationObserver render loop.
+        if (changed && typeof window.updateChatNotificationBadges === 'function') {
             window.updateChatNotificationBadges();
         }
     }
