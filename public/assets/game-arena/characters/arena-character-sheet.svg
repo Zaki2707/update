@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 1620">
+  <defs>
+    <g id="char-bintang"><image href="hero-bintang.svg" width="210" height="270" preserveAspectRatio="xMidYMid meet"/></g>
+    <g id="char-roket"><image href="hero-roket.svg" width="210" height="270" preserveAspectRatio="xMidYMid meet"/></g>
+    <g id="char-buku"><image href="hero-buku.svg" width="210" height="270" preserveAspectRatio="xMidYMid meet"/></g>
+    <g id="char-komet"><image href="hero-komet.svg" width="210" height="270" preserveAspectRatio="xMidYMid meet"/></g>
+    <g id="char-bulan"><image href="hero-bulan.svg" width="210" height="270" preserveAspectRatio="xMidYMid meet"/></g>
+    <g id="char-petir"><image href="hero-petir.svg" width="210" height="270" preserveAspectRatio="xMidYMid meet"/></g>
+  </defs>
+
+  <!-- 4 poses per character: idle, action, impact, victory -->
+  <g id="row-bintang" transform="translate(0 0)">
+    <use href="#char-bintang" x="0" y="0"/>
+    <g transform="translate(210 0) rotate(-7 105 135) translate(0 -5)"><use href="#char-bintang"/></g>
+    <g transform="translate(420 0) rotate(7 105 145) translate(8 9) scale(.92 .88)"><use href="#char-bintang"/></g>
+    <g transform="translate(630 0) translate(0 -10) scale(1.03)"><use href="#char-bintang"/></g>
+  </g>
+  <g id="row-roket" transform="translate(0 270)">
+    <use href="#char-roket" x="0" y="0"/>
+    <g transform="translate(210 0) rotate(-7 105 135) translate(0 -5)"><use href="#char-roket"/></g>
+    <g transform="translate(420 0) rotate(7 105 145) translate(8 9) scale(.92 .88)"><use href="#char-roket"/></g>
+    <g transform="translate(630 0) translate(0 -10) scale(1.03)"><use href="#char-roket"/></g>
+  </g>
+  <g id="row-buku" transform="translate(0 540)">
+    <use href="#char-buku" x="0" y="0"/>
+    <g transform="translate(210 0) rotate(-7 105 135) translate(0 -5)"><use href="#char-buku"/></g>
+    <g transform="translate(420 0) rotate(7 105 145) translate(8 9) scale(.92 .88)"><use href="#char-buku"/></g>
+    <g transform="translate(630 0) translate(0 -10) scale(1.03)"><use href="#char-buku"/></g>
+  </g>
+  <g id="row-komet" transform="translate(0 810)">
+    <use href="#char-komet" x="0" y="0"/>
+    <g transform="translate(210 0) rotate(-7 105 135) translate(0 -5)"><use href="#char-komet"/></g>
+    <g transform="translate(420 0) rotate(7 105 145) translate(8 9) scale(.92 .88)"><use href="#char-komet"/></g>
+    <g transform="translate(630 0) translate(0 -10) scale(1.03)"><use href="#char-komet"/></g>
+  </g>
+  <g id="row-bulan" transform="translate(0 1080)">
+    <use href="#char-bulan" x="0" y="0"/>
+    <g transform="translate(210 0) rotate(-7 105 135) translate(0 -5)"><use href="#char-bulan"/></g>
+    <g transform="translate(420 0) rotate(7 105 145) translate(8 9) scale(.92 .88)"><use href="#char-bulan"/></g>
+    <g transform="translate(630 0) translate(0 -10) scale(1.03)"><use href="#char-bulan"/></g>
+  </g>
+  <g id="row-petir" transform="translate(0 1350)">
+    <use href="#char-petir" x="0" y="0"/>
+    <g transform="translate(210 0) rotate(-7 105 135) translate(0 -5)"><use href="#char-petir"/></g>
+    <g transform="translate(420 0) rotate(7 105 145) translate(8 9) scale(.92 .88)"><use href="#char-petir"/></g>
+    <g transform="translate(630 0) translate(0 -10) scale(1.03)"><use href="#char-petir"/></g>
+  </g>
+</svg>
