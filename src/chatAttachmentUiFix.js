@@ -50,6 +50,16 @@
         if (typeof window.showToast === 'function') window.showToast(message, type);
     }
 
+    function getChatAuthHeaders(extra = {}) {
+        const stored = typeof window.getStoredAuthToken === 'function' ? window.getStoredAuthToken() : '';
+        const currentToken = window.appState?.currentUser?.token;
+        const token = stored || (currentToken ? String(currentToken) : '');
+        return {
+            ...extra,
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
+        };
+    }
+
     function isSafeDataUrl(type, data) {
         if (!data || data.length > 8 * 1024 * 1024) return false;
         if (type === 'image') {
@@ -158,6 +168,54 @@
         reader.readAsDataURL(file);
     };
 
+    async function performClearConversation(senderId, receiverId) {
+        try {
+            const response = await fetch('/api/chats/clear', {
+                method: 'POST',
+                headers: getChatAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ senderId, receiverId })
+            });
+
+            const raw = await response.text().catch(() => '');
+            let payload = null;
+            if (raw) {
+                try { payload = JSON.parse(raw); } catch (_) {}
+            }
+
+            if (!response.ok || payload?.success === false) {
+                throw new Error(payload?.message || 'Gagal mengosongkan obrolan');
+            }
+
+            window.appState.chats = (window.appState.chats || []).filter((chat) => !(
+                (String(chat.senderId) === String(senderId) && String(chat.receiverId) === String(receiverId)) ||
+                (String(chat.senderId) === String(receiverId) && String(chat.receiverId) === String(senderId))
+            ));
+
+            resetChatAttachmentUi();
+            if (typeof window.updateChatNotificationBadges === 'function') {
+                window.updateChatNotificationBadges();
+            }
+            if (document.getElementById('chat-messages-container') && typeof window.refreshChatMessages === 'function') {
+                window.refreshChatMessages(senderId, receiverId);
+            }
+            showToast('Obrolan berhasil dikosongkan');
+        } catch (error) {
+            showToast(`Gagal mengosongkan obrolan: ${error?.message || 'terjadi kesalahan'}`, 'error');
+        }
+    }
+
+    window.clearAllChats = function (senderId, receiverId) {
+        const message = 'Apakah Anda yakin ingin mengosongkan semua pesan dalam obrolan ini?';
+        const confirmAction = () => performClearConversation(senderId, receiverId);
+
+        if (typeof window.showConfirmModal === 'function') {
+            window.showConfirmModal(message, confirmAction);
+            return;
+        }
+
+        if (window.confirm(message)) confirmAction();
+    };
+
     function normalizeCurrentPreview() {
         const elements = getAttachmentElements();
         if (!elements.preview) return;
@@ -177,12 +235,26 @@
         }
     }
 
+    function wireClearConversationButton(senderId, receiverId) {
+        const clearButton = document.getElementById('chat-clear-btn');
+        if (!clearButton) return;
+
+        clearButton.style.touchAction = 'manipulation';
+        clearButton.setAttribute('aria-label', 'Kosongkan chat');
+        clearButton.onclick = (event) => {
+            event.preventDefault();
+            window.clearAllChats(senderId, receiverId);
+        };
+    }
+
     const originalRenderChatModal = window.renderChatModal;
     if (typeof originalRenderChatModal === 'function') {
         window.renderChatModal = function (...args) {
             const result = originalRenderChatModal.apply(this, args);
+            const [, , senderId, receiverId] = args;
             resetChatAttachmentUi();
             normalizeCurrentPreview();
+            wireClearConversationButton(senderId, receiverId);
             return result;
         };
     }
