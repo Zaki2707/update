@@ -34,8 +34,9 @@ import './studentDirectChat.js';
 import './calendarModule.js';
 import './bossModule.js';
 import './gameModule.js';
+import './gameArenaV3Assets.js';
 import './gameArenaCharacterSheet.js';
-import './gameArenaVisualOverhaulV2.js';
+import './gameArenaMasterArtV3.js';
 import './lkpdModule.js';
 import './learningModule.js';
 
