@@ -1,9 +1,12 @@
 (function () {
   const SHEET_URL = '/assets/game-arena-v6/chibi-models-v6.webp';
-  const SHEET_W = 960;
-  const SHEET_H = 700;
-  const CELL_W = 120;
-  const CELL_H = 140;
+  // Atlas V6 asli adalah 1536x1120: 8 kolom x 5 baris.
+  // Nilai lama 960x700 membuat background-position salah, sehingga frame terlihat
+  // seperti kotak yang bergetar atau jatuh ke area transparan.
+  const SHEET_W = 1536;
+  const SHEET_H = 1120;
+  const CELL_W = 192;
+  const CELL_H = 224;
 
   const FRAMES = Object.freeze({
     tug_war: {
@@ -28,10 +31,11 @@
   });
 
   const ANIMATIONS = Object.freeze({
-    tug_war: { poses: ['idle', 'pull', 'strain', 'pull'], duration: 185 },
-    base_battle: { poses: ['defend', 'attack', 'attack', 'defend'], duration: 380 },
-    battle_royale: { poses: ['scout', 'attack', 'scout', 'attack'], duration: 520 },
-    laser_duel: { poses: ['aim', 'fire', 'aim', 'fire'], duration: 230 }
+    tug_war: { poses: ['idle', 'pull', 'strain', 'pull'], duration: 230 },
+    base_battle: { poses: ['defend', 'attack', 'attack', 'defend'], duration: 460 },
+    battle_royale: { poses: ['scout', 'attack', 'scout', 'attack'], duration: 620 },
+    // Laser dibuat lebih tenang: fire hanya sesekali, tanpa scale-shake antar-frame.
+    laser_duel: { poses: ['aim', 'aim', 'fire', 'aim'], duration: 390 }
   });
 
   let sheetReady = false;
@@ -212,8 +216,34 @@
       .arena-character-wrap.arena-generated-chibi-ready>.arena-character-core,
       .arena-character-wrap.arena-generated-chibi-ready>.arena-sheet-sprite,
       .arena-character-wrap.arena-generated-chibi-ready>.arena-v3-character{display:none!important;visibility:hidden!important;opacity:0!important}
-      .arena-character-wrap.arena-generated-chibi-ready{position:relative!important;overflow:visible!important;display:block!important}
-      .arena-generated-chibi{position:absolute;left:50%;bottom:0;display:block;background-repeat:no-repeat;transform:translateX(-50%);transform-origin:50% 100%;pointer-events:none;user-select:none;filter:drop-shadow(0 6px 4px rgba(0,0,0,.36));z-index:8;will-change:background-position,transform}
+      .arena-character-wrap.arena-generated-chibi-ready{
+        position:relative!important;
+        overflow:visible!important;
+        display:block!important;
+        visibility:visible!important;
+        opacity:1!important;
+        z-index:12!important
+      }
+      .arena-generated-chibi{
+        position:absolute;
+        left:50%;
+        bottom:0;
+        display:block!important;
+        visibility:visible!important;
+        opacity:1!important;
+        overflow:hidden;
+        background-color:transparent;
+        background-repeat:no-repeat;
+        background-origin:border-box;
+        background-clip:border-box;
+        transform:translateX(-50%);
+        transform-origin:50% 100%;
+        pointer-events:none;
+        user-select:none;
+        filter:drop-shadow(0 6px 4px rgba(0,0,0,.36));
+        z-index:13;
+        will-change:transform
+      }
       [data-arena-stage="tug_war"] [data-arena-generated-side="A"]>.arena-generated-chibi[data-arena-pose="idle"]{transform:translateX(-50%) rotate(-1deg)}
       [data-arena-stage="tug_war"] [data-arena-generated-side="A"]>.arena-generated-chibi[data-arena-pose="pull"]{transform:translateX(calc(-50% - 2px)) rotate(-3deg)}
       [data-arena-stage="tug_war"] [data-arena-generated-side="A"]>.arena-generated-chibi[data-arena-pose="strain"]{transform:translateX(calc(-50% - 5px)) rotate(-6deg) scale(.99)}
@@ -226,12 +256,13 @@
       [data-arena-stage="laser_duel"] .arena-generated-chibi[data-arena-pose="victory"]{transform:translate(-50%,-5px) scale(1.03)}
       [data-arena-stage="base_battle"] .arena-generated-chibi[data-arena-pose="attack"],
       [data-arena-stage="battle_royale"] .arena-generated-chibi[data-arena-pose="attack"]{transform:translate(-50%,-2px) scale(1.01)}
-      [data-arena-stage="laser_duel"] .arena-generated-chibi[data-arena-pose="fire"]{transform:translate(-50%,-1px) scale(1.015);filter:drop-shadow(0 6px 4px rgba(0,0,0,.4)) drop-shadow(0 0 9px rgba(96,165,250,.45))}
+      [data-arena-stage="laser_duel"] .arena-generated-chibi{transform:translateX(-50%)!important}
+      [data-arena-stage="laser_duel"] .arena-generated-chibi[data-arena-pose="fire"]{transform:translateX(-50%)!important;filter:drop-shadow(0 6px 4px rgba(0,0,0,.4)) drop-shadow(0 0 9px rgba(96,165,250,.45))}
       [data-arena-stage="laser_duel"] [data-arena-generated-side="B"]>.arena-generated-chibi[data-arena-pose="fire"]{filter:drop-shadow(0 6px 4px rgba(0,0,0,.4)) drop-shadow(0 0 9px rgba(248,113,113,.45))}
       [data-arena-stage="quiz_race"] .arena-race-car>.arena-v3-kart,
       [data-arena-stage="quiz_race"] .arena-race-car>img[src*="/vehicles/"]{display:none!important;visibility:hidden!important}
-      .arena-race-car{position:absolute!important}
-      .arena-generated-kart{position:absolute;left:50%;bottom:-3px;display:block;background-repeat:no-repeat;transform:translateX(-50%);transform-origin:50% 100%;pointer-events:none;filter:drop-shadow(0 6px 4px rgba(0,0,0,.4));z-index:6;animation:arenaGeneratedKartV6 .42s ease-in-out infinite;will-change:transform}
+      .arena-race-car{position:absolute!important;z-index:12!important}
+      .arena-generated-kart{position:absolute;left:50%;bottom:-3px;display:block!important;visibility:visible!important;opacity:1!important;overflow:hidden;background-repeat:no-repeat;transform:translateX(-50%);transform-origin:50% 100%;pointer-events:none;filter:drop-shadow(0 6px 4px rgba(0,0,0,.4));z-index:13;animation:arenaGeneratedKartV6 .42s ease-in-out infinite;will-change:transform}
       @keyframes arenaGeneratedKartV6{0%,100%{transform:translate(-50%,0) rotate(-.4deg)}50%{transform:translate(-50%,-2px) rotate(.4deg)}}
       @media(prefers-reduced-motion:reduce){.arena-generated-chibi,.arena-generated-kart{animation:none!important;transform:translateX(-50%)!important}}
     `;
@@ -242,7 +273,13 @@
     try {
       await new Promise((resolve, reject) => {
         const image = new Image();
-        image.onload = resolve;
+        image.onload = () => {
+          if (image.naturalWidth !== SHEET_W || image.naturalHeight !== SHEET_H) {
+            reject(new Error(`unexpected chibi atlas size ${image.naturalWidth}x${image.naturalHeight}; expected ${SHEET_W}x${SHEET_H}`));
+            return;
+          }
+          resolve();
+        };
         image.onerror = () => reject(new Error('invalid generated chibi V6 sheet'));
         image.src = SHEET_URL;
       });
