@@ -3966,9 +3966,12 @@ const GAME_ARENA_MODE_META = [
 const GAME_ARENA_FX_LEVELS = ['full', 'light', 'eco'];
 const GAME_ARENA_FX_LABELS = { full: '✨ Penuh', light: '⚡ Ringan', eco: '🔋 Hemat' };
 const GAME_ARENA_ASSET_ROOT = '/assets/game-arena';
-const GAME_ARENA_VEHICLES = ['car-blue.svg','car-red.svg','car-green.svg','car-yellow.svg','car-purple.svg'];
+const GAME_ARENA_VEHICLES = ['speed-blue.svg','speed-red.svg','speed-green.svg','speed-yellow.svg','speed-purple.svg'];
+const GAME_ARENA_PREMIUM_CHARACTER_IDS = new Set(['bintang','roket','buku','komet','bulan','petir']);
 function gameArenaAsset(path){ return `${GAME_ARENA_ASSET_ROOT}/${String(path||'').replace(/^\/+/, '')}`; }
 function gameArenaVehicleAsset(index=0){ return gameArenaAsset(`vehicles/${GAME_ARENA_VEHICLES[Math.abs(Number(index||0)) % GAME_ARENA_VEHICLES.length]}`); }
+function gameArenaFxAsset(name){ return gameArenaAsset(`fx/${String(name||'').replace(/^\/+/, '')}.svg`); }
+function gameArenaCharacterAsset(presetId){ const id=GAME_ARENA_PREMIUM_CHARACTER_IDS.has(String(presetId||''))?String(presetId):'bintang'; return gameArenaAsset(`characters/hero-${id}.svg`); }
 
 let adminArenaFxSnapshots = Object.create(null);
 
@@ -4112,6 +4115,10 @@ function ensureGameArenaReferenceStyles(){
  @keyframes arenaRefFlash{0%,100%{opacity:.45;transform:translate(-50%,-50%) scale(.75)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.25)}}
  @keyframes arenaRefCar{0%,100%{transform:translate(-50%,-50%) rotate(-1deg)}50%{transform:translate(-50%,calc(-50% - 2px)) rotate(1deg)}}
  @keyframes arenaRefCritical{0%,100%{filter:brightness(1)}50%{filter:brightness(.72) saturate(1.4)}}
+ @keyframes arenaRefLeanLeft{0%,100%{transform:translateY(0) rotate(-4deg)}50%{transform:translateY(-2px) rotate(-9deg)}}
+ @keyframes arenaRefLeanRight{0%,100%{transform:scaleX(-1) translateY(0) rotate(-4deg)}50%{transform:scaleX(-1) translateY(-2px) rotate(-9deg)}}
+ @keyframes arenaRefShieldShimmer{0%,100%{opacity:.42;transform:scale(.94) rotate(0)}50%{opacity:.78;transform:scale(1.05) rotate(7deg)}}
+ @keyframes arenaRefSpeedPulse{0%,100%{opacity:.42;transform:translateX(0) scaleX(.8)}50%{opacity:.9;transform:translateX(-8px) scaleX(1.1)}}
  .arena-ref-shell{background:#06182d;border:1px solid rgba(71,173,255,.32);border-radius:22px;overflow:hidden;box-shadow:0 22px 65px rgba(2,12,27,.45)}
  .arena-ref-wrap{position:relative;min-height:650px;overflow:hidden}.arena-ref-wrap>[data-arena-stage]{min-height:650px;border-radius:0!important;border:0!important;box-shadow:none!important;padding-bottom:235px!important}
  .arena-ref-bottom{position:absolute;z-index:90;left:18px;right:18px;bottom:16px;display:grid;grid-template-columns:1fr;gap:9px}
@@ -4122,8 +4129,25 @@ function ensureGameArenaReferenceStyles(){
  .arena-pulse-ring{position:absolute;width:44px;height:44px;border:3px solid rgba(255,255,255,.9);border-radius:999px;animation:arenaRefRing .72s ease-out infinite}.arena-smoke-puff{position:absolute;width:28px;height:28px;border-radius:999px;background:radial-gradient(circle,rgba(241,245,249,.8),rgba(71,85,105,.32) 55%,transparent 72%);filter:blur(1px);animation:arenaRefSmoke 1.1s ease-out infinite}
  .arena-race-vehicle{animation:arenaRefCar .5s ease-in-out infinite;filter:drop-shadow(0 8px 5px rgba(0,0,0,.38))}.arena-base-critical{animation:arenaRefCritical 1s ease-in-out infinite}
  .arena-fx-shock{position:absolute;z-index:75;width:18px;height:18px;border:3px solid currentColor;border-radius:999px;transform:translate(-50%,-50%);pointer-events:none;animation:arenaRefRing .55s ease-out forwards}.arena-fx-smoke{position:absolute;z-index:70;width:24px;height:24px;border-radius:999px;transform:translate(-50%,-50%);background:radial-gradient(circle,rgba(241,245,249,.78),rgba(71,85,105,.3) 55%,transparent 72%);pointer-events:none;animation:arenaRefSmoke .9s ease-out forwards}
- [data-arena-monitor-room] .arena-stage{min-height:315px!important;padding-bottom:12px!important;border-radius:12px!important}[data-arena-monitor-room] .arena-monitor-detail{display:none!important}[data-arena-monitor-room] .arena-character-wrap{transform:scale(.82)}[data-arena-monitor-room] .arena-castle-img{width:86px!important;height:96px!important}[data-arena-monitor-room] .arena-race-rank{width:38%!important}
- @media(max-width:720px){.arena-ref-wrap{min-height:auto}.arena-ref-wrap>[data-arena-stage]{min-height:470px;padding-bottom:12px!important}.arena-ref-bottom{position:relative;left:auto;right:auto;bottom:auto;padding:10px;background:#06182d}.arena-race-rank{width:40%!important}}
+ .arena-ref-stage-title{letter-spacing:0;text-shadow:0 2px 10px rgba(0,0,0,.45)}
+ .arena-score-pill{display:inline-flex;align-items:center;gap:4px;border-radius:8px;padding:5px 9px;background:linear-gradient(180deg,rgba(15,47,86,.96),rgba(4,21,42,.92));border:1px solid rgba(117,203,255,.34);box-shadow:0 8px 20px rgba(0,0,0,.26),inset 0 1px rgba(255,255,255,.08)}
+ .arena-floor-glow{position:absolute;border-radius:999px;background:radial-gradient(ellipse at center,rgba(255,255,255,.24),rgba(56,189,248,.3) 34%,rgba(14,165,233,.08) 64%,transparent 72%);filter:drop-shadow(0 0 16px rgba(34,211,238,.7));pointer-events:none}
+ .arena-red-glow{background:radial-gradient(ellipse at center,rgba(255,255,255,.22),rgba(244,63,94,.34) 34%,rgba(217,70,239,.12) 64%,transparent 72%);filter:drop-shadow(0 0 16px rgba(244,63,94,.65))}
+ .arena-fx-img{position:absolute;pointer-events:none;user-select:none;object-fit:contain;filter:drop-shadow(0 0 14px rgba(255,255,255,.45))}
+ .arena-explosion-img{animation:arenaRefFlash .58s ease-in-out infinite;mix-blend-mode:screen}
+ .arena-avatar-tag{display:inline-flex;align-items:center;justify-content:center;max-width:74px;padding:2px 7px;border-radius:7px;background:rgba(3,14,31,.82);border:1px solid rgba(255,255,255,.18);font-size:8px;font-weight:900;line-height:1;color:#fff;box-shadow:0 6px 14px rgba(0,0,0,.28)}
+ .arena-answer-dark{background:linear-gradient(180deg,rgba(9,37,67,.96),rgba(4,20,40,.96));border:1px solid rgba(121,201,255,.32);box-shadow:0 14px 34px rgba(1,10,23,.34),inset 0 1px rgba(255,255,255,.08);color:white}
+ .arena-answer-option{background:rgba(11,39,70,.95);border:1px solid rgba(127,191,255,.34);color:#e8f6ff;box-shadow:inset 0 1px rgba(255,255,255,.08)}
+ .arena-answer-option:hover{background:linear-gradient(90deg,#0ea5e9,#22c55e);color:#fff;border-color:rgba(255,255,255,.54)}
+ .arena-action-tile{background:linear-gradient(180deg,rgba(9,41,76,.96),rgba(6,25,48,.96));border:1px solid rgba(121,201,255,.34);box-shadow:inset 0 1px rgba(255,255,255,.08),0 10px 22px rgba(0,0,0,.24);color:#f8fbff}
+ .arena-action-tile:disabled{filter:grayscale(.65);opacity:.52}
+ .arena-base-teamline .arena-character-wrap{filter:drop-shadow(0 5px 5px rgba(0,0,0,.35))}
+ [data-arena-stage="tug_war"] .arena-team-a .arena-character-core{animation:arenaRefLeanLeft .9s ease-in-out infinite;transform-origin:center bottom}
+ [data-arena-stage="tug_war"] .arena-team-b .arena-character-core{animation:arenaRefLeanRight .9s ease-in-out infinite;transform-origin:center bottom}
+ [data-arena-stage="battle_royale"] .arena-shield-fx,[data-arena-stage="base_battle"] .arena-shield-fx{animation:arenaRefShieldShimmer 1.8s ease-in-out infinite}
+ [data-arena-stage="quiz_race"] .arena-fx-img[src$="speed-lines.svg"]{animation:arenaRefSpeedPulse .45s ease-in-out infinite}
+ [data-arena-monitor-room] .arena-stage{min-height:315px!important;padding-bottom:12px!important;border-radius:12px!important}[data-arena-monitor-room] .arena-monitor-detail{display:none!important}[data-arena-monitor-room] .arena-character-wrap{transform:scale(.82)}[data-arena-monitor-room] .arena-castle-img{width:86px!important;height:96px!important}[data-arena-monitor-room] .arena-race-rank{width:38%!important}[data-arena-monitor-room] .arena-ref-stage-title{font-size:11px!important}[data-arena-monitor-room] .arena-fx-img{transform:scale(.72)}
+ @media(max-width:720px){.arena-ref-wrap{min-height:auto}.arena-ref-wrap>[data-arena-stage]{min-height:500px;padding-bottom:12px!important}.arena-ref-bottom{position:relative;left:auto;right:auto;bottom:auto;padding:10px;background:#06182d}.arena-race-rank{width:42%!important}.arena-avatar-tag{max-width:62px}.arena-score-pill{padding:4px 7px}}
  @media(prefers-reduced-motion:reduce){.arena-laser-impact-ref,.arena-pulse-ring,.arena-smoke-puff,.arena-race-vehicle,.arena-base-critical{animation:none!important}}
  `;document.head.appendChild(style);
 }
@@ -4728,7 +4752,7 @@ function getArenaAvatarHairSvg(presetId, hair) {
 function renderGameArenaAvatar(presetId, sizeClass = 'w-16 h-16', extraClass = '') {
     const avatar = getGameArenaAvatarPreset(presetId);
     const safePreset = GAME_ARENA_AVATARS.some(item => item.id === presetId) ? presetId : 'bintang';
-    return `<div class="${sizeClass} ${extraClass} arena-character-wrap relative flex items-end justify-center overflow-visible"><img src="${gameArenaAsset(`characters/${safePreset}.svg`)}" alt="${gameEscapeAttr(avatar.name)}" class="arena-character-core w-full h-full object-contain select-none pointer-events-none" draggable="false"></div>`;
+    return `<div class="${sizeClass} ${extraClass} arena-character-wrap relative flex items-end justify-center overflow-visible"><img src="${gameArenaCharacterAsset(safePreset)}" alt="${gameEscapeAttr(avatar.name)}" class="arena-character-core w-full h-full object-contain select-none pointer-events-none" draggable="false"></div>`;
 }
 
 function getCurrentGameArenaAvatarId() {
@@ -4875,39 +4899,115 @@ function getArenaSidePlayers(state, side) {
 
 function renderArenaPlayerChip(player, fallbackLabel = 'Menunggu...') {
     if (!player) {
-        return `<div class="flex items-center gap-2 opacity-55"><div class="w-11 h-11 rounded-2xl border-2 border-dashed border-slate-400 flex items-center justify-center text-slate-400"><i class="fa-solid fa-user-plus"></i></div><span class="text-xs font-bold text-slate-400">${fallbackLabel}</span></div>`;
+        return `<div class="flex items-center gap-2 opacity-60"><div class="w-11 h-11 rounded-xl border-2 border-dashed border-sky-300/45 flex items-center justify-center text-sky-200"><i class="fa-solid fa-user-plus"></i></div><span class="text-xs font-bold text-sky-100">${fallbackLabel}</span></div>`;
     }
     const preset = String(player.avatar?.presetId || 'bintang');
-    return `<div class="flex items-center gap-2 min-w-0">${renderGameArenaAvatar(preset, 'w-11 h-11', 'shrink-0')}<div class="min-w-0"><div class="font-black text-xs text-white truncate">${gameEscapeHtml(player.name || 'Siswa')}</div><div class="text-[10px] text-slate-300 font-bold">🔥 ${Number(player.streak || 0)} streak · ✓ ${Number(player.correctAnswers || 0)}</div></div></div>`;
+    return `<div class="flex items-center gap-2 min-w-0">${renderGameArenaAvatar(preset, 'w-11 h-11', 'shrink-0')}<div class="min-w-0"><div class="font-black text-xs text-white truncate">${gameEscapeHtml(player.name || 'Siswa')}</div><div class="text-[10px] text-sky-200 font-bold">Benar ${Number(player.correctAnswers || 0)} · Streak ${Number(player.streak || 0)}</div></div></div>`;
+}
+
+function renderArenaTopHud(title, center, leftLabel, rightLabel, leftPct, rightPct, leftTone = 'blue') {
+    const leftClass = leftTone === 'green' ? 'from-emerald-500 to-cyan-400' : 'from-blue-700 to-cyan-400';
+    return `<div class="absolute inset-x-3 top-3 z-40">
+        <div class="arena-hud-bar flex text-[10px] font-black">
+            <span class="bg-gradient-to-r ${leftClass} px-2 flex items-center" style="width:${leftPct}%">${leftLabel}</span>
+            <span class="bg-gradient-to-l from-rose-700 to-fuchsia-500 px-2 flex items-center justify-end" style="width:${rightPct}%">${rightLabel}</span>
+        </div>
+        <div class="flex items-center justify-center mt-2">
+            <div class="arena-score-pill text-center"><span class="arena-ref-stage-title text-xs font-black">${title}</span>${center ? `<b class="ml-2 text-sm">${center}</b>` : ''}</div>
+        </div>
+    </div>`;
 }
 
 function renderLaserArenaStage(state) {
- ensureGameArenaReferenceStyles();const left=getArenaSidePlayers(state,'A')[0]||null,right=getArenaSidePlayers(state,'B')[0]||null,position=Math.max(5,Math.min(95,Number(state.position||50))),quality=getGameArenaFxQuality(),leftPct=Math.round(position),rightPct=100-leftPct;
- return `<div data-arena-stage="laser_duel" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/laser-arena.svg')}" class="arena-scene-bg" alt=""><div class="absolute inset-x-3 top-3 z-30"><div class="arena-hud-bar flex"><span class="bg-gradient-to-r from-blue-700 to-cyan-400 px-2 flex items-center text-[10px] font-black" style="width:${leftPct}%">${leftPct}%</span><span class="bg-gradient-to-l from-rose-700 to-fuchsia-500 px-2 flex items-center justify-end text-[10px] font-black" style="width:${rightPct}%">${rightPct}%</span></div><div class="flex items-center justify-between gap-2 mt-2"><div class="arena-hud-glass rounded-xl px-3 py-2 min-w-[120px]">${renderArenaPlayerChip(left)}</div><div class="arena-hud-glass rounded-xl px-4 py-2 text-center"><span class="text-[8px] uppercase tracking-widest text-cyan-200 font-black">Laser Duel</span><b class="block text-sm">⚡ ${state.status==='playing'?'LIVE':state.status==='waiting'?'LOBBY':'SELESAI'}</b></div><div class="arena-hud-glass rounded-xl px-3 py-2 min-w-[120px] text-right">${renderArenaPlayerChip(right)}</div></div></div><div class="absolute left-[5%] bottom-[12%] z-20">${left?renderGameArenaAvatar(left.avatar?.presetId||'bintang','w-32 h-40'):''}</div><div class="absolute right-[5%] bottom-[12%] z-20 scale-x-[-1]">${right?renderGameArenaAvatar(right.avatar?.presetId||'komet','w-32 h-40'):''}</div><div class="absolute left-[18%] right-[18%] top-[49%] h-3 z-35"><div class="arena-laser-beam absolute left-0 h-full rounded-full bg-gradient-to-r from-cyan-700 via-cyan-300 to-white shadow-[0_0_26px_rgba(34,211,238,.95)] transition-all duration-500" style="width:${position}%"></div><div class="arena-laser-beam absolute right-0 h-full rounded-full bg-gradient-to-l from-fuchsia-700 via-fuchsia-300 to-white shadow-[0_0_26px_rgba(217,70,239,.95)] transition-all duration-500" style="width:${100-position}%"></div><div class="arena-laser-impact absolute top-1/2 transition-all duration-500" style="left:${position}%"><span class="arena-laser-impact-ref left-0 top-0"></span><span class="arena-pulse-ring left-0 top-0"></span></div></div><div class="arena-monitor-detail absolute bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-black text-cyan-100/80">Jawaban benar mendorong titik benturan laser • streak memberi bonus daya</div></div>`;
+    ensureGameArenaReferenceStyles();
+    const left=getArenaSidePlayers(state,'A')[0]||null,right=getArenaSidePlayers(state,'B')[0]||null,position=Math.max(5,Math.min(95,Number(state.position||50))),quality=getGameArenaFxQuality(),leftPct=Math.round(position),rightPct=100-leftPct;
+    return `<div data-arena-stage="laser_duel" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white">
+        <img src="${gameArenaAsset('backgrounds/neo-laser-arena.svg')}" class="arena-scene-bg" alt="">
+        ${renderArenaTopHud('Laser Duel', state.status==='playing'?'01:24':state.status==='waiting'?'LOBBY':'SELESAI', `${leftPct}%`, `${rightPct}%`, leftPct, rightPct)}
+        <div class="absolute left-5 top-[20%] z-35 arena-hud-glass rounded-xl px-3 py-2 max-w-[36%]">${renderArenaPlayerChip(left,'Tim A')}</div>
+        <div class="absolute right-5 top-[20%] z-35 arena-hud-glass rounded-xl px-3 py-2 max-w-[36%]">${renderArenaPlayerChip(right,'Tim B')}</div>
+        <div class="arena-floor-glow left-[7%] bottom-[8%] w-[23%] h-[12%]"></div>
+        <div class="arena-floor-glow arena-red-glow right-[7%] bottom-[8%] w-[23%] h-[12%]"></div>
+        <div class="absolute left-[7%] bottom-[10%] z-25">${left?renderGameArenaAvatar(left.avatar?.presetId||'bintang','w-36 h-44'):''}<div class="text-center -mt-2">${left?`<span class="arena-avatar-tag">${gameEscapeHtml(left.name||'Ahmad')}</span>`:''}</div></div>
+        <div class="absolute right-[7%] bottom-[10%] z-25 scale-x-[-1]">${right?renderGameArenaAvatar(right.avatar?.presetId||'komet','w-36 h-44'):''}<div class="text-center -mt-2 scale-x-[-1]">${right?`<span class="arena-avatar-tag">${gameEscapeHtml(right.name||'Budi')}</span>`:''}</div></div>
+        <div class="absolute left-[22%] right-[22%] top-[49%] h-3 z-35">
+            <div class="arena-laser-beam absolute left-0 h-full rounded-full bg-gradient-to-r from-cyan-700 via-cyan-300 to-white shadow-[0_0_26px_rgba(34,211,238,.95)] transition-all duration-500" style="width:${position}%"></div>
+            <div class="arena-laser-beam absolute right-0 h-full rounded-full bg-gradient-to-l from-fuchsia-700 via-fuchsia-300 to-white shadow-[0_0_26px_rgba(217,70,239,.95)] transition-all duration-500" style="width:${100-position}%"></div>
+            <div class="arena-laser-impact absolute top-1/2 transition-all duration-500" style="left:${position}%"><img src="${gameArenaFxAsset('explosion')}" class="arena-fx-img arena-explosion-img w-28 h-28 -left-14 -top-14" alt=""><span class="arena-laser-impact-ref left-0 top-0"></span><span class="arena-pulse-ring left-0 top-0"></span></div>
+        </div>
+        <div class="arena-monitor-detail absolute bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-black text-cyan-100/80">Jawaban benar mendorong titik benturan laser</div>
+    </div>`;
 }
+
 function renderTugArenaStage(state) {
- ensureGameArenaReferenceStyles();const teamA=getArenaSidePlayers(state,'A'),teamB=getArenaSidePlayers(state,'B'),position=Math.max(5,Math.min(95,Number(state.position||50))),quality=getGameArenaFxQuality();const team=(items,fallback,flip=false)=>items.slice(0,6).map((p,i)=>`<div class="${flip?'scale-x-[-1]':''}" style="margin-left:${i?'-14px':'0'}">${renderGameArenaAvatar(p.avatar?.presetId||fallback,'w-16 h-20')}</div>`).join('');
- return `<div data-arena-stage="tug_war" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/tug-schoolyard.svg')}" class="arena-scene-bg" alt=""><div class="absolute inset-x-3 top-3 z-30"><div class="arena-hud-bar flex"><span class="bg-gradient-to-r from-blue-700 to-sky-400 flex items-center px-2 text-[10px] font-black" style="width:${100-position}%">Tim A</span><span class="bg-gradient-to-l from-rose-700 to-red-400 flex items-center justify-end px-2 text-[10px] font-black" style="width:${position}%">Tim B</span></div><div class="flex justify-between mt-2"><div class="arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Tim A · ${teamA.length} siswa<br><span class="text-sky-200">✓ ${teamA.reduce((s,p)=>s+Number(p.correctAnswers||0),0)}</span></div><div class="arena-hud-glass rounded-xl px-4 py-2 text-center text-xs font-black">🪢 Tarik Tambang Ilmu</div><div class="arena-hud-glass rounded-xl px-3 py-2 text-right text-[10px] font-black">Tim B · ${teamB.length} siswa<br><span class="text-rose-200">✓ ${teamB.reduce((s,p)=>s+Number(p.correctAnswers||0),0)}</span></div></div></div><div class="absolute left-[4%] bottom-[17%] z-20 flex items-end">${team(teamA,'bintang')}</div><div class="absolute right-[4%] bottom-[17%] z-20 flex flex-row-reverse items-end">${team(teamB,'komet',true)}</div><div class="arena-tug-rope absolute left-[18%] right-[18%] top-[59%] h-[11px] rounded-full bg-gradient-to-b from-amber-500 via-amber-700 to-amber-950 shadow-lg z-25"></div><div class="arena-tug-flag absolute z-32 top-[35%] -translate-x-1/2 transition-all duration-500" style="left:${position}%"><div class="text-5xl">🚩</div><div class="w-2 h-28 bg-slate-700 rounded-full mx-auto -mt-3"></div></div><span class="arena-smoke-puff left-[14%] bottom-[14%] z-20"></span><span class="arena-smoke-puff right-[14%] bottom-[14%] z-20"></span></div>`;
+    ensureGameArenaReferenceStyles();
+    const teamA=getArenaSidePlayers(state,'A'),teamB=getArenaSidePlayers(state,'B'),position=Math.max(5,Math.min(95,Number(state.position||50))),quality=getGameArenaFxQuality();
+    const team=(items,fallback,flip=false)=>items.slice(0,6).map((p,i)=>`<div class="${flip?'arena-team-b':'arena-team-a'} ${flip?'scale-x-[-1]':''}" style="margin-left:${i?'-18px':'0'}">${renderGameArenaAvatar(p.avatar?.presetId||fallback,'w-18 h-24')}<div class="text-center -mt-2 ${flip?'scale-x-[-1]':''}"><span class="arena-avatar-tag">${gameEscapeHtml(p.name||'Siswa')}</span></div></div>`).join('');
+    const aCorrect=teamA.reduce((s,p)=>s+Number(p.correctAnswers||0),0), bCorrect=teamB.reduce((s,p)=>s+Number(p.correctAnswers||0),0);
+    return `<div data-arena-stage="tug_war" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white">
+        <img src="${gameArenaAsset('backgrounds/neo-tug-schoolyard.svg')}" class="arena-scene-bg" alt="">
+        ${renderArenaTopHud('Tarik Tambang Ilmu', '02:18', `Tim A ${100-position}%`, `Tim B ${position}%`, 100-position, position)}
+        <div class="absolute left-8 top-[21%] z-35 arena-hud-glass rounded-xl px-4 py-2 text-center text-xs font-black">Tim A<br><span class="text-sky-200">${teamA.length} siswa · ${aCorrect} benar</span></div>
+        <div class="absolute right-8 top-[21%] z-35 arena-hud-glass rounded-xl px-4 py-2 text-center text-xs font-black">Tim B<br><span class="text-rose-200">${teamB.length} siswa · ${bCorrect} benar</span></div>
+        <div class="absolute left-[4%] bottom-[17%] z-25 flex items-end">${team(teamA,'bintang')}</div>
+        <div class="absolute right-[4%] bottom-[17%] z-25 flex flex-row-reverse items-end">${team(teamB,'komet',true)}</div>
+        <div class="arena-tug-rope absolute left-[16%] right-[16%] top-[58%] h-[13px] rounded-full bg-gradient-to-b from-amber-400 via-amber-700 to-amber-950 shadow-[0_5px_12px_rgba(0,0,0,.45)] z-24"></div>
+        <div class="arena-tug-flag absolute z-35 top-[34%] -translate-x-1/2 transition-all duration-500" style="left:${position}%"><div class="text-5xl drop-shadow-lg">🚩</div><div class="w-2 h-32 bg-slate-700 rounded-full mx-auto -mt-3"></div></div>
+        <img src="${gameArenaFxAsset('smoke')}" class="arena-fx-img left-[8%] bottom-[11%] w-24 h-24 opacity-80" alt="">
+        <img src="${gameArenaFxAsset('smoke')}" class="arena-fx-img right-[8%] bottom-[11%] w-24 h-24 opacity-80 scale-x-[-1]" alt="">
+    </div>`;
 }
+
 function renderBattleRoyaleArenaStage(state) {
- ensureGameArenaReferenceStyles();const players=state.players||[],active=players.filter(p=>!p.eliminated&&Number(p.hp||0)>0),me=getArenaMePlayer(state),quality=getGameArenaFxQuality(),coords=[[12,29],[35,22],[61,26],[82,20],[22,56],[47,51],[72,57],[88,47],[13,78],[38,74],[62,80],[83,76]];
- return `<div data-arena-stage="battle_royale" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/battle-map.svg')}" class="arena-scene-bg" alt=""><div class="absolute top-3 left-3 right-3 z-35 flex items-center justify-between"><div class="arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Pemain: ${players.length}</div><div class="arena-hud-glass rounded-xl px-4 py-2 text-center text-xs font-black">🛡️ Battle Royale · ${active.length} Aktif</div><div class="arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Eliminasi: ${players.length-active.length}</div></div>${players.slice(0,12).map((p,i)=>{const c=coords[i%coords.length],hp=Math.max(0,Number(p.hp||0)),mine=String(p.id)===String(state.me?.id||'');return `<div data-arena-player-id="${gameEscapeAttr(p.id)}" class="absolute z-25 -translate-x-1/2 -translate-y-1/2 text-center ${p.eliminated?'opacity-45 grayscale':''}" style="left:${c[0]}%;top:${c[1]}%"><div class="relative">${!p.eliminated?'<span class="arena-shield-active absolute -inset-2 rounded-full border-2 border-cyan-300/55 bg-cyan-300/10"></span>':''}${renderGameArenaAvatar(p.avatar?.presetId||'bintang',mine?'w-16 h-20':'w-14 h-18')}</div><span class="inline-block -mt-1 px-2 py-0.5 rounded-full bg-slate-950/80 border border-white/15 text-[8px] font-black">${gameEscapeHtml(p.name||'Siswa')}</span><div class="text-[8px] font-black">${p.eliminated?'👀 Penonton':`🛡️ ${hp} · ⚡ ${Number(p.energy||0)}`}</div></div>`}).join('')}${players.length>12?`<div class="absolute right-3 bottom-3 z-35 arena-hud-glass rounded-lg px-3 py-1 text-[9px] font-black">+${players.length-12} pemain</div>`:''}${me?`<div class="arena-monitor-detail absolute left-4 bottom-4 z-35 arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Shield: 🛡️ ${Number(me.hp||0)} &nbsp; Energy: ⚡ ${Number(me.energy||0)}</div>`:''}</div>`;
+    ensureGameArenaReferenceStyles();
+    const players=state.players||[],active=players.filter(p=>!p.eliminated&&Number(p.hp||0)>0),me=getArenaMePlayer(state),quality=getGameArenaFxQuality(),coords=[[14,28],[35,22],[58,27],[79,21],[23,52],[48,49],[71,55],[87,46],[14,75],[38,73],[62,78],[82,74]];
+    return `<div data-arena-stage="battle_royale" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white">
+        <img src="${gameArenaAsset('backgrounds/neo-battle-map.svg')}" class="arena-scene-bg" alt="">
+        <div class="absolute top-3 left-3 right-3 z-40 flex items-center justify-between gap-2">
+            <div class="arena-score-pill text-[10px] font-black">Pemain: ${players.length}</div>
+            <div class="arena-score-pill text-center"><span class="arena-ref-stage-title text-xs font-black">Battle Royale</span><b class="ml-2 text-sm">03:12</b></div>
+            <div class="arena-score-pill text-[10px] font-black">Eliminasi: ${players.length-active.length}</div>
+        </div>
+        ${players.slice(0,12).map((p,i)=>{const c=coords[i%coords.length],hp=Math.max(0,Number(p.hp||0)),mine=String(p.id)===String(state.me?.id||'');return `<div data-arena-player-id="${gameEscapeAttr(p.id)}" class="absolute z-30 -translate-x-1/2 -translate-y-1/2 text-center ${p.eliminated?'opacity-45 grayscale':''}" style="left:${c[0]}%;top:${c[1]}%"><div class="relative">${!p.eliminated?`<img src="${gameArenaFxAsset('shield')}" class="arena-fx-img arena-shield-fx -inset-3 w-[calc(100%+24px)] h-[calc(100%+24px)] opacity-70" alt="">`:''}${renderGameArenaAvatar(p.avatar?.presetId||'bintang',mine?'w-18 h-24':'w-16 h-20')}</div><span class="arena-avatar-tag -mt-2">${gameEscapeHtml(p.name||'Siswa')}</span><div class="text-[8px] font-black text-white drop-shadow">${p.eliminated?'Penonton':`Shield ${hp} · Energy ${Number(p.energy||0)}`}</div></div>`}).join('')}
+        ${players.length>12?`<div class="absolute right-3 bottom-3 z-35 arena-hud-glass rounded-lg px-3 py-1 text-[9px] font-black">+${players.length-12} pemain</div>`:''}
+        ${me?`<div class="arena-monitor-detail absolute left-4 bottom-4 z-35 arena-hud-glass rounded-xl px-3 py-2 text-[10px] font-black">Shield ${Number(me.hp||0)} · Energy ${Number(me.energy||0)}</div>`:''}
+    </div>`;
 }
+
 function renderQuizRaceArenaStage(state) {
- ensureGameArenaReferenceStyles();
- const sorted=[...(state.players||[])].sort((a,b)=>Number(b.raceProgress||0)-Number(a.raceProgress||0));
- const leaders=sorted.slice(0,5);
- const meId=String(state.me?.id||'');
- const mePlayer=meId?sorted.find(player=>String(player.id)===meId):null;
- const visible=[...leaders];
- if(mePlayer && !visible.some(player=>String(player.id)===meId)) visible.push(mePlayer);
- const quality=getGameArenaFxQuality();
- return `<div data-arena-stage="quiz_race" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/race-track.svg')}" class="arena-scene-bg" alt=""><div class="absolute top-3 left-3 right-3 z-35 flex justify-between"><div class="arena-hud-glass rounded-xl px-3 py-2 text-xs font-black">🏎️ Quiz Racing</div><div class="arena-hud-glass rounded-xl px-4 py-2 text-xs font-black">🏁 Race to 100%</div></div><div class="arena-race-rank absolute left-3 top-16 z-35 w-[31%] arena-hud-glass rounded-xl p-2 space-y-1">${visible.map((p)=>{const prog=Math.max(0,Math.min(100,Number(p.raceProgress||0))),rank=Math.max(1,sorted.findIndex(item=>String(item.id)===String(p.id))+1),mine=String(p.id)===meId;return `<div class="flex items-center gap-1.5 text-[9px] ${mine?'ring-1 ring-cyan-300/70 rounded-md px-1 py-0.5 bg-cyan-400/10':''}"><b class="w-5 h-5 rounded-md ${rank===1?'bg-amber-400 text-slate-900':mine?'bg-cyan-500 text-white':'bg-slate-700'} flex items-center justify-center">${rank}</b><span class="truncate flex-1 font-black">${gameEscapeHtml(p.name||'Siswa')}${mine?' · Kamu':''}</span><div class="w-14 h-2 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-r from-cyan-400 to-blue-500" style="width:${prog}%"></div></div><b>${prog}%</b></div>`}).join('')}</div><div class="absolute left-[34%] right-[4%] top-[19%] bottom-[4%] z-20">${visible.map((p,i)=>{const prog=Math.max(0,Math.min(100,Number(p.raceProgress||0))),y=8+i*15,mine=String(p.id)===meId;return `<div data-arena-racer-id="${gameEscapeAttr(p.id)}" class="absolute left-0 right-0" style="top:${y}%"><div class="absolute left-0 right-0 top-1/2 border-t border-dashed border-white/30"></div><div class="arena-race-car arena-race-vehicle absolute top-1/2 transition-all duration-700 ${mine?'drop-shadow-[0_0_12px_rgba(34,211,238,.95)]':''}" style="left:${Math.max(5,Math.min(95,prog))}%"><span class="arena-race-smoke absolute right-[72%] top-[55%] w-4 h-4 rounded-full bg-white/55 blur-[2px]"></span><span class="arena-race-smoke absolute right-[100%] top-[58%] w-3 h-3 rounded-full bg-white/30 blur-[2px]"></span>${Number(p.streak||0)>=2?'<span class="arena-racer-boost absolute right-[65%] top-[45%] text-lg">🔥</span>':''}<img src="${gameArenaVehicleAsset(i)}" class="w-20 h-12 object-contain" alt=""><span class="absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-[7px] font-black px-1.5 py-0.5 rounded bg-slate-950/75">${gameEscapeHtml(p.name||'Siswa')}</span></div></div>`}).join('')}<div class="absolute right-0 top-0 bottom-0 border-r-4 border-dashed border-white/85"></div></div></div>`;
+    ensureGameArenaReferenceStyles();
+    const sorted=[...(state.players||[])].sort((a,b)=>Number(b.raceProgress||0)-Number(a.raceProgress||0));
+    const leaders=sorted.slice(0,5);
+    const meId=String(state.me?.id||'');
+    const mePlayer=meId?sorted.find(player=>String(player.id)===meId):null;
+    const visible=[...leaders];
+    if(mePlayer && !visible.some(player=>String(player.id)===meId)) visible.push(mePlayer);
+    const quality=getGameArenaFxQuality();
+    return `<div data-arena-stage="quiz_race" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white">
+        <img src="${gameArenaAsset('backgrounds/neo-race-track.svg')}" class="arena-scene-bg" alt="">
+        <div class="absolute top-3 left-3 right-3 z-40 flex justify-between gap-2"><div class="arena-score-pill text-xs font-black">LAP 1/3</div><div class="arena-score-pill text-xs font-black">01:45</div></div>
+        <div class="arena-race-rank absolute left-3 top-16 z-40 w-[32%] arena-hud-glass rounded-xl p-2 space-y-1">${visible.map((p)=>{const prog=Math.max(0,Math.min(100,Number(p.raceProgress||0))),rank=Math.max(1,sorted.findIndex(item=>String(item.id)===String(p.id))+1),mine=String(p.id)===meId;return `<div class="flex items-center gap-1.5 text-[9px] ${mine?'ring-1 ring-cyan-300/70 rounded-md px-1 py-0.5 bg-cyan-400/10':''}"><b class="w-5 h-5 rounded-md ${rank===1?'bg-amber-400 text-slate-900':mine?'bg-cyan-500 text-white':'bg-slate-700'} flex items-center justify-center">${rank}</b><span class="truncate flex-1 font-black">${gameEscapeHtml(p.name||'Siswa')}</span><div class="w-16 h-2 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-r from-cyan-400 to-blue-500" style="width:${prog}%"></div></div><b>${prog}%</b></div>`}).join('')}</div>
+        <div class="absolute left-[36%] right-[4%] top-[18%] bottom-[5%] z-25">${visible.map((p,i)=>{const prog=Math.max(0,Math.min(100,Number(p.raceProgress||0))),y=8+i*15,mine=String(p.id)===meId;return `<div data-arena-racer-id="${gameEscapeAttr(p.id)}" class="absolute left-0 right-0" style="top:${y}%"><div class="absolute left-0 right-0 top-1/2 border-t border-dashed border-white/30"></div><div class="arena-race-car arena-race-vehicle absolute top-1/2 transition-all duration-700 ${mine?'drop-shadow-[0_0_14px_rgba(34,211,238,.95)]':''}" style="left:${Math.max(5,Math.min(95,prog))}%"><img src="${gameArenaFxAsset('speed-lines')}" class="arena-fx-img right-[62%] top-[-7px] w-16 h-12 opacity-80" alt=""><span class="arena-race-smoke absolute right-[72%] top-[55%] w-4 h-4 rounded-full bg-white/55 blur-[2px]"></span>${Number(p.streak||0)>=2?'<img src="'+gameArenaFxAsset('energy-pulse')+'" class="arena-fx-img right-[64%] top-[-12px] w-12 h-12" alt="">':''}<img src="${gameArenaVehicleAsset(i)}" class="w-24 h-14 object-contain" alt=""><span class="absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap arena-avatar-tag">${gameEscapeHtml(p.name||'Siswa')}</span></div></div>`}).join('')}<div class="absolute right-0 top-0 bottom-0 border-r-4 border-dashed border-white/85"></div></div>
+    </div>`;
 }
+
 function renderBaseBattleArenaStage(state) {
- ensureGameArenaReferenceStyles();const teamA=getArenaSidePlayers(state,'A'),teamB=getArenaSidePlayers(state,'B'),a=state.base?.A||{hp:100,shield:0},b=state.base?.B||{hp:100,shield:0},hpA=Math.max(0,Number(a.hp||0)),hpB=Math.max(0,Number(b.hp||0)),shA=Math.max(0,Number(a.shield||0)),shB=Math.max(0,Number(b.shield||0)),quality=getGameArenaFxQuality();
- return `<div data-arena-stage="base_battle" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white"><img src="${gameArenaAsset('backgrounds/base-field.svg')}" class="arena-scene-bg" alt=""><div class="absolute top-3 left-3 right-3 z-35 grid grid-cols-[1fr_auto_1fr] gap-3 items-center"><div class="arena-hud-glass rounded-xl p-2"><div class="flex justify-between text-[10px] font-black"><span class="text-cyan-200">Tim A</span><span>HP ${hpA}/100</span></div><div class="h-2 mt-1 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-r from-cyan-400 to-emerald-400" style="width:${hpA}%"></div></div><div class="text-[9px] text-sky-200 mt-1">Shield ${shA}</div></div><div class="arena-hud-glass rounded-xl px-4 py-2 text-center text-xs font-black">🏰 Base Battle</div><div class="arena-hud-glass rounded-xl p-2"><div class="flex justify-between text-[10px] font-black"><span class="text-rose-200">Tim B</span><span>HP ${hpB}/100</span></div><div class="h-2 mt-1 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-l from-rose-500 to-orange-400" style="width:${hpB}%"></div></div><div class="text-[9px] text-rose-200 mt-1 text-right">Shield ${shB}</div></div></div><div data-arena-base-side="A" class="absolute left-[4%] top-[27%] z-25 text-center ${hpA<30?'arena-base-critical':''}"><img src="${gameArenaAsset('structures/castle-blue.svg')}" class="arena-castle-img w-36 h-40 object-contain mx-auto" alt="Base A"><div class="flex -space-x-3 justify-center mt-1">${teamA.slice(0,5).map(p=>renderGameArenaAvatar(p.avatar?.presetId||'bintang','w-11 h-14')).join('')}</div></div><div data-arena-base-side="B" class="absolute right-[4%] top-[27%] z-25 text-center ${hpB<30?'arena-base-critical':''}"><img src="${gameArenaAsset('structures/castle-red.svg')}" class="arena-castle-img w-36 h-40 object-contain mx-auto" alt="Base B"><div class="flex -space-x-3 justify-center mt-1">${teamB.slice(0,5).map(p=>renderGameArenaAvatar(p.avatar?.presetId||'komet','w-11 h-14')).join('')}</div></div><div class="absolute left-[32%] right-[32%] top-[49%] h-1 bg-gradient-to-r from-cyan-400 via-white to-rose-400 shadow-[0_0_18px_white] z-25"></div><span class="arena-laser-impact-ref left-1/2 top-[49%] z-30"></span><span class="arena-pulse-ring left-1/2 top-[49%] z-31"></span>${hpA<35?'<span class="arena-smoke-puff left-[15%] top-[31%] z-30"></span>':''}${hpB<35?'<span class="arena-smoke-puff right-[15%] top-[31%] z-30"></span>':''}</div>`;
+    ensureGameArenaReferenceStyles();
+    const teamA=getArenaSidePlayers(state,'A'),teamB=getArenaSidePlayers(state,'B'),a=state.base?.A||{hp:100,shield:0},b=state.base?.B||{hp:100,shield:0},hpA=Math.max(0,Number(a.hp||0)),hpB=Math.max(0,Number(b.hp||0)),shA=Math.max(0,Number(a.shield||0)),shB=Math.max(0,Number(b.shield||0)),quality=getGameArenaFxQuality();
+    const teamLine=(items,fallback,flip=false)=>items.slice(0,6).map(p=>`<div class="${flip?'scale-x-[-1]':''}">${renderGameArenaAvatar(p.avatar?.presetId||fallback,'w-12 h-16')}</div>`).join('');
+    return `<div data-arena-stage="base_battle" data-arena-fx="${quality}" class="arena-stage relative overflow-hidden text-white">
+        <img src="${gameArenaAsset('backgrounds/neo-base-field.svg')}" class="arena-scene-bg" alt="">
+        ${renderArenaTopHud('Base Battle', '04:20', 'Tim A', 'Tim B', 50, 50, 'green')}
+        <div class="absolute left-4 top-[18%] z-35 arena-hud-glass rounded-xl p-3 w-[28%]"><div class="flex justify-between text-[10px] font-black"><span class="text-cyan-200">Tim A</span><span>HP ${hpA}/100</span></div><div class="h-2 mt-1 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-r from-cyan-400 to-emerald-400" style="width:${hpA}%"></div></div><div class="text-[9px] text-sky-200 mt-1">Shield ${shA}</div></div>
+        <div class="absolute right-4 top-[18%] z-35 arena-hud-glass rounded-xl p-3 w-[28%]"><div class="flex justify-between text-[10px] font-black"><span class="text-rose-200">Tim B</span><span>HP ${hpB}/100</span></div><div class="h-2 mt-1 rounded-full bg-slate-950/70 overflow-hidden"><div class="h-full bg-gradient-to-l from-rose-500 to-orange-400" style="width:${hpB}%"></div></div><div class="text-[9px] text-rose-200 mt-1 text-right">Shield ${shB}</div></div>
+        <div data-arena-base-side="A" class="absolute left-[5%] top-[35%] z-25 text-center ${hpA<30?'arena-base-critical':''}"><img src="${gameArenaFxAsset('shield')}" class="arena-fx-img arena-shield-fx left-1/2 top-[12%] -translate-x-1/2 w-44 h-44 opacity-50" alt=""><img src="${gameArenaAsset('structures/fortress-blue.svg')}" class="arena-castle-img w-40 h-44 object-contain mx-auto" alt="Base A"><div class="arena-base-teamline flex -space-x-3 justify-center mt-1">${teamLine(teamA,'bintang')}</div></div>
+        <div data-arena-base-side="B" class="absolute right-[5%] top-[35%] z-25 text-center ${hpB<30?'arena-base-critical':''}"><img src="${gameArenaFxAsset('shield')}" class="arena-fx-img arena-shield-fx left-1/2 top-[12%] -translate-x-1/2 w-44 h-44 opacity-50" alt=""><img src="${gameArenaAsset('structures/fortress-red.svg')}" class="arena-castle-img w-40 h-44 object-contain mx-auto" alt="Base B"><div class="arena-base-teamline flex -space-x-3 justify-center mt-1">${teamLine(teamB,'komet',true)}</div></div>
+        <div class="absolute left-[31%] right-[31%] top-[53%] h-1 bg-gradient-to-r from-cyan-400 via-white to-rose-400 shadow-[0_0_18px_white] z-25"></div>
+        <img src="${gameArenaFxAsset('explosion')}" class="arena-fx-img arena-explosion-img left-1/2 top-[53%] -translate-x-1/2 -translate-y-1/2 w-28 h-28 z-35" alt="">
+        ${hpA<35?`<img src="${gameArenaFxAsset('smoke')}" class="arena-fx-img left-[13%] top-[29%] w-24 h-24 z-30" alt="">`:''}${hpB<35?`<img src="${gameArenaFxAsset('smoke')}" class="arena-fx-img right-[13%] top-[29%] w-24 h-24 z-30 scale-x-[-1]" alt="">`:''}
+    </div>`;
 }
+
 function renderGameArenaStage(state){ensureGameArenaReferenceStyles();if(state.mode==='tug_war')return renderTugArenaStage(state);if(state.mode==='battle_royale')return renderBattleRoyaleArenaStage(state);if(state.mode==='quiz_race')return renderQuizRaceArenaStage(state);if(state.mode==='base_battle')return renderBaseBattleArenaStage(state);return renderLaserArenaStage(state);}
 
 
@@ -4920,27 +5020,27 @@ function renderGameArenaActionPanel(state) {
         const targets = (state.players || []).filter(player => String(player.id) !== String(me.id) && !player.eliminated && Number(player.hp || 0) > 0);
         if (Number(me.energy || 0) <= 0) return '';
         return `
-            <div class="rounded-3xl bg-fuchsia-50 border border-fuchsia-200 p-4 sm:p-5">
-                <div class="flex items-center justify-between gap-3 mb-3"><div><p class="text-[10px] font-black uppercase tracking-wider text-fuchsia-700">Energy Pulse</p><p class="text-xs text-slate-600">Gunakan energi sampai habis; setelah itu soal isi ulang muncul lagi.</p></div><span class="px-3 py-1.5 rounded-xl bg-fuchsia-600 text-white text-xs font-black">⚡ ${Number(me.energy || 0)}</span></div>
+            <div class="rounded-2xl arena-answer-dark p-4 sm:p-5">
+                <div class="flex items-center justify-between gap-3 mb-3"><div><p class="text-[10px] font-black uppercase tracking-wider text-cyan-200">Energy Pulse</p><p class="text-xs text-slate-300">Gunakan energi sampai habis; setelah itu soal isi ulang muncul lagi.</p></div><span class="px-3 py-1.5 rounded-xl bg-fuchsia-600 text-white text-xs font-black">⚡ ${Number(me.energy || 0)}</span></div>
                 <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    ${targets.map(target => `<button type="button" onclick="submitGameArenaAction('energy_pulse', ${gameInlineArg(target.id)})" class="px-3 py-3 rounded-2xl bg-white border border-fuchsia-200 hover:bg-fuchsia-600 hover:text-white text-slate-700 text-[10px] font-black transition cursor-pointer">✨ ${gameEscapeHtml(target.name)} · 🛡️ ${Number(target.hp || 0)}</button>`).join('')}
+                    ${targets.map(target => `<button type="button" onclick="submitGameArenaAction('energy_pulse', ${gameInlineArg(target.id)})" class="px-3 py-3 rounded-xl arena-action-tile hover:border-fuchsia-300 text-[10px] font-black transition cursor-pointer">✨ ${gameEscapeHtml(target.name)} · Shield ${Number(target.hp || 0)}</button>`).join('')}
                 </div>
-                <div id="game-arena-action-feedback" class="min-h-5 mt-2 text-center text-[10px] font-black text-fuchsia-700"></div>
+                <div id="game-arena-action-feedback" class="min-h-5 mt-2 text-center text-[10px] font-black text-cyan-200"></div>
             </div>`;
     }
 
     if (state.mode === 'base_battle') {
         const mana = Number(me.mana || 0);
-        const btn = (action, cost, icon, label, desc) => `<button type="button" onclick="submitGameArenaAction('${action}')" ${mana < cost ? 'disabled' : ''} class="rounded-2xl border p-3 text-left transition ${mana >= cost ? 'bg-white border-orange-200 hover:border-orange-500 cursor-pointer' : 'bg-slate-100 border-slate-200 opacity-50 cursor-not-allowed'}"><div class="flex items-center justify-between"><span class="text-lg">${icon}</span><span class="text-[9px] font-black text-violet-700">🔮 ${cost}</span></div><p class="mt-1 text-[11px] font-black text-slate-800">${label}</p><p class="text-[9px] text-slate-500">${desc}</p></button>`;
+        const btn = (action, cost, icon, label, desc) => `<button type="button" onclick="submitGameArenaAction('${action}')" ${mana < cost ? 'disabled' : ''} class="rounded-xl arena-action-tile p-3 text-left transition ${mana >= cost ? 'hover:border-emerald-300 cursor-pointer' : 'cursor-not-allowed'}"><div class="flex items-center justify-between"><span class="text-lg">${icon}</span><span class="text-[9px] font-black text-cyan-200">${cost} Mana</span></div><p class="mt-1 text-[11px] font-black">${label}</p><p class="text-[9px] text-slate-300">${desc}</p></button>`;
         return `
-            <div class="rounded-3xl bg-orange-50 border border-orange-200 p-4 sm:p-5">
-                <div class="flex items-center justify-between gap-3 mb-3"><div><p class="text-[10px] font-black uppercase tracking-wider text-orange-700">Strategi Base</p><p class="text-xs text-slate-600">Tim ${gameEscapeHtml(me.side)} · gunakan mana atau simpan untuk aksi berikutnya.</p></div><span class="px-3 py-1.5 rounded-xl bg-violet-700 text-white text-xs font-black">🔮 ${mana}/100</span></div>
+            <div class="rounded-2xl arena-answer-dark p-4 sm:p-5">
+                <div class="flex items-center justify-between gap-3 mb-3"><div><p class="text-[10px] font-black uppercase tracking-wider text-cyan-200">Mana Anda</p><p class="text-xs text-slate-300">Tim ${gameEscapeHtml(me.side)} · pilih aksi untuk base battle.</p></div><span class="px-3 py-1.5 rounded-xl bg-violet-700 text-white text-xs font-black">🔮 ${mana}/100</span></div>
                 <div class="grid grid-cols-3 gap-2">
                     ${btn('base_attack', 20, '✨', 'Attack', 'Kurangi pertahanan base lawan')}
                     ${btn('base_shield', 15, '🛡️', 'Shield', 'Tambah shield base tim')}
                     ${btn('base_repair', 25, '🔧', 'Repair', 'Pulihkan HP base tim')}
                 </div>
-                <div id="game-arena-action-feedback" class="min-h-5 mt-2 text-center text-[10px] font-black text-orange-700"></div>
+                <div id="game-arena-action-feedback" class="min-h-5 mt-2 text-center text-[10px] font-black text-cyan-200"></div>
             </div>`;
     }
 
@@ -4991,18 +5091,18 @@ function renderGameArenaQuestionPanel(state, preservedDraft = '') {
                 : 'Recharge Knowledge';
 
     return `
-        <div data-arena-question-panel class="arena-question-panel rounded-3xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
-            <div class="flex items-center justify-between gap-3"><span class="px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-black uppercase tracking-wider"><i class="fa-solid fa-battery-three-quarters mr-1"></i> ${rechargeLabel}</span><span class="text-[10px] font-bold text-slate-400">${gameEscapeHtml(question.title || 'Tantangan')}</span></div>
+        <div data-arena-question-panel class="arena-question-panel rounded-2xl arena-answer-dark p-5 sm:p-6 space-y-4">
+            <div class="flex items-center justify-between gap-3"><span class="px-3 py-1 rounded-lg bg-cyan-500/15 border border-cyan-300/30 text-cyan-100 text-[10px] font-black uppercase tracking-wider"><i class="fa-solid fa-battery-three-quarters mr-1"></i> ${rechargeLabel}</span><span class="text-[10px] font-bold text-slate-300">${gameEscapeHtml(question.title || 'Tantangan')}</span></div>
             ${question.imageUrl ? `<img src="${gameSafeImageSrc(question.imageUrl)}" class="w-full max-h-44 object-cover rounded-2xl border border-slate-200">` : ''}
-            <p class="text-sm sm:text-base font-black text-slate-900 leading-relaxed">${gameEscapeHtml(question.prompt || '')}</p>
+            <p class="text-sm sm:text-base font-black text-white leading-relaxed">${gameEscapeHtml(question.prompt || '')}</p>
             ${Array.isArray(question.scrambledLetters) && question.scrambledLetters.length ? `
                 <div class="flex flex-wrap items-center justify-center gap-2 rounded-2xl bg-violet-50 border border-violet-200 p-3">
                     <span class="w-full text-center text-[10px] font-black uppercase tracking-wider text-violet-700">Susun huruf berikut</span>
                     ${question.scrambledLetters.map(letter => `<span class="w-9 h-10 rounded-xl bg-white border border-violet-200 shadow-sm flex items-center justify-center text-base font-black text-violet-900">${gameEscapeHtml(letter)}</span>`).join('')}
                 </div>
             ` : ''}
-            ${question.type === 'choice' ? `<div class="grid grid-cols-2 gap-2">${(question.options || []).map(option => `<button type="button" onclick="submitGameArenaAnswer(${gameInlineArg(option)})" class="px-4 py-3 rounded-2xl bg-slate-100 hover:bg-indigo-600 hover:text-white text-slate-800 text-xs font-black transition cursor-pointer">${gameEscapeHtml(option)}</button>`).join('')}</div>` : `<form onsubmit="submitGameArenaTextAnswer(event)" class="flex flex-col sm:flex-row gap-2"><input id="game-arena-answer-input" value="${gameEscapeAttr(preservedDraft)}" autocomplete="off" placeholder="Ketik jawaban..." class="flex-1 px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 text-sm font-black uppercase focus:outline-none focus:ring-2 focus:ring-indigo-400"><button type="submit" class="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-bolt mr-1"></i> Kirim</button></form>`}
-            <div id="game-arena-answer-feedback" class="min-h-5 text-center text-[11px] font-black"></div>
+            ${question.type === 'choice' ? `<div class="grid grid-cols-2 gap-2">${(question.options || []).map((option,index) => `<button type="button" onclick="submitGameArenaAnswer(${gameInlineArg(option)})" class="px-4 py-3 rounded-xl arena-answer-option text-left text-xs font-black transition cursor-pointer"><span class="inline-flex w-5 h-5 mr-2 items-center justify-center rounded-md bg-white/10">${String.fromCharCode(65+index)}</span>${gameEscapeHtml(option)}</button>`).join('')}</div>` : `<form onsubmit="submitGameArenaTextAnswer(event)" class="flex flex-col sm:flex-row gap-2"><input id="game-arena-answer-input" value="${gameEscapeAttr(preservedDraft)}" autocomplete="off" placeholder="Ketik jawaban..." class="flex-1 px-4 py-3 rounded-xl bg-slate-950/70 border border-cyan-300/30 text-white text-sm font-black uppercase focus:outline-none focus:ring-2 focus:ring-cyan-300"><button type="submit" class="px-5 py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-black cursor-pointer"><i class="fa-solid fa-bolt mr-1"></i> Kirim</button></form>`}
+            <div id="game-arena-answer-feedback" class="min-h-5 text-center text-[11px] font-black text-cyan-100"></div>
         </div>`;
 }
 
