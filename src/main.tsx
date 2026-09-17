@@ -38,8 +38,8 @@ import './gameArenaV3Assets.js';
 import './gameArenaCharacterSheet.js';
 import './gameArenaMasterArtV3.js';
 import './gameArenaLaserDuelV4.js';
-import './gameArenaGeneratedBackgroundsV5.js';
 import './gameArenaGeneratedChibiSheet.js';
+import './gameArenaGeneratedBackgroundsV5.js';
 import './lkpdModule.js';
 import './learningModule.js';
 
