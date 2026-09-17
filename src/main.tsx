@@ -29,6 +29,7 @@ import './themePackageModule.js';
 import './themeEngineV2.js';
 import './assessmentModule.js';
 import './chatModule.js';
+import './studentDirectChat.js';
 import './calendarModule.js';
 import './bossModule.js';
 import './gameModule.js';
