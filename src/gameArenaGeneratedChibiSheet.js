@@ -1,5 +1,5 @@
 (function () {
-  const SHEET_URL = '/assets/game-arena-v6/chibi-models-v6.webp';
+  const SHEET_URL = '/assets/game-arena-v6/chibi-models-v6.webp?v=8';
   // Atlas V6 asli adalah 1536x1120: 8 kolom x 5 baris.
   // Nilai lama 960x700 membuat background-position salah, sehingga frame terlihat
   // seperti kotak yang bergetar atau jatuh ke area transparan.
@@ -38,7 +38,7 @@
     laser_duel: { poses: ['aim', 'aim', 'fire', 'aim'], duration: 390 }
   });
 
-  let sheetReady = false;
+  let sheetReady = true;
   let scheduled = false;
   let animationFrame = 0;
   let lastAnimationTick = 0;
@@ -213,9 +213,17 @@
     const style = document.createElement('style');
     style.id = 'arena-generated-chibi-styles';
     style.textContent = `
-      .arena-character-wrap.arena-generated-chibi-ready>.arena-character-core,
-      .arena-character-wrap.arena-generated-chibi-ready>.arena-sheet-sprite,
-      .arena-character-wrap.arena-generated-chibi-ready>.arena-v3-character{display:none!important;visibility:hidden!important;opacity:0!important}
+      /* Sheet-only mode: legacy hero SVG/V3/LaserV4 must never render inside live mini games. */
+      [data-arena-stage] .arena-character-wrap>.arena-character-core,
+      [data-arena-stage] .arena-character-wrap>.arena-sheet-sprite,
+      [data-arena-stage] .arena-character-wrap>.arena-v3-character{
+        display:none!important;
+        visibility:hidden!important;
+        opacity:0!important
+      }
+      [data-arena-stage="quiz_race"] .arena-race-car>img{
+        visibility:hidden!important
+      }
       .arena-character-wrap.arena-generated-chibi-ready{
         position:relative!important;
         overflow:visible!important;
@@ -269,7 +277,7 @@
     document.head.appendChild(style);
   }
 
-  async function loadSheet() {
+  async function verifySheet() {
     try {
       await new Promise((resolve, reject) => {
         const image = new Image();
@@ -283,22 +291,25 @@
         image.onerror = () => reject(new Error('invalid generated chibi V6 sheet'));
         image.src = SHEET_URL;
       });
-      sheetReady = true;
-      window.GAME_ARENA_GENERATED_CHIBI_SHEET = SHEET_URL;
-      window.GAME_ARENA_GENERATED_CHIBI_FRAMES = FRAMES;
-      window.GAME_ARENA_CHIBI_V6 = Object.freeze({ frames: FRAMES, forcePose, refresh: schedule });
-      document.documentElement.dataset.arenaGeneratedChibi = 'v6-ready';
-      schedule();
-      if (!animationFrame) animationFrame = requestAnimationFrame(animateSprites);
-      window.dispatchEvent(new CustomEvent('madrasah:game-arena-chibi-ready', { detail: { version: 6 } }));
+      window.dispatchEvent(new CustomEvent('madrasah:game-arena-chibi-ready', { detail: { version: 8, verified: true } }));
     } catch (error) {
-      console.warn('Generated Game Arena chibi V6 sheet unavailable; keeping current fallback characters.', error);
+      console.error('Game Arena character sheet gagal diverifikasi.', error);
+      document.documentElement.dataset.arenaGeneratedChibi = 'v8-error';
     }
   }
 
   function start() {
+    // Render langsung dari atlas sheet. Jangan tunggu preload supaya legacy asset
+    // tidak sempat mengambil alih karakter pada render pertama.
+    sheetReady = true;
+    window.GAME_ARENA_GENERATED_CHIBI_SHEET = SHEET_URL;
+    window.GAME_ARENA_GENERATED_CHIBI_FRAMES = FRAMES;
+    window.GAME_ARENA_CHIBI_V8 = Object.freeze({ frames: FRAMES, forcePose, refresh: schedule });
+    document.documentElement.dataset.arenaGeneratedChibi = 'v8-sheet-only';
     injectStyles();
-    loadSheet();
+    schedule();
+    if (!animationFrame) animationFrame = requestAnimationFrame(animateSprites);
+    verifySheet();
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
     window.addEventListener('resize', schedule, { passive: true });
     document.addEventListener('visibilitychange', schedule, { passive: true });
